@@ -146,7 +146,12 @@ jobs:
       # GitHub. Anyone can check one with
       #     gh attestation verify <file> --repo <owner>/<repo>
       # which a checksum sitting beside its own file cannot do.
+      #
+      # Not available on a user-owned private repository, and a release
+      # is not worth failing over a signature that cannot be made. It
+      # starts working by itself the day the repository goes public.
       - uses: actions/attest-build-provenance@v2
+        continue-on-error: true
         with:
           # Globbed, so one runner being unavailable costs that binary
           # and not the whole release.
