@@ -34,7 +34,11 @@ jobs:
           - os: ubuntu-22.04
             label: Linux x86-64
             asset: tds-toolkit-linux-x86_64
-          - os: macos-13
+          # macos-15-intel, not macos-13: the 13 runners were retired
+          # and a job asking for them is never given one. It queues for
+          # ever rather than failing, and because the release waits on
+          # every build, that holds up the whole release.
+          - os: macos-15-intel
             label: macOS Intel
             asset: tds-toolkit-macos-x86_64
           - os: macos-latest
