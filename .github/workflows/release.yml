@@ -14,6 +14,11 @@ on:
 
 permissions:
   contents: write
+  # For the provenance attestation: it is signed with a short-lived
+  # certificate issued to this workflow run, which is why the run needs
+  # an identity token of its own.
+  id-token: write
+  attestations: write
 
 jobs:
   build:
@@ -121,6 +126,29 @@ jobs:
         with:
           path: built
           merge-multiple: true
+
+      # So a download can be told apart from a download that went wrong,
+      # and so a bug report can say which binary it is about.
+      - name: Checksums
+        run: |
+          cd built
+          # Named rather than globbed with *, which would be a race
+          # with the file being written.
+          sha256sum TDS-Toolkit-* tds-toolkit-* > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      # Free, and worth more than the checksums: this ties each binary
+      # to the workflow run and the commit that produced it, signed by
+      # GitHub. Anyone can check one with
+      #     gh attestation verify <file> --repo <owner>/<repo>
+      # which a checksum sitting beside its own file cannot do.
+      - uses: actions/attest-build-provenance@v2
+        with:
+          # Globbed, so one runner being unavailable costs that binary
+          # and not the whole release.
+          subject-path: |
+            built/TDS-Toolkit-*
+            built/tds-toolkit-*
 
       - name: Upload
         env:

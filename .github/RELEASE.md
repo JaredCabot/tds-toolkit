@@ -30,3 +30,19 @@ this program and is what actually talks to the hardware:
 others are the same program and pass the same checks against the
 simulator, but nobody has yet driven a 784D from them. If you do,
 whether it worked or not is worth an issue.
+
+### Checking what you downloaded
+
+`SHA256SUMS.txt` lists every file. `sha256sum -c SHA256SUMS.txt` on
+Linux, `shasum -a 256 -c SHA256SUMS.txt` on macOS, or
+`Get-FileHash <file>` on Windows. That catches a download that went
+wrong, and it tells a bug report which binary it is about.
+
+It does not prove where a file came from - the list sits on the same
+page as the files. What does prove it is the build provenance, which
+GitHub signs:
+
+    gh attestation verify <file> --repo JaredCabot/tds-toolkit
+
+That ties the binary to the workflow run and the commit it was built
+from, and it cannot be forged by replacing a file on this page.
