@@ -83,14 +83,20 @@ Download the one for your machine from [Releases](../../releases) and run it.
 Each is self-contained: no Python, nothing written to the registry, and no
 installer. Put it wherever suits you.
 
-| File | For |
-|---|---|
-| `TDS-Toolkit-windows-x86_64.exe` | Windows |
-| `tds-toolkit-linux-x86_64` | Linux, glibc 2.35 or newer |
-| `tds-toolkit-macos-arm64` | Apple silicon |
-| `tds-toolkit-macos-x86_64` | Intel Macs |
+| File | For | Tested against an instrument |
+|---|---|---|
+| `TDS-Toolkit-windows-x86_64.exe` | Windows | Yes, a TDS 784D |
+| `tds-toolkit-linux-x86_64` | Linux, glibc 2.35 or newer | **No** |
+| `tds-toolkit-macos-arm64` | Apple silicon | **No** |
+| `tds-toolkit-macos-x86_64` | Intel Macs | **No** |
 
 On Linux and macOS, `chmod +x` it first.
+
+The Linux and macOS builds are the same program from the same commit and
+pass the same automated checks against a simulator, but **nobody has yet
+pointed one at real hardware**. If you do, please open an issue whether it
+worked or not - the VISA layer and GPIB timing are exactly what a simulator
+cannot stand in for, so a report either way is worth having.
 
 None of them is code signed. Windows brings up SmartScreen on the first run -
 **More info**, then **Run anyway**. macOS brings up Gatekeeper - open it once
