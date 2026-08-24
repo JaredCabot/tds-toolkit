@@ -1,0 +1,22 @@
+:REM "This is file - STM1.SET - "
+:REM "shipped by Tektronix with this mask on TTiP disk 3, and copied here unchanged apart from these notes"
+:REM "a TDS 794D will refuse the IMPEDANCE line: its inputs are 50 ohm only and answer with a parameter error. Tektronix chose the 1 Mohm input, which is what TTiP used with an external terminator. On a 784D it is right, and the program reports the refusal on a 794D"
+:REM "no UI line here, so Start measurement will start the hit counter and leave the timebase alone rather than rebuild the sweep as an eye"
+:REM "Copyright 1993 Tektronix Inc."
+:ACQUIRE:STATE STOP
+:REM "Neither vertical scale nor offset are specified by this standard."
+:CH1:COUPLING AC;IMPEDANCE MEG;BANDWIDTH FULL
+:CH1:SCALE 1.0e-1;POSITION 0;OFFSET 0
+:CH2:COUPLING AC;IMPEDANCE MEG;BANDWIDTH FULL
+:CH2:SCALE 1.0e-1;POSITION 0;OFFSET 0
+:DISPLAY:STYLE DOTS
+:HORIZONTAL:MAIN:SECDIV  1.0e-09
+:HORIZONTAL:RECORDLENGTH 500
+:HORIZONTAL:POSITION 50
+:HORIZONTAL:TRIGGER:POSITION 70
+:TRIG:MAIN:MODE AUTO;TYPE EDGE;LEV 0;HOLDOFF:BY DEFAULT
+:TRIG:MAIN:EDGE:SOU CH2;COUPLING AC;SLOPE RISE
+:SELECT:CH1 ON
+:CLEARM
+:ACQUIRE:STATE RUN
+:BELL

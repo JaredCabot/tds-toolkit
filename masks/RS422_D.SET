@@ -1,0 +1,32 @@
+:REM "This is file - RS422_D.SET -"
+:REM "built from the standard's own levels and timing, for a TDS 784D or 794D; not read off an instrument"
+:REM "input impedance is left alone: a 784D has 1 Mohm and 50 ohm, a 794D is 50 ohm only and refuses 1 Mohm. A 10x passive probe needs the 1 Mohm input, so on a 794D use an active or differential probe"
+:REM "TIA/EIA-422-B: 2 V minimum differential into 100 ohm,"
+:REM "6 V maximum open circuit; receiver sensitivity +-200 mV"
+:REM "differential probe across A and B into CH1"
+:REM "the standard's 6 V upper limit is off screen at 1 V/div;"
+:REM "the top keep-out is the top half division, above 3.5 V"
+:REM "the standard's -6 V lower limit is off screen at 1 V/div;"
+:REM "the bottom keep-out is the bottom half division, below -3.5 V"
+:REM "one bit is 100 ns and the screen holds 2.5 of them"
+:REM "25 ns/div, 1 V/div, 0 V at the centre line"
+:REM "UI 1.000000000E-07"
+:REM "the trigger position here puts the middle of a bit on the mask, half a bit after the boundary the trigger sits on"
+:REM "this triggers on the data, which gives HALF an eye: the bit after a rising edge is always high and the bit before is always low, so the middle of the screen only ever shows the top rail. No amount of persistence or DPO fixes it. For a real eye, feed a clock at the bit rate into another channel and trigger on that - which is what TTiP required, and why it shipped CLOCK.BIN - then use Centre the eye, since the clock's phase against the data is fixed but arbitrary"
+:REM "DIFFERENTIAL"
+:ACQUIRE:STATE STOP
+:ACQUIRE:REPET 0
+:CH1:COUPLING DC;BANDWIDTH FULL
+:CH1:SCALE 1.000000E+00;POSITION 0;OFFSET 0.0E+0
+:DISPLAY:STYLE DOTS
+:HORIZONTAL:MAIN:SECDIV 2.500000E-08
+:HORIZONTAL:RECORDLENGTH 500
+:HORIZONTAL:FITTOSCREEN 0
+:HORIZONTAL:POSITION 50
+:HORIZONTAL:TRIGGER:POSITION 30
+:TRIGGER:MAIN:MODE AUTO;TYPE EDGE;LEVEL 0
+:TRIGGER:MAIN:HOLDOFF:BY DEFAULT
+:TRIGGER:MAIN:EDGE:SOURCE CH1;COUPLING DC;SLOPE RISE
+:SELECT:CH1 ON
+:CLEARMENU
+:ACQUIRE:STATE RUN

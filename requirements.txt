@@ -1,0 +1,7 @@
+# Talks to the instrument. Needs a VISA implementation installed separately -
+# see the README; pyvisa is only the Python binding, not the driver.
+pyvisa>=1.13
+
+# Optional. Enables dragging files in from Explorer; without it the program
+# runs normally and says so in the title bar.
+tkinterdnd2>=0.4

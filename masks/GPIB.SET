@@ -1,0 +1,26 @@
+:REM "This is file - GPIB.SET -"
+:REM "built from the standard's own levels and timing, for a TDS 784D or 794D; not read off an instrument"
+:REM "input impedance is left alone: a 784D has 1 Mohm and 50 ohm, a 794D is 50 ohm only and refuses 1 Mohm. A 10x passive probe needs the 1 Mohm input, so on a 794D use an active or differential probe"
+:REM "IEEE 488.1 drivers: VOL 0.5 V max, VOH 2.4 V min"
+:REM "receivers: VIL 0.8 V max, VIH 2.0 V min, VCC 5 V +-5%"
+:REM "the eye opening is the receiver's undefined band, 0.8 V to 2.0 V: a line that sits in there is neither a one nor a zero, and the mask keeps the middle of every bit out of it"
+:REM "GPIB is handshaked rather than clocked, so it has no unit interval of its own. Two microseconds is a bench convention for one - 500 kbit/s a line, which is a byte transfer about as fast as a 488.1 driver does it, and it puts two and a half bits across this sweep"
+:REM "UI 2.000000000E-06"
+:REM "single-ended, 10x passive probe to signal ground"
+:REM "500 ns/div, 1 V/div, 0 V 3 division(s) below of centre"
+:ACQUIRE:STATE STOP
+:ACQUIRE:REPET 0
+:CH1:COUPLING DC;BANDWIDTH FULL
+:CH1:SCALE 1.000000E+00;POSITION -3;OFFSET 0.0E+0
+:DISPLAY:STYLE DOTS
+:HORIZONTAL:MAIN:SECDIV 5.000000E-07
+:HORIZONTAL:RECORDLENGTH 500
+:HORIZONTAL:FITTOSCREEN 0
+:HORIZONTAL:POSITION 50
+:HORIZONTAL:TRIGGER:POSITION 50
+:TRIGGER:MAIN:MODE AUTO;TYPE EDGE;LEVEL 1.5
+:TRIGGER:MAIN:HOLDOFF:BY DEFAULT
+:TRIGGER:MAIN:EDGE:SOURCE CH1;COUPLING DC;SLOPE RISE
+:SELECT:CH1 ON
+:CLEARMENU
+:ACQUIRE:STATE RUN

@@ -1,0 +1,41 @@
+:REM "This is file - PCIE_REF.SET -"
+:REM "built from the standard's own levels and timing, for a TDS 784D or 794D; not read off an instrument"
+:REM "input impedance is left alone: a 784D has 1 Mohm and 50 ohm, a 794D is 50 ohm only and refuses 1 Mohm. A 10x passive probe needs the 1 Mohm input, so on a 794D use an active or differential probe"
+:REM "PCI Express CEM: the 100 MHz reference clock, HCSL"
+:REM "differential swing 300 mV minimum at the crossing;"
+:REM "single-ended high 660 to 850 mV, low -150 to +150 mV"
+:REM "rise and fall 175 to 700 ps, duty cycle 40 to 60%"
+:REM "NOT the data link: 2.5 GT/s is a 400 ps bit and its"
+:REM "1.25 GHz fundamental is above this instrument's 1 GHz."
+:REM "A clock repeats, so equivalent-time sampling is honest here"
+:REM "in a way it would not be on scrambled data"
+:REM "differential probe across REFCLK+ and REFCLK- into CH1"
+:REM "one bit is 10 ns and the screen holds 2 of them"
+:REM "2 ns/div, 200 mV/div, 0 V at the centre line"
+:REM "2 ns/div asks for 40 ps a point, which is faster than one"
+:REM "trigger can fill 500 points: a 784D samples at 4 GS/s,"
+:REM "so 12.5 ns/div is its limit, and a 794D at 10 GS/s (its"
+:REM "specification, not measured here) reaches 5 ns/div."
+:REM "Below that the instrument interleaves triggers, which"
+:REM "builds a picture only from a REPEATING pattern - put the"
+:REM "link in a test mode; on live random data it is nonsense"
+:REM "UI 1.000000000E-08"
+:REM "the trigger position here puts the middle of a bit on the mask, half a bit after the boundary the trigger sits on"
+:REM "this triggers on the data, which gives HALF an eye: the bit after a rising edge is always high and the bit before is always low, so the middle of the screen only ever shows the top rail. No amount of persistence or DPO fixes it. For a real eye, feed a clock at the bit rate into another channel and trigger on that - which is what TTiP required, and why it shipped CLOCK.BIN - then use Centre the eye, since the clock's phase against the data is fixed but arbitrary"
+:REM "DIFFERENTIAL"
+:ACQUIRE:STATE STOP
+:ACQUIRE:REPET 1
+:CH1:COUPLING DC;BANDWIDTH FULL
+:CH1:SCALE 2.000000E-01;POSITION 0;OFFSET 0.0E+0
+:DISPLAY:STYLE DOTS
+:HORIZONTAL:MAIN:SECDIV 2.000000E-09
+:HORIZONTAL:RECORDLENGTH 500
+:HORIZONTAL:FITTOSCREEN 0
+:HORIZONTAL:POSITION 50
+:HORIZONTAL:TRIGGER:POSITION 25
+:TRIGGER:MAIN:MODE AUTO;TYPE EDGE;LEVEL 0
+:TRIGGER:MAIN:HOLDOFF:BY DEFAULT
+:TRIGGER:MAIN:EDGE:SOURCE CH1;COUPLING DC;SLOPE RISE
+:SELECT:CH1 ON
+:CLEARMENU
+:ACQUIRE:STATE RUN

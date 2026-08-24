@@ -1,0 +1,37 @@
+:REM "This is file - ENET100D.SET -"
+:REM "built from the standard's own levels and timing, for a TDS 784D or 794D; not read off an instrument"
+:REM "input impedance is left alone: a 784D has 1 Mohm and 50 ohm, a 794D is 50 ohm only and refuses 1 Mohm. A 10x passive probe needs the 1 Mohm input, so on a 794D use an active or differential probe"
+:REM "ANSI X3.263 TP-PMD: MLT-3 at 125 MBaud, 0.95 to 1.05 V peak"
+:REM "three levels, so the eye has two openings and the keep-out"
+:REM "is the gap either side of the middle level"
+:REM "equivalent-time sampling is on: 2 ns/div is past 4 GS/s"
+:REM "differential probe across the transmit pair into CH1"
+:REM "one bit is 8 ns and the screen holds 2.5 of them"
+:REM "2 ns/div, 500 mV/div, 0 V at the centre line"
+:REM "2 ns/div asks for 40 ps a point, which is faster than one"
+:REM "trigger can fill 500 points: a 784D samples at 4 GS/s,"
+:REM "so 12.5 ns/div is its limit, and a 794D at 10 GS/s (its"
+:REM "specification, not measured here) reaches 5 ns/div."
+:REM "Below that the instrument interleaves triggers, which"
+:REM "builds a picture only from a REPEATING pattern - put the"
+:REM "link in a test mode; on live random data it is nonsense"
+:REM "UI 8.000000000E-09"
+:REM "the trigger position here puts the middle of a bit on the mask, half a bit after the boundary the trigger sits on"
+:REM "this triggers on the data, which gives HALF an eye: the bit after a rising edge is always high and the bit before is always low, so the middle of the screen only ever shows the top rail. No amount of persistence or DPO fixes it. For a real eye, feed a clock at the bit rate into another channel and trigger on that - which is what TTiP required, and why it shipped CLOCK.BIN - then use Centre the eye, since the clock's phase against the data is fixed but arbitrary"
+:REM "DIFFERENTIAL"
+:ACQUIRE:STATE STOP
+:ACQUIRE:REPET 1
+:CH1:COUPLING DC;BANDWIDTH FULL
+:CH1:SCALE 5.000000E-01;POSITION 0;OFFSET 0.0E+0
+:DISPLAY:STYLE DOTS
+:HORIZONTAL:MAIN:SECDIV 2.000000E-09
+:HORIZONTAL:RECORDLENGTH 500
+:HORIZONTAL:FITTOSCREEN 0
+:HORIZONTAL:POSITION 50
+:HORIZONTAL:TRIGGER:POSITION 30
+:TRIGGER:MAIN:MODE AUTO;TYPE EDGE;LEVEL 0
+:TRIGGER:MAIN:HOLDOFF:BY DEFAULT
+:TRIGGER:MAIN:EDGE:SOURCE CH1;COUPLING DC;SLOPE RISE
+:SELECT:CH1 ON
+:CLEARMENU
+:ACQUIRE:STATE RUN

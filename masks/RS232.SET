@@ -1,0 +1,27 @@
+:REM "This is file - RS232.SET -"
+:REM "built from the standard's own levels and timing, for a TDS 784D or 794D; not read off an instrument"
+:REM "A 794D CANNOT DO THIS ONE: its 50 ohm inputs stop at 1 V/div, and this needs more. Worse, +-15 V into 50 ohm is 4.5 W - do not put RS-232 into a 50 ohm input at all"
+:REM "input impedance is left alone: a 784D has 1 Mohm and 50 ohm, a 794D is 50 ohm only and refuses 1 Mohm. A 10x passive probe needs the 1 Mohm input, so on a 794D use an active or differential probe"
+:REM "TIA/EIA-232-F: driver +-5 V minimum, +-15 V maximum"
+:REM "receiver thresholds +-3 V; slew rate 30 V/us maximum"
+:REM "the eye opening is the receiver's undefined band, -3 V to +3 V: a line sitting in there is neither a mark nor a space, and the mask keeps the middle of every bit out of it"
+:REM "115200 baud, which is 8.68 us a bit and puts a little over two of them across this sweep. A slower rate wants a slower sweep - the eye is one bit wide whatever the baud rate"
+:REM "UI 8.680555556E-06"
+:REM "single-ended, 10x passive probe to signal ground"
+:REM "2 us/div, 5 V/div, 0 V at the centre line"
+:ACQUIRE:STATE STOP
+:ACQUIRE:REPET 0
+:CH1:COUPLING DC;BANDWIDTH FULL
+:CH1:SCALE 5.000000E+00;POSITION 0;OFFSET 0.0E+0
+:DISPLAY:STYLE DOTS
+:HORIZONTAL:MAIN:SECDIV 2.000000E-06
+:HORIZONTAL:RECORDLENGTH 500
+:HORIZONTAL:FITTOSCREEN 0
+:HORIZONTAL:POSITION 50
+:HORIZONTAL:TRIGGER:POSITION 50
+:TRIGGER:MAIN:MODE AUTO;TYPE EDGE;LEVEL 0
+:TRIGGER:MAIN:HOLDOFF:BY DEFAULT
+:TRIGGER:MAIN:EDGE:SOURCE CH1;COUPLING DC;SLOPE RISE
+:SELECT:CH1 ON
+:CLEARMENU
+:ACQUIRE:STATE RUN

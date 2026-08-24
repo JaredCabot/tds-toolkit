@@ -1,0 +1,134 @@
+# Builds the four binaries and attaches them to a release.
+#
+# Tag a commit v1.0.0 and push the tag, or run it by hand from the
+# Actions tab. Each binary is built on the system it is for, because
+# PyInstaller cannot cross-compile: the Linux one is built on 22.04
+# rather than the newest runner, since a binary built against an older
+# glibc runs on newer distributions and the reverse is not true.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            label: Windows x86-64
+            asset: TDS-Toolkit-windows-x86_64.exe
+          - os: ubuntu-22.04
+            label: Linux x86-64
+            asset: tds-toolkit-linux-x86_64
+          - os: macos-13
+            label: macOS Intel
+            asset: tds-toolkit-macos-x86_64
+          - os: macos-latest
+            label: macOS Apple silicon
+            asset: tds-toolkit-macos-arm64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Tk is what the whole program is drawn with. Checked here so a
+      # runner without it fails in three seconds with a sentence rather
+      # than in three minutes inside PyInstaller.
+      - name: Check Tk is present
+        run: python -c "import tkinter; print('Tk', tkinter.TkVersion)"
+
+      - name: Install the build tools
+        run: python -m pip install --upgrade pyinstaller pyvisa
+
+      # Windows users install NI-VISA or the Keysight libraries. The
+      # other two have no vendor runtime to install, so a backend goes
+      # in the bundle - without one the program cannot even say what is
+      # missing, and with one it names linux-gpib.
+      - name: A VISA backend for the ones with no vendor runtime
+        if: runner.os != 'Windows'
+        run: python -m pip install pyvisa-py
+
+      # Windows builds from the spec, which is the recipe kept in the
+      # repository: it stamps the version resource and the icon, and
+      # neither of those means anything on the other two.
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        run: pyinstaller --noconfirm --clean "TDS Toolkit.spec"
+
+      - name: Build (Linux and macOS)
+        if: runner.os != 'Windows'
+        run: |
+          pyinstaller --noconfirm --clean --onefile --name tds-toolkit \
+            --add-data "lang:lang" \
+            --add-data "masks:masks" \
+            --add-data "capabilities.json:." \
+            --add-data "memprotect.png:." \
+            --add-data "app.ico:." \
+            --collect-all pyvisa \
+            --collect-all pyvisa_py \
+            --hidden-import tkinter \
+            tdstoolkit.py
+
+      - name: Name it for what it runs on
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            mv "dist/TDS Toolkit.exe" "dist/${{ matrix.asset }}"
+          else
+            mv dist/tds-toolkit "dist/${{ matrix.asset }}"
+          fi
+
+      # It starts, it knows its own version, and its language files came
+      # with it. This is not a test of the program - there is no
+      # instrument here and the checks are not in this repository - but
+      # it does catch a bundle that is missing something it needs.
+      - name: Check the bundle runs
+        shell: bash
+        run: |
+          chmod +x "dist/${{ matrix.asset }}" || true
+          "./dist/${{ matrix.asset }}" --version
+          "./dist/${{ matrix.asset }}" --check-translations
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: dist/${{ matrix.asset }}
+          if-no-files-found: error
+
+  release:
+    name: Attach them to the release
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      # For the release notes below, which are a file in the repository
+      # rather than a heredoc in here.
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: built
+          merge-multiple: true
+
+      - name: Upload
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          ls -la built
+          gh release create "${GITHUB_REF_NAME}" built/* \
+            --title "TDS Toolkit ${GITHUB_REF_NAME#v}" \
+            --notes-file .github/RELEASE.md \
+            || gh release upload "${GITHUB_REF_NAME}" built/* --clobber

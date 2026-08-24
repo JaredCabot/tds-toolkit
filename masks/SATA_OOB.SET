@@ -1,0 +1,32 @@
+:REM "This is file - SATA_OOB.SET -"
+:REM "built from the standard's own levels and timing, for a TDS 784D or 794D; not read off an instrument"
+:REM "input impedance is left alone: a 784D has 1 Mohm and 50 ohm, a 794D is 50 ohm only and refuses 1 Mohm. A 10x passive probe needs the 1 Mohm input, so on a 794D use an active or differential probe"
+:REM "SATA out-of-band signalling, not the 1.5 Gbit/s data: the"
+:REM "1.5 Gbit/s eye is out of reach here, a 667 ps bit whose"
+:REM "750 MHz fundamental sits on this instrument's -3 dB point"
+:REM "COMRESET and COMINIT are 160 UI of burst - 106.7 ns - then"
+:REM "320 ns idle; COMWAKE is 160 UI burst and 106.7 ns idle"
+:REM "transmitter amplitude 400 to 600 mV differential"
+:REM "trigger on the END of a burst: the keep-out is the idle"
+:REM "window after it, where the line must be quiet"
+:REM "the burst itself reads low - the carrier is at the top of"
+:REM "this instrument's band - so the envelope is what to judge"
+:REM "differential probe across the pair into CH1"
+:REM "100 ns/div, 200 mV/div, 0 V at the centre line"
+:REM "DIFFERENTIAL"
+:ACQUIRE:STATE STOP
+:ACQUIRE:REPET 0
+:CH1:COUPLING DC;BANDWIDTH FULL
+:CH1:SCALE 2.000000E-01;POSITION 0;OFFSET 0.0E+0
+:DISPLAY:STYLE DOTS
+:HORIZONTAL:MAIN:SECDIV 1.000000E-07
+:HORIZONTAL:RECORDLENGTH 500
+:HORIZONTAL:FITTOSCREEN 0
+:HORIZONTAL:POSITION 50
+:HORIZONTAL:TRIGGER:POSITION 50
+:TRIGGER:MAIN:MODE NORMAL;TYPE EDGE;LEVEL 0.1
+:TRIGGER:MAIN:HOLDOFF:BY DEFAULT
+:TRIGGER:MAIN:EDGE:SOURCE CH1;COUPLING DC;SLOPE RISE
+:SELECT:CH1 ON
+:CLEARMENU
+:ACQUIRE:STATE RUN

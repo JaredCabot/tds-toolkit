@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+build/
+dist/
+*.spec
+!TDS Toolkit.spec
+
+tdstoolkit.json
+tdstoolkit.log
+tdstoolkit.log.*

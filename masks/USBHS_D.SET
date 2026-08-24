@@ -1,0 +1,41 @@
+:REM "This is file - USBHS_D.SET -"
+:REM "built from the standard's own levels and timing, for a TDS 784D or 794D; not read off an instrument"
+:REM "input impedance is left alone: a 784D has 1 Mohm and 50 ohm, a 794D is 50 ohm only and refuses 1 Mohm. A 10x passive probe needs the 1 Mohm input, so on a 794D use an active or differential probe"
+:REM "USB 2.0 chapter 7, high speed: 480 Mbit/s, one bit is 2.08 ns"
+:REM "+-400 mV nominal differential, 525 mV maximum; the"
+:REM "receiver squelch is 100 mV and 150 mV must be seen"
+:REM "INDICATIVE ONLY on this instrument: 1 GHz passes the third"
+:REM "harmonic of 240 MHz and not the fifth, and the scope's own"
+:REM "350 ps rise time closes the eye by about a fifth. Good for"
+:REM "watching a link, not for saying it passes"
+:REM "equivalent-time sampling is on: 500 ps/div is past 4 GS/s"
+:REM "differential probe across D+ and D- into CH1"
+:REM "one bit is 2.083 ns and the screen holds 2.4 of them"
+:REM "500 ps/div, 200 mV/div, 0 V at the centre line"
+:REM "500 ps/div asks for 10 ps a point, which is faster than one"
+:REM "trigger can fill 500 points: a 784D samples at 4 GS/s,"
+:REM "so 12.5 ns/div is its limit, and a 794D at 10 GS/s (its"
+:REM "specification, not measured here) reaches 5 ns/div."
+:REM "Below that the instrument interleaves triggers, which"
+:REM "builds a picture only from a REPEATING pattern - put the"
+:REM "link in a test mode; on live random data it is nonsense"
+:REM "UI 2.083000000E-09"
+:REM "the trigger position here puts the middle of a bit on the mask, half a bit after the boundary the trigger sits on"
+:REM "this triggers on the data, which gives HALF an eye: the bit after a rising edge is always high and the bit before is always low, so the middle of the screen only ever shows the top rail. No amount of persistence or DPO fixes it. For a real eye, feed a clock at the bit rate into another channel and trigger on that - which is what TTiP required, and why it shipped CLOCK.BIN - then use Centre the eye, since the clock's phase against the data is fixed but arbitrary"
+:REM "DIFFERENTIAL"
+:ACQUIRE:STATE STOP
+:ACQUIRE:REPET 1
+:CH1:COUPLING DC;BANDWIDTH FULL
+:CH1:SCALE 2.000000E-01;POSITION 0;OFFSET 0.0E+0
+:DISPLAY:STYLE DOTS
+:HORIZONTAL:MAIN:SECDIV 5.000000E-10
+:HORIZONTAL:RECORDLENGTH 500
+:HORIZONTAL:FITTOSCREEN 0
+:HORIZONTAL:POSITION 50
+:HORIZONTAL:TRIGGER:POSITION 29
+:TRIGGER:MAIN:MODE AUTO;TYPE EDGE;LEVEL 0
+:TRIGGER:MAIN:HOLDOFF:BY DEFAULT
+:TRIGGER:MAIN:EDGE:SOURCE CH1;COUPLING DC;SLOPE RISE
+:SELECT:CH1 ON
+:CLEARMENU
+:ACQUIRE:STATE RUN

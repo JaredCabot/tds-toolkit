@@ -1,0 +1,13 @@
+* text=auto eol=lf
+*.cmd text eol=crlf
+*.ico binary
+*.png binary
+*.exe binary
+
+# Instrument data, kept byte for byte: these came off Tektronix disks or
+# were written for an instrument to read, and text=auto would hand back
+# a file whose bytes are not the ones that went in.
+*.MSK binary
+*.SET binary
+*.wfm binary
+*.isf binary
