@@ -87,7 +87,7 @@ def discover(appdir=None):
 def available():
     """Languages, English first and the rest by their native name."""
     langs = list(_languages.values())
-    langs.sort(key=lambda l: (l["code"] != "en", l["native"].upper()))
+    langs.sort(key=lambda one: (one["code"] != "en", one["native"].upper()))
     return langs
 
 

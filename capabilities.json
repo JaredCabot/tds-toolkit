@@ -550,6 +550,17 @@
       "options": ["1M", "05", "13", "2F", "1F", "2C", "3C", "4C", "2M", "1G"]
     },
     {
+      "model": "TDS 754D",
+      "firmware": "v8.0e",
+      "reader": "READFILE",
+      "can_write": true,
+      "filesystem": true,
+      "evidence": "measured",
+      "image": "9f176f8efe",
+      "note": "the 794D image, which runs on a 754D; the probe read READFILE and WRITEFILE off one",
+      "options": ["1M", "05", "13", "2F", "1F", "2C", "3C", "4C", "2M", "1G"]
+    },
+    {
       "model": "TDS 784C",
       "firmware": "v5.0e",
       "reader": "READFILE",
@@ -649,6 +660,17 @@
       "evidence": "measured",
       "image": "7e80aad56c",
       "note": "confirmed on the instrument itself",
+      "options": ["1M", "05", "13", "2F", "1F", "2C", "3C", "4C", "2M", "1G"]
+    },
+    {
+      "model": "TDS 784D",
+      "firmware": "v8.0e",
+      "reader": "READFILE",
+      "can_write": true,
+      "filesystem": true,
+      "evidence": "firmware",
+      "image": "9f176f8efe",
+      "note": "the 794D image, which runs on a 784D - see FIRMWARE-INDEX",
       "options": ["1M", "05", "13", "2F", "1F", "2C", "3C", "4C", "2M", "1G"]
     },
     {

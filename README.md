@@ -18,11 +18,13 @@ Full documentation is in
 |---|---|
 | Files | Two-pane browser for the instrument's drives. Download, upload, create folders, delete, and drag files in from Explorer. |
 | Screenshot | Captures the instrument's screen through its hardcopy port and saves it as PNG. Format, layout and palette are chosen in the program; the instrument's own hardcopy settings are put back afterwards. |
-| Waveforms | Captures live channels and stored references, plots them together, zooms and pans, saves as ISF, CSV, WFM or PNG, and loads a file back into a reference. |
+| Waveforms | Captures live channels and stored references, plots them together, zooms and pans, saves as ISF, CSV, WFM, PNG or SVG, and loads a file back into a reference. |
 | Limits | Builds a template from the signal on screen, sends it to the instrument as a limit test, and reports the verdict. The limit envelope can be drawn or edited by hand. |
 | Masks | A mask editor with a shipped library of standard telecom and serial-bus masks. Sends a mask to the instrument, sets the instrument up for an eye diagram, and counts hits against it. |
 | Error Log | Reads the instrument's own service error log, saves it, and clears it. |
-| System | Identity and firmware, front-panel lock, the clock, hardcopy and RS-232 ports, signal path compensation, extended diagnostics, secure erase, factory recall, and the factory option words. |
+| Firmware | Writes a firmware image to the instrument through the ROM monitor it starts in when the NVRAM protection switch is unprotected. Backs up the existing NVRAM and firmware and verifies both before anything is erased, then reads the new image back and compares it. Images are published with the program as a single archive, read without being unpacked. |
+| Backup | Captures the whole instrument to a single file - front-panel setups, the acquisition board's calibration constants, the NVRAM and the stored references - and restores any part of it, verifying as it goes. |
+| System | Identity and firmware, front-panel lock, the clock, hardcopy and RS-232 ports, signal path compensation, extended diagnostics, secure erase, factory recall, the acquisition board's calibration constants, and the factory option words. |
 | Settings | Plot colours and presets, saved-picture resolution, and where the program keeps its settings and log. |
 
 Nine language catalogues are supplied: English, Deutsch, Español, Français,
@@ -53,6 +55,70 @@ What each known instrument can do is listed in `capabilities.json`. An
 instrument that is not listed is asked directly when it connects, so it works
 without anyone editing anything. A `capabilities.json` beside the program
 overrides the bundled copy.
+
+## Firmware images
+
+The Firmware tab does not ship any firmware. Point it at a folder of your
+own and it lists what is there.
+
+Tektronix shipped one binary for a whole family, so the same image arrives
+under several model names - of 67 files in one collection, 47 were copies of
+another, and naming the survivor after one member of its family says
+something untrue about the other four. `FIRMWARE-INDEX.txt` records which
+instruments each image is for, so the filename does not have to.
+
+Two filename shapes are read:
+
+```
+TDS784D_v7.4e_Firmware.bin     as Tektronix' images are usually named
+TDS_v7.4e_7e80aad5.bin         model-free: version, then eight digits
+                               of the image's SHA-256
+```
+
+The eight digits are what make the second shape unique - a version alone is
+not, since `v2.16e` is one image for a TDS520 and a different one for a
+TDS540.
+
+The index is a plain text table, and only its `FITS` rows are read:
+
+```
+FILE                       FV        SIZE    FITS
+--------------------------------------------------------------------------
+TDS_v5.3e_15a07eac.bin     v5.3e     4 MB    TDS520C TDS540C TDS580C TDS754C TDS784C
+TDS_v7.4e_7e80aad5.bin     v7.4e     4 MB    TDS714L TDS754D TDS784D
+```
+
+A row is the filename, the version, the size, and every model the image is
+for, which must be last on the line; a column between the size and the
+models is skipped, so one can be added without breaking anything. Any line
+that does not fit that shape is ignored, so the rest of the file can say
+whatever is useful.
+
+The program reads the index in the folder you point at, falls back to the
+copy shipped beside it, and falls back again to whatever the filename
+itself says. Adding a newly found image is a line in the index.
+
+### Images in an archive
+
+A folder may hold a zip of images instead of, or as well as, loose files.
+The archive is read like the folder: each member is compressed on its own,
+so listing costs a fraction of a second and only the image you choose to
+write is decompressed. The index travels inside the archive, which is the
+only one a folder holding nothing but the archive has.
+
+Where a folder holds both, each image is listed once and the loose file is
+taken - it is the image as it was dumped, where an archived one may have
+had its erased tail trimmed off. Trimming loses nothing: the instrument's
+flash is erased to `0xFF` before anything is written, so the bytes that
+were removed are the bytes the erase puts back.
+
+`FV` is what the instrument reports to `*IDN?` once the image is loaded,
+taken from the `$VersionString: FV:v...` tag inside it. Images also carry
+`FV:3.8eSparc10.atria1`, which is the machine the firmware was built on
+rather than a version of anything.
+
+The images carry no Tektronix part number - searching all 31 for one finds
+nothing in that shape - so the index does not list one.
 
 ## Requirements
 
@@ -165,6 +231,18 @@ each one on the system it is for - PyInstaller cannot cross-compile - and
 attaches all four to the release. The Linux build runs on Ubuntu 22.04 rather
 than the newest runner, because a binary built against an older glibc runs on
 newer distributions and the reverse is not true.
+
+## Changelog
+
+New in **1.1.0**:
+
+- **Backup tab** - back up and restore the whole instrument in one file: setups, calibration constants, NVRAM and references.
+- **Firmware tab** - catalogue, identify and load firmware images, with a `FIRMWARE-INDEX.txt` recording which instruments each image is for.
+- **SVG waveform export**, and saving a waveform as `.wfm` as well as `.tdw`.
+- **Captures shown at the instrument's own timebase**, and a fix for the record strip in exported PNGs.
+- **Limits template library**, formatting a volume, deleting the instrument's own files, and a large number of calibration, NVRAM and file-transfer fixes.
+
+The full history is in [CHANGELOG.md](CHANGELOG.md).
 
 ## Licence
 

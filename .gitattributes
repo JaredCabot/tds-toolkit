@@ -3,6 +3,7 @@
 *.ico binary
 *.png binary
 *.exe binary
+*.pdf binary
 
 # Instrument data, kept byte for byte: these came off Tektronix disks or
 # were written for an instrument to read, and text=auto would hand back

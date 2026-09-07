@@ -1,0 +1,81 @@
+TDS500/600/700 firmware images
+==========================================================================
+
+One file per distinct image. Tektronix shipped one image for a
+whole family, so FITS lists every model an image is for and the
+filename names none of them.
+
+FV is what the instrument reports to *IDN? once the image is
+loaded, from the $VersionString: FV:v... tag inside it.
+
+The eight hex digits in a filename are the start of the image's
+SHA-256. They are what makes a name unique: two different images
+can carry the same FV.
+
+FILE                       FV        SIZE    FITS
+--------------------------------------------------------------------------
+TDS_v1.0e_83502025.bin     v1.0e     3 MB    TDS744A
+TDS_v1.1e_610f5cb9.bin     v1.1e     4 MB    TDS744A
+TDS_v2.03e_42fec8e5.bin    v2.03e    4 MB    TDS820
+TDS_v2.04e_ed3384d8.bin    v2.04e    1.5 MB  TDS620
+TDS_v2.16e_77619de1.bin    v2.16e    1.5 MB  TDS540
+TDS_v2.16e_d82e9f9e.bin    v2.16e    1.5 MB  TDS520
+TDS_v3.8.2e_3a92ae13.bin   v3.8.2e   3 MB    TDS620A
+TDS_v3.8.2e_b93f5d99.bin   v3.8.2e   4 MB    TDS524A
+TDS_v3.8.3e_1c2d7f5c.bin   v3.8.3e   4 MB    TDS540A
+TDS_v3.8.4e_7fe5c5b6.bin   v3.8.4e   3 MB    TDS544A
+TDS_v3.8.5e_da1a94ba.bin   v3.8.5e   4 MB    TDS644A
+TDS_v3.8.7e_d49a351b.bin   v3.8.7e   4 MB    TDS520A TDS524A
+TDS_v3.8.8e_d5b6022c.bin   v3.8.8e   4 MB    TDS640A
+TDS_v4.0e_781dbbcf.bin     v4.0e     4 MB    TDS744A
+TDS_v4.1e_f05bc6bc.bin     v4.1e     4 MB    TDS520B TDS540B
+TDS_v4.2e_bcb4fddb.bin     v4.2e     4 MB    TDS620B TDS644B TDS680B
+TDS_v4.2.1e_f8f1bda2.bin   v4.2.1e   4 MB    TDS744A
+TDS_v4.4.1e_2065acd4.bin   v4.4.1e   4 MB    TDS620B TDS680B TDS684B
+TDS_v5.0e_2e7d2cfd.bin     v5.0e     4 MB    TDS520C TDS540C TDS580C TDS754C TDS784C
+TDS_v5.1e_4e6df2c9.bin     v5.1e     4 MB    TDS684C
+TDS_v5.1.1e_d6dfbfd6.bin   v5.1.1e   4 MB    TDS520C TDS540C TDS580C
+TDS_v5.2e_27a6509b.bin     v5.2e     4 MB    TDS520C TDS540C TDS580C TDS754C TDS784C
+TDS_v5.3e_15a07eac.bin     v5.3e     4 MB    TDS520C TDS540C TDS580C TDS754C TDS784C
+TDS_v6.0e_633b6917.bin     v6.0e     4 MB    TDS754D TDS784D TDS794D
+TDS_v6.3e_2f0723c3.bin     v6.3e     4 MB    TDS754D TDS784D TDS794D
+TDS_v6.4e_78df0018.bin     v6.4e     4 MB    TDS754D TDS784D TDS794D
+TDS_v6.6e_d02c8cbf.bin     v6.6e     4 MB    TDS754D TDS784D TDS794D
+TDS_v7.1.1e_dd1be28a.bin   v7.1.1e   4 MB    TDS714L TDS754D TDS784D
+TDS_v7.2e_214a2845.bin     v7.2e     4 MB    TDS714L TDS754D TDS784D
+TDS_v7.4e_7e80aad5.bin     v7.4e     4 MB    TDS714L TDS754D TDS784D
+TDS_v8.0e_9f176f8e.bin     v8.0e     4 MB    TDS754D TDS784D TDS794D
+
+SHA-256
+--------------------------------------------------------------------------
+TDS_v1.0e_83502025.bin     83502025be50f113773ed51b4e91257da2edc459d6ab9c04ce17648f80efe90a
+TDS_v1.1e_610f5cb9.bin     610f5cb923653a405a9c876cb8a99d518febeaf3f739855027e2e17d13336f16
+TDS_v2.03e_42fec8e5.bin    42fec8e5a3b0d0023c22f82504438fbf57930ff744e49e1fa7c4a0ac4b83baae
+TDS_v2.04e_ed3384d8.bin    ed3384d89e128ecbe7eeb30c9c58642b5af03c38ab65b3fca01efac01cfc35b0
+TDS_v2.16e_77619de1.bin    77619de137bd80118a68431012fcc3f804467d43062ca4bfdaf68d477dd0219e
+TDS_v2.16e_d82e9f9e.bin    d82e9f9eadf1795f1060b0f9f0c309bb5ac039ccc01253f099db9ad996b0eec8
+TDS_v3.8.2e_3a92ae13.bin   3a92ae137f9ab3ce08d5d518e106d1b13678e17f53d2b623594d3f8d421082f2
+TDS_v3.8.2e_b93f5d99.bin   b93f5d99d594402e1bd530da28b16080bc205fecebdd5376a805697a254c068e
+TDS_v3.8.3e_1c2d7f5c.bin   1c2d7f5cdc17e81fd139f37fbf0a0a54ed548d0a776afb5aa5cde4e90fd4e0e1
+TDS_v3.8.4e_7fe5c5b6.bin   7fe5c5b6b175bc861ac8876a1c8b17f739b0634d872c5f19777d9b67101dfd4c
+TDS_v3.8.5e_da1a94ba.bin   da1a94bad897aefb17721bc29384d32e196cd673160ac2efa96cd6e688d50a2b
+TDS_v3.8.7e_d49a351b.bin   d49a351b666ed8d9e5c9809dd3aa470b1653c104bc91bdb3328f63905ea820f5
+TDS_v3.8.8e_d5b6022c.bin   d5b6022c041280dee984c4a2648d064f6c1445a9c4e3326a664d04fff38f62cb
+TDS_v4.0e_781dbbcf.bin     781dbbcf2773144fa1e917f06e6942b24c1327d5456133da76b9183e46f28b8b
+TDS_v4.1e_f05bc6bc.bin     f05bc6bc492708da28c35be5fcc689343465caa7b735f09fa460a30e7d170e10
+TDS_v4.2e_bcb4fddb.bin     bcb4fddbe7a2ebf4d2408c66e1d2e0dbe4826f5164d4d8071802aec56f432f5f
+TDS_v4.2.1e_f8f1bda2.bin   f8f1bda2c80826a2a5b83060adf132cb437ae65160f03e91fbe939b7a4fd4c19
+TDS_v4.4.1e_2065acd4.bin   2065acd4443b0e25e32d8f81923dea32e8c26f513237417c5ac8ef31f2fb7ebe
+TDS_v5.0e_2e7d2cfd.bin     2e7d2cfdac52de91bafb250b8b159aaf7183be39639458cbffd3be1567b61952
+TDS_v5.1e_4e6df2c9.bin     4e6df2c91c3976729d3243ec55bbf813962a3120c542a78950eacd7fa455e61e
+TDS_v5.1.1e_d6dfbfd6.bin   d6dfbfd6862445d3c2010bc22838c446b3bfa0c1297216783dcbc24c8941d638
+TDS_v5.2e_27a6509b.bin     27a6509b83db226cb767e7537387695455ca4bc432212fd4a61de878578ccfe2
+TDS_v5.3e_15a07eac.bin     15a07eac7f26145488326a5e6fcae20efef896cabe660a3ae909637cf203ec11
+TDS_v6.0e_633b6917.bin     633b69173152a6ea322872df79b70c5b3417ea59a93dbb29d9f04d8a7a73a779
+TDS_v6.3e_2f0723c3.bin     2f0723c329d29156775c54bcd1f8e0bf38a1c1c2a461ea147de9c9113a588bc9
+TDS_v6.4e_78df0018.bin     78df00183be5e53ed342d6ec1b610e56808ed3f07b8fcaba3dedc72d5ae15c82
+TDS_v6.6e_d02c8cbf.bin     d02c8cbf014a6219bc6da4d08f7299152b8a9b24c16f809ef0c6ff632e210558
+TDS_v7.1.1e_dd1be28a.bin   dd1be28a67aadafd52bae6d66dd44364cfe7d14bcca7765671bfdcdf4cfe89d5
+TDS_v7.2e_214a2845.bin     214a2845c40159136b2a62d6150931d00b1a99294e35f17c7e02eb210af81419
+TDS_v7.4e_7e80aad5.bin     7e80aad56c25dbefb6a0b7812e66a319af45fe1fa129313604c9fdc1e85ed5d3
+TDS_v8.0e_9f176f8e.bin     9f176f8efeeeae351ca36d3aa7fd20af670375034165615942821bf6b8276559

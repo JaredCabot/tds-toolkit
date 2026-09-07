@@ -54,6 +54,13 @@ to print to a floppy, and would be entitled to be left that way.
 import struct
 import time
 
+import tds_wfm
+
+#: The HARDCOPY fields this module reads and puts back, spelled in full.
+#: settings() names its keys from this list whatever the instrument
+#: called them, and restore() writes back the ones it finds.
+FIELDS = ("FORMAT", "LAYOUT", "PALETTE", "FILENAME", "PORT")
+
 # What the app offers, in the order it offers them. `colour` is what the
 # format is capable of, not what a given instrument will do with it.
 # `decoder` names the family, since BMP covers three of these.
@@ -111,7 +118,6 @@ class Screen(object):
 
     def to_png(self):
         """A PNG of exactly these pixels - no scaling, no resampling."""
-        import tds_wfm
         return tds_wfm.encode_png_indexed(self.pixels, self.palette,
                                           self.width, self.height)
 
@@ -670,12 +676,21 @@ class TdsScr(object):
             if " " not in field:
                 continue
             name, _sep, value = field.partition(" ")
-            out[name.split(":")[-1].upper()] = value.strip()
+            # The instrument names its own fields, and it may name them
+            # in the short form: a 680B answers FORM, LAY and FILEN
+            # where a 784D answers FORMAT, LAYOUT and FILENAME. Spelled
+            # out here once, so everything downstream can ask for the
+            # field by its full name - restore() looked for FORMAT and
+            # found nothing on an instrument that abbreviates, and so
+            # put back only the one field whose short form is its whole
+            # name.
+            out[tds_wfm.expand_keyword(name.split(":")[-1], FIELDS)] = \
+                value.strip()
         return out
 
     def restore(self, settings):
         """Put back what settings() returned. Never raises."""
-        for name in ("FORMAT", "LAYOUT", "PALETTE", "FILENAME", "PORT"):
+        for name in FIELDS:
             if name not in settings:
                 continue
             try:
@@ -771,7 +786,9 @@ class TdsScr(object):
                 self.inst.write("HARDCOPY:PALETTE %s" % palette)
             self.drain()
             now = self.settings()
-            if now.get("PORT") != "GPIB":
+            # Not a plain comparison: an instrument may answer in the
+            # short form, so a 680B that has taken GPIB says GPI.
+            if not tds_wfm.keyword_is(now.get("PORT"), "GPIB"):
                 raise IOError("The instrument would not send its screen to "
                               "the bus: HARDCOPY:PORT is %s."
                               % now.get("PORT", "unknown"))

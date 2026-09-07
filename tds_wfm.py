@@ -53,6 +53,32 @@ REFS = ("REF1", "REF2", "REF3", "REF4")
 WHOLE_RECORD = 1000000
 
 
+# An instrument may answer an enumeration in Tektronix's short form - the
+# capitals of the mixed-case spelling in the manual - rather than in full.
+# A TDS 680B on v4.4.1e says GPI where GPIb was set, NON for NONe and
+# PORTR for PORTRait, while a 784D on v7.4e answers all three in full. So
+# a reply is matched as an abbreviation of the keyword rather than
+# compared to it, and expanded to the full spelling before it is shown.
+def keyword_is(said, keyword):
+    """Is `said` this instrument's way of saying `keyword`."""
+    said = (said or "").strip().upper()
+    return bool(said) and (keyword or "").strip().upper().startswith(said)
+
+
+def expand_keyword(said, choices):
+    """The full spelling of `said`, or `said` itself if none of `choices`
+    fits. An exact match wins over an abbreviation, so a reply of BMP
+    stays BMP rather than becoming BMPCOLOR."""
+    said = (said or "").strip()
+    for one in choices:
+        if said.upper() == one.strip().upper():
+            return one
+    for one in choices:
+        if keyword_is(said, one):
+            return one
+    return said
+
+
 class NotReadable(IOError):
     """This source has nothing that can be read right now.
 
@@ -68,6 +94,7 @@ class NotReadable(IOError):
             "%s has no waveform that can be read. A channel has to be "
             "displayed on the instrument before it can be read; a "
             "reference has to have something stored in it." % source)
+
 
 # How a plot is coloured. Held as hex because that is what Tk speaks and
 # what a settings file can carry legibly; the PNG side converts. The
@@ -339,8 +366,28 @@ class Waveform(object):
     # -- formats ----------------------------------------------------------
 
     def to_csv(self):
-        """Scaled time and amplitude, one pair per line, trigger at zero."""
-        out = ["%s,%s" % (self.xunit, self.yunit)]
+        """Scaled time and amplitude, one pair per line, trigger at zero.
+
+        With one comment line in front of the header carrying the
+        vertical scale. A CSV is volts and nothing else, so a file
+        loaded back has no scale to be drawn at and from_csv has to
+        invent one - see there. This is what lets a file this program
+        wrote come back at the scale it left with. Anything else
+        reading the file skips the line the way it skips the header
+        under it.
+
+        Volts a division and divisions off centre, rather than YMULT
+        and YOFF. Those two are counts, and a count means different
+        things at the two widths - 25 to a division at eight bits and
+        6400 at sixteen - so a record read back from a .WFM and saved
+        here came back fifty times too tall. A division is a division
+        whatever the file it came from.
+        """
+        per_div = self.counts_per_div or 1.0
+        out = ["# TDS Toolkit: VOLTSDIV %.9g, POSITION %.9g, ZERO %.9g"
+               % (self.volts_per_div, self.number("YOFF") / per_div,
+                  self.number("YZERO"))]
+        out.append("%s,%s" % (self.xunit, self.yunit))
         out += ["%.9g,%.9g" % (t, v) for t, v in self.points()]
         return ("\r\n".join(out) + "\r\n").encode("ascii")
 
@@ -468,6 +515,18 @@ class Waveform(object):
         return plot_png(self, width, height, colours, caption,
                         view, traces, strip=strip)
 
+    def to_svg(self, width=DEFAULT_PNG_WIDTH, height=None,
+               colours=None, caption="", view=None, traces=None,
+               strip=False):
+        """The trace as a scalable vector picture.
+
+        The drawing to_png makes, emitted as SVG rather than pixels, so
+        it stays crisp at any size and opens in a vector editor. See
+        plot_svg.
+        """
+        return plot_svg(self, width, height, colours, caption,
+                        view, traces, strip=strip)
+
 
 def from_isf(data, name="file"):
     """Read back an .isf - the format to_isf() writes, and the
@@ -529,6 +588,7 @@ def from_csv(data, name="file"):
         else data
     times, volts = [], []
     xunit, yunit = "s", "V"
+    told = {}
     for line in text.splitlines():
         line = line.strip()
         if not line:
@@ -546,6 +606,15 @@ def from_csv(data, name="file"):
                     xunit = unit
             if "volt" in low:
                 yunit = "V"
+            # And to_csv's own comment line carries the vertical scale.
+            for word in ("voltsdiv", "position", "zero"):
+                at = low.find(word + " ")
+                if at >= 0:
+                    try:
+                        told[word] = float(
+                            line[at + len(word) + 1:].split(",")[0])
+                    except ValueError:
+                        pass
             continue
         times.append(t)
         volts.append(v)
@@ -559,20 +628,51 @@ def from_csv(data, name="file"):
     # for eight bits, and record the scaling that makes it mean what the
     # file said.
     #
-    # Across eight divisions, not the full range: the plot places a
-    # sample by its own count, so a file scaled across the digitiser's
-    # 10.24 divisions would be drawn running off the top and bottom of
-    # the graticule. Eight divisions is 200 counts, which fills the
-    # screen exactly and still keeps 200 levels of the file's detail.
+    # A CSV carries volts and no scale, so a scale has to be chosen. It
+    # is chosen the way an instrument would choose it: the smallest
+    # 1-2-5 volts-a-division that still fits the signal in the eight
+    # divisions of the graticule.
+    #
+    # It used to be whatever made the signal fill exactly eight
+    # divisions. That is not a setting any instrument has, and it made
+    # every reloaded trace the same height whatever it had been:
+    # measured on a 784D, a capture five divisions tall, saved as a CSV
+    # and loaded back, came back eight. On the Waveforms tab that is
+    # invisible, because its view fits what it is given. On the Limits
+    # and Masks tabs it is not - both draw at the instrument's own scale
+    # - and a template drawn round a trace half again too big is a
+    # template that fails the signal it was built from.
     span = hi - lo
-    ymult = span / (DIVS_Y * 25.0)
-    yzero = (hi + lo) / 2.0
-    raw = bytes(int(round((v - yzero) / ymult)) & 0xFF for v in volts)
+    want = span / float(DIVS_Y)
+    power = math.floor(math.log10(want)) if want > 0 else 0.0
+    per_div = next((m * 10.0 ** power for m in MANTISSAS
+                    if m * 10.0 ** power >= want * (1 - 1e-9)),
+                   10.0 ** (power + 1))
+    ymult, yzero, yoff = per_div / 25.0, (hi + lo) / 2.0, 0.0
+    # Unless the file says what its scale was, which one this program
+    # wrote does. It says it in volts a division and divisions off
+    # centre, so it means the same thing whichever width the record it
+    # came from was - see to_csv.
+    #
+    # Taken only when every sample still lands in the eight-bit range.
+    # A record that covered more than the five divisions either side of
+    # centre the digitiser reaches could not have been an eight-bit
+    # capture in the first place, and wrapping it round the byte would
+    # be worse than rescaling it.
+    if told.get("voltsdiv"):
+        want_mult = told["voltsdiv"] / 25.0
+        want_zero = told.get("zero", 0.0)
+        want_off = told.get("position", 0.0) * 25.0
+        counts = [(v - want_zero) / want_mult + want_off for v in volts]
+        if all(-128.0 <= c <= 127.0 for c in counts):
+            ymult, yzero, yoff = want_mult, want_zero, want_off
+    raw = bytes(int(round((v - yzero) / ymult + yoff)) & 0xFF
+                for v in volts)
     xincr = (times[-1] - times[0]) / float(len(times) - 1)
     pre = {"NR_PT": str(len(volts)), "PT_FMT": "Y",
            "XINCR": repr(xincr), "XZERO": repr(times[0]),
            "PT_OFF": "0", "XUNIT": '"%s"' % xunit,
-           "YMULT": repr(ymult), "YZERO": repr(yzero), "YOFF": "0",
+           "YMULT": repr(ymult), "YZERO": repr(yzero), "YOFF": repr(yoff),
            "YUNIT": '"%s"' % yunit,
            "WFID": '"%s, loaded from a CSV file, %d points"'
                    % (name, len(volts))}
@@ -641,11 +741,15 @@ LLWFM_SOURCES = ("CH1", "CH2", "CH3", "CH4", "MATH1", "MATH2", "MATH3",
 
 
 # A header to build new files on. Taken from a file the instrument
-# wrote. Every field above is patched over it; what is left is a dozen
-# bytes whose meaning is still not known, and they are carried as they
-# were found rather than invented. Two of them differ between the files
-# a 784D writes and the ones Tektronix shipped with TTiP, and both kinds
-# recall correctly, so nothing there is load-bearing.
+# wrote. Every field above is patched over it; what is left was settled
+# by comparing many files the instrument wrote. Nearly all of it is the
+# same in every file -- a reserved word at the front and the display
+# zoom and pan doubles, all left at their defaults -- and is carried
+# through unchanged. Only a short run near the end (around offsets
+# 120-127) varies between waveforms: what looks like a per-waveform
+# checksum and a couple of small counters. Those are carried as found
+# and fall inside the block checksum this code recomputes, so nothing
+# there is load-bearing.
 LLWFM_TEMPLATE = base64.b64decode(
     "AAAAAAAABKQAAAAAAAAAAD/gAAAAAAAAP/AAAAAAAAA/8AAAAAAAAAEdAGI/dHrh"
     "MAAAAAI1AmI+5Pi1gAAAAAJhAAAAAAAAAAAAAAAAAAAAAD+5mZmuAAAAAAAB9AAy"
@@ -833,7 +937,81 @@ def eng(value, unit=""):
 # these instruments report. Enough to label a plot without dragging in a
 # font library for the sake of twenty glyphs. Anything with no glyph is
 # skipped rather than drawn as a box.
-GLYPHS = {'0': ('01110', '10001', '10011', '10101', '11001', '10001', '01110'), '1': ('00100', '01100', '00100', '00100', '00100', '00100', '01110'), '2': ('01110', '10001', '00001', '00010', '00100', '01000', '11111'), '3': ('11111', '00010', '00100', '00010', '00001', '10001', '01110'), '4': ('00010', '00110', '01010', '10010', '11111', '00010', '00010'), '5': ('11111', '10000', '11110', '00001', '00001', '10001', '01110'), '6': ('00110', '01000', '10000', '11110', '10001', '10001', '01110'), '7': ('11111', '00001', '00010', '00100', '01000', '01000', '01000'), '8': ('01110', '10001', '10001', '01110', '10001', '10001', '01110'), '9': ('01110', '10001', '10001', '01111', '00001', '00010', '01100'), '.': ('00000', '00000', '00000', '00000', '00000', '01100', '01100'), '-': ('00000', '00000', '00000', '11111', '00000', '00000', '00000'), '+': ('00000', '00100', '00100', '11111', '00100', '00100', '00000'), ' ': ('00000', '00000', '00000', '00000', '00000', '00000', '00000'), 'V': ('10001', '10001', '10001', '10001', '10001', '01010', '00100'), 'o': ('00000', '00000', '01110', '10001', '10001', '10001', '01110'), 'l': ('01100', '00100', '00100', '00100', '00100', '00100', '01110'), 't': ('01000', '01000', '11110', '01000', '01000', '01001', '00110'), 's': ('00000', '00000', '01111', '10000', '01110', '00001', '11110'), 'm': ('00000', '00000', '11010', '10101', '10101', '10101', '10101'), 'u': ('00000', '00000', '10001', '10001', '10001', '10011', '01101'), 'n': ('00000', '00000', '10110', '11001', '10001', '10001', '10001'), 'p': ('00000', '00000', '11110', '10001', '11110', '10000', '10000'), 'k': ('10000', '10000', '10010', '10100', '11000', '10100', '10010'), 'M': ('10001', '11011', '10101', '10101', '10001', '10001', '10001'), 'G': ('01110', '10001', '10000', '10111', '10001', '10001', '01111'), 'A': ('01110', '10001', '10001', '11111', '10001', '10001', '10001'), 'W': ('10001', '10001', '10001', '10101', '10101', '11011', '10001'), 'd': ('00001', '00001', '01111', '10001', '10001', '10001', '01111'), 'B': ('11110', '10001', '10001', '11110', '10001', '10001', '11110'), 'e': ('00000', '00000', '01110', '10001', '11111', '10000', '01110'), 'c': ('00000', '00000', '01111', '10000', '10000', '10000', '01111'), 'H': ('10001', '10001', '10001', '11111', '10001', '10001', '10001'), 'z': ('00000', '00000', '11111', '00010', '00100', '01000', '11111'), '%': ('11001', '11010', '00010', '00100', '01000', '01011', '10011'), 'C': ('01110', '10001', '10000', '10000', '10000', '10001', '01110'), 'D': ('11110', '10001', '10001', '10001', '10001', '10001', '11110'), 'E': ('11111', '10000', '10000', '11110', '10000', '10000', '11111'), 'F': ('11111', '10000', '10000', '11110', '10000', '10000', '10000'), 'I': ('01110', '00100', '00100', '00100', '00100', '00100', '01110'), 'J': ('00111', '00010', '00010', '00010', '00010', '10010', '01100'), 'K': ('10001', '10010', '10100', '11000', '10100', '10010', '10001'), 'L': ('10000', '10000', '10000', '10000', '10000', '10000', '11111'), 'N': ('10001', '11001', '10101', '10011', '10001', '10001', '10001'), 'O': ('01110', '10001', '10001', '10001', '10001', '10001', '01110'), 'P': ('11110', '10001', '10001', '11110', '10000', '10000', '10000'), 'Q': ('01110', '10001', '10001', '10001', '10101', '10010', '01101'), 'R': ('11110', '10001', '10001', '11110', '10100', '10010', '10001'), 'S': ('01111', '10000', '10000', '01110', '00001', '00001', '11110'), 'T': ('11111', '00100', '00100', '00100', '00100', '00100', '00100'), 'U': ('10001', '10001', '10001', '10001', '10001', '10001', '01110'), 'X': ('10001', '10001', '01010', '00100', '01010', '10001', '10001'), 'Y': ('10001', '10001', '01010', '00100', '00100', '00100', '00100'), 'Z': ('11111', '00001', '00010', '00100', '01000', '10000', '11111'), 'a': ('00000', '00000', '01110', '00001', '01111', '10001', '01111'), 'b': ('10000', '10000', '11110', '10001', '10001', '10001', '11110'), 'f': ('00110', '01001', '01000', '11100', '01000', '01000', '01000'), 'g': ('00000', '00000', '01111', '10001', '01111', '00001', '01110'), 'h': ('10000', '10000', '10110', '11001', '10001', '10001', '10001'), 'i': ('00100', '00000', '01100', '00100', '00100', '00100', '01110'), 'j': ('00010', '00000', '00110', '00010', '00010', '10010', '01100'), 'q': ('00000', '00000', '01111', '10001', '01111', '00001', '00001'), 'r': ('00000', '00000', '10110', '11001', '10000', '10000', '10000'), 'v': ('00000', '00000', '10001', '10001', '10001', '01010', '00100'), 'w': ('00000', '00000', '10001', '10001', '10101', '10101', '01010'), 'x': ('00000', '00000', '10001', '01010', '00100', '01010', '10001'), 'y': ('00000', '00000', '10001', '10001', '01111', '00001', '01110'), '/': ('00001', '00010', '00010', '00100', '01000', '01000', '10000'), ',': ('00000', '00000', '00000', '00000', '01100', '01100', '01000'), ':': ('00000', '01100', '01100', '00000', '01100', '01100', '00000'), '(': ('00010', '00100', '01000', '01000', '01000', '00100', '00010'), ')': ('01000', '00100', '00010', '00010', '00010', '00100', '01000'), '_': ('00000', '00000', '00000', '00000', '00000', '00000', '11111')}
+GLYPHS = {
+    '0':   ('01110', '10001', '10011', '10101', '11001', '10001', '01110'),
+    '1':   ('00100', '01100', '00100', '00100', '00100', '00100', '01110'),
+    '2':   ('01110', '10001', '00001', '00010', '00100', '01000', '11111'),
+    '3':   ('11111', '00010', '00100', '00010', '00001', '10001', '01110'),
+    '4':   ('00010', '00110', '01010', '10010', '11111', '00010', '00010'),
+    '5':   ('11111', '10000', '11110', '00001', '00001', '10001', '01110'),
+    '6':   ('00110', '01000', '10000', '11110', '10001', '10001', '01110'),
+    '7':   ('11111', '00001', '00010', '00100', '01000', '01000', '01000'),
+    '8':   ('01110', '10001', '10001', '01110', '10001', '10001', '01110'),
+    '9':   ('01110', '10001', '10001', '01111', '00001', '00010', '01100'),
+    '.':   ('00000', '00000', '00000', '00000', '00000', '01100', '01100'),
+    '-':   ('00000', '00000', '00000', '11111', '00000', '00000', '00000'),
+    '+':   ('00000', '00100', '00100', '11111', '00100', '00100', '00000'),
+    ' ':   ('00000', '00000', '00000', '00000', '00000', '00000', '00000'),
+    'V':   ('10001', '10001', '10001', '10001', '10001', '01010', '00100'),
+    'o':   ('00000', '00000', '01110', '10001', '10001', '10001', '01110'),
+    'l':   ('01100', '00100', '00100', '00100', '00100', '00100', '01110'),
+    't':   ('01000', '01000', '11110', '01000', '01000', '01001', '00110'),
+    's':   ('00000', '00000', '01111', '10000', '01110', '00001', '11110'),
+    'm':   ('00000', '00000', '11010', '10101', '10101', '10101', '10101'),
+    'u':   ('00000', '00000', '10001', '10001', '10001', '10011', '01101'),
+    'n':   ('00000', '00000', '10110', '11001', '10001', '10001', '10001'),
+    'p':   ('00000', '00000', '11110', '10001', '11110', '10000', '10000'),
+    'k':   ('10000', '10000', '10010', '10100', '11000', '10100', '10010'),
+    'M':   ('10001', '11011', '10101', '10101', '10001', '10001', '10001'),
+    'G':   ('01110', '10001', '10000', '10111', '10001', '10001', '01111'),
+    'A':   ('01110', '10001', '10001', '11111', '10001', '10001', '10001'),
+    'W':   ('10001', '10001', '10001', '10101', '10101', '11011', '10001'),
+    'd':   ('00001', '00001', '01111', '10001', '10001', '10001', '01111'),
+    'B':   ('11110', '10001', '10001', '11110', '10001', '10001', '11110'),
+    'e':   ('00000', '00000', '01110', '10001', '11111', '10000', '01110'),
+    'c':   ('00000', '00000', '01111', '10000', '10000', '10000', '01111'),
+    'H':   ('10001', '10001', '10001', '11111', '10001', '10001', '10001'),
+    'z':   ('00000', '00000', '11111', '00010', '00100', '01000', '11111'),
+    '%':   ('11001', '11010', '00010', '00100', '01000', '01011', '10011'),
+    'C':   ('01110', '10001', '10000', '10000', '10000', '10001', '01110'),
+    'D':   ('11110', '10001', '10001', '10001', '10001', '10001', '11110'),
+    'E':   ('11111', '10000', '10000', '11110', '10000', '10000', '11111'),
+    'F':   ('11111', '10000', '10000', '11110', '10000', '10000', '10000'),
+    'I':   ('01110', '00100', '00100', '00100', '00100', '00100', '01110'),
+    'J':   ('00111', '00010', '00010', '00010', '00010', '10010', '01100'),
+    'K':   ('10001', '10010', '10100', '11000', '10100', '10010', '10001'),
+    'L':   ('10000', '10000', '10000', '10000', '10000', '10000', '11111'),
+    'N':   ('10001', '11001', '10101', '10011', '10001', '10001', '10001'),
+    'O':   ('01110', '10001', '10001', '10001', '10001', '10001', '01110'),
+    'P':   ('11110', '10001', '10001', '11110', '10000', '10000', '10000'),
+    'Q':   ('01110', '10001', '10001', '10001', '10101', '10010', '01101'),
+    'R':   ('11110', '10001', '10001', '11110', '10100', '10010', '10001'),
+    'S':   ('01111', '10000', '10000', '01110', '00001', '00001', '11110'),
+    'T':   ('11111', '00100', '00100', '00100', '00100', '00100', '00100'),
+    'U':   ('10001', '10001', '10001', '10001', '10001', '10001', '01110'),
+    'X':   ('10001', '10001', '01010', '00100', '01010', '10001', '10001'),
+    'Y':   ('10001', '10001', '01010', '00100', '00100', '00100', '00100'),
+    'Z':   ('11111', '00001', '00010', '00100', '01000', '10000', '11111'),
+    'a':   ('00000', '00000', '01110', '00001', '01111', '10001', '01111'),
+    'b':   ('10000', '10000', '11110', '10001', '10001', '10001', '11110'),
+    'f':   ('00110', '01001', '01000', '11100', '01000', '01000', '01000'),
+    'g':   ('00000', '00000', '01111', '10001', '01111', '00001', '01110'),
+    'h':   ('10000', '10000', '10110', '11001', '10001', '10001', '10001'),
+    'i':   ('00100', '00000', '01100', '00100', '00100', '00100', '01110'),
+    'j':   ('00010', '00000', '00110', '00010', '00010', '10010', '01100'),
+    'q':   ('00000', '00000', '01111', '10001', '01111', '00001', '00001'),
+    'r':   ('00000', '00000', '10110', '11001', '10000', '10000', '10000'),
+    'v':   ('00000', '00000', '10001', '10001', '10001', '01010', '00100'),
+    'w':   ('00000', '00000', '10001', '10001', '10101', '10101', '01010'),
+    'x':   ('00000', '00000', '10001', '01010', '00100', '01010', '10001'),
+    'y':   ('00000', '00000', '10001', '10001', '01111', '00001', '01110'),
+    '/':   ('00001', '00010', '00010', '00100', '01000', '01000', '10000'),
+    ',':   ('00000', '00000', '00000', '00000', '01100', '01100', '01000'),
+    ':':   ('00000', '01100', '01100', '00000', '01100', '01100', '00000'),
+    '(':   ('00010', '00100', '01000', '01000', '01000', '00100', '00010'),
+    ')':   ('01000', '00100', '00010', '00010', '00010', '00100', '01000'),
+    '_':   ('00000', '00000', '00000', '00000', '00000', '00000', '11111'),
+}
 
 
 def draw_text(put, text, x, y, rgb, scale=1):
@@ -957,10 +1135,20 @@ class PlotView(object):
         for wave in waves:
             points = wave.points()
             if len(points) > 1:
-                spans.append((points[0][0], points[-1][0]))
-                steps.append(abs(wave.number("XINCR", 1.0)) or 1.0)
-        self.full_first = min(a for a, _b in spans) if spans else 0.0
-        last = max(b for _a, b in spans) if spans else 1.0
+                step = abs(wave.number("XINCR", 1.0)) or 1.0
+                spans.append((points[0][0], points[-1][0], step))
+                steps.append(step)
+        self.full_first = min(a for a, _b, _s in spans) if spans else 0.0
+        # A record of N samples covers N intervals, not N-1. The last
+        # sample is the START of the final interval, so the time the
+        # record covers runs one whole step past it.
+        #
+        # Left out, this reported a 500 point record at 10 us a sample
+        # as 499 us a division: 499 gaps between 500 points, divided by
+        # ten. The instrument says 500 us, and the instrument is right -
+        # the number under the graticule has to be one somebody could
+        # dial up on the scope, and 499 is not.
+        last = (max(b + s for _a, b, s in spans) if spans else 1.0)
         self.full_span = max(1e-15, last - self.full_first)
         self.step = min(steps) if steps else 1.0
         # The trace the readings describe: with several on the graticule
@@ -1014,6 +1202,26 @@ class PlotView(object):
         if was_whole:
             self.first = self.full_first
             self.span = self.full_span
+        return self.clamp()
+
+    def to_scope(self, wave):
+        """Show what the instrument's own screen shows, centred.
+
+        A TDS draws POINTS_PER_DIV points to a division and no more, so
+        a record longer than DIVS_X * POINTS_PER_DIV covers more time
+        than the screen: the instrument shows the middle of it at its
+        own timebase and the rest is reached by panning. A fresh capture
+        is presented the same way - the central scope-screen window
+        rather than the whole record squeezed onto ten divisions - so
+        what the app first shows matches what was on the glass. A record
+        no longer than the screen fills the graticule, which comes to the
+        same thing. Only the horizontal window is set; the vertical scale
+        is left as it was.
+        """
+        span = wave.instrument_seconds_per_div * DIVS_X
+        self.span = min(self.full_span,
+                        max(self.MIN_POINTS * self.step, span))
+        self.first = self.full_first + (self.full_span - self.span) / 2.0
         return self.clamp()
 
     def fractions(self):
@@ -1199,21 +1407,47 @@ class PlotView(object):
                 break
         return rung
 
+    #: What one drag of the record strip moves the reading by. The
+    #: knobs on the instrument step 1-2-5 and so does zooming here, but
+    #: the strip is this program's own window onto a record that has
+    #: already been captured - not a timebase anybody has to dial up -
+    #: so it moves in whole microseconds a division instead. 200, 500,
+    #: 1 m was too coarse to put the window where it was wanted.
+    DRAG_STEP = 1e-6
+
     def stretch_to(self, moved, held, hold="first"):
         """Resize the window to span these two moments.
 
         For dragging an edge of the strip above the plot: `moved` is
         where the edge has been taken to, `held` is the other end, and
-        `hold` says which of them the answer has to keep. The span
-        still lands on the 1-2-5 ladder the way every other way of
-        changing it does - the reading under the graticule has to be a
-        number somebody could dial up on the instrument - so the edge
-        being dragged settles onto a rung and the other one stays put.
+        `hold` says which of them the answer has to keep.
+
+        The reading settles on a whole number of microseconds a
+        division rather than on the 1-2-5 ladder - see DRAG_STEP. A
+        record finer than that keeps the ladder, because rounding a
+        1 ns/div record to the nearest microsecond would leave nothing
+        to drag to.
+
+        Both roundings go up, and a span rounded up past the end of the
+        record used to be put back inside it by clamp() - which keeps
+        the span and moves the window, so the end nobody was dragging
+        moved. On the ladder that was not a small movement: three
+        quarters of a record rounds up to a rung whose ten divisions
+        cover the whole of it, so one event took the far edge to the
+        far end. The rounding therefore stops at the room there
+        actually is on the held side.
         """
         lo, hi = min(moved, held), max(moved, held)
         want = max(self.MIN_POINTS * self.step, hi - lo)
-        self.span = min(self.full_span,
-                        self.snap(want / float(DIVS_X), want) * DIVS_X)
+        per = want / float(DIVS_X)
+        if per >= self.DRAG_STEP:
+            per = round(per / self.DRAG_STEP) * self.DRAG_STEP
+        else:
+            per = self.snap(per, want)
+        room = (hi - self.full_first if hold == "last"
+                else self.full_first + self.full_span - lo)
+        self.span = max(self.MIN_POINTS * self.step,
+                        min(self.full_span, room, per * DIVS_X))
         self.first = lo if hold == "first" else hi - self.span
         return self.clamp()
 
@@ -2143,16 +2377,25 @@ def plot_png(waves, width=DEFAULT_PNG_WIDTH, height=None,
             reach = max(1.0, max(abs(min(levels)), abs(max(levels))))
             columns = max(2, int(wide))
             middle, span = band / 2.0, band / 2.0 - 3
+            # Joined the way the window's own strip is (draw_over), not a
+            # fill per column. A record with fewer samples than the strip
+            # is wide gives most columns a single sample, and filling each
+            # column on its own then left the trace as a scatter of
+            # single-pixel specks - a row of broken dashes rather than a
+            # line. Stroking between consecutive high and low points draws
+            # the one continuous envelope the window shows.
+            pts = []
             for column in range(columns):
                 i = int(len(levels) * column / float(columns))
                 j = max(i + 1,
                         int(len(levels) * (column + 1) / float(columns)))
                 chunk = levels[i:j]
                 x = a + wide * (column + 0.5) / columns
-                lo = middle - (min(chunk) / reach) * span
-                hi = middle - (max(chunk) / reach) * span
-                for y in range(int(hi), int(lo) + 1):
-                    put(x, y, trace)
+                for level in (max(chunk), min(chunk)):
+                    pts.append((x, middle - (level / reach) * span))
+            for k in range(1, len(pts)):
+                stroke(pts[k - 1][0], pts[k - 1][1],
+                       pts[k][0], pts[k][1], trace)
         start, end = view.fractions()
         x0, x1 = start * width, end * width
         if x1 - x0 < 3:                      # always visible
@@ -2200,6 +2443,142 @@ def plot_png(waves, width=DEFAULT_PNG_WIDTH, height=None,
     return encode_png(buf, width, height)
 
 
+def _svg_text(text):
+    """Escape a string for an SVG text node."""
+    return (str(text).replace("&", "&amp;").replace("<", "&lt;")
+            .replace(">", "&gt;"))
+
+
+def plot_svg(waves, width=DEFAULT_PNG_WIDTH, height=None,
+             colours=None, caption="", view=None, traces=None,
+             strip=False):
+    """The traces as a scalable SVG, drawn to match plot_png.
+
+    A vector copy of the PNG plot, sharing the same graticule(),
+    plot_geometry() and view so the two cannot drift apart. Only what a
+    saved waveform needs is drawn - graticule, traces, channel markers,
+    the per-division reading and the record strip - not the mask
+    editor's shapes or verdict, which the waveform tab never asks a
+    picture to carry.
+    """
+    waves = [waves] if hasattr(waves, "levels") else [w for w in waves if w]
+    if height is None:
+        height = png_height_for(width)
+    if view is None:
+        view = PlotView(waves)
+    pick = scheme(colours)
+
+    def col(value, fallback=(0, 0, 0)):
+        r, g, b = rgb(value, fallback)
+        return "#%02x%02x%02x" % (r, g, b)
+
+    band = max(24, int(height * 0.09)) if (strip and waves) else 0
+    left, top, right, bottom = plot_frame(width, height, 34, band=band)
+    label = col(pick["label"], (154, 165, 177))
+    out = ['<svg xmlns="http://www.w3.org/2000/svg" width="%d" height="%d" '
+           'viewBox="0 0 %d %d">' % (width, height, width, height),
+           '<rect width="%d" height="%d" fill="%s"/>'
+           % (width, height, col(pick["background"], (18, 22, 28)))]
+
+    for element, x0, y0, x1, y1, thick in graticule(width, height, 34,
+                                                     band=band):
+        out.append('<line x1="%.1f" y1="%.1f" x2="%.1f" y2="%.1f" '
+                   'stroke="%s" stroke-width="%d"/>'
+                   % (x0, y0, x1, y1, col(pick[element], (57, 66, 78)),
+                      thick))
+
+    if band:
+        whole = max(1e-15, view.full_span)
+        for wave in waves:
+            levels = wave.levels()
+            spots = wave.points()
+            if len(levels) < 2 or len(spots) < 2:
+                continue
+            tr = col((traces or {}).get(wave.source) or pick["trace"],
+                     (255, 214, 64))
+            a = (spots[0][0] - view.full_first) / whole * width
+            b = (spots[-1][0] - view.full_first) / whole * width
+            wide = max(2.0, b - a)
+            reach = max(1.0, max(abs(min(levels)), abs(max(levels))))
+            columns = max(2, int(wide))
+            middle, span = band / 2.0, band / 2.0 - 3
+            pts = []
+            for column in range(columns):
+                i = int(len(levels) * column / float(columns))
+                j = max(i + 1,
+                        int(len(levels) * (column + 1) / float(columns)))
+                chunk = levels[i:j]
+                x = a + wide * (column + 0.5) / columns
+                for level in (max(chunk), min(chunk)):
+                    pts.append("%.1f,%.1f"
+                               % (x, middle - (level / reach) * span))
+            out.append('<polyline points="%s" fill="none" stroke="%s" '
+                       'stroke-width="1"/>' % (" ".join(pts), tr))
+        s0, s1 = view.fractions()
+        x0, x1 = s0 * width, s1 * width
+        if x1 - x0 < 3:
+            x0, x1 = (x0 + x1) / 2.0 - 1.5, (x0 + x1) / 2.0 + 1.5
+        out.append('<rect x="%.1f" y="0" width="%.1f" height="%d" '
+                   'fill="none" stroke="%s" stroke-width="2"/>'
+                   % (x0, max(0.0, x1 - x0), int(band), label))
+        out.append('<line x1="0" y1="%d" x2="%d" y2="%d" stroke="%s" '
+                   'stroke-width="1"/>'
+                   % (band + 2, width, band + 2,
+                      col(pick["graticule"], (52, 62, 72))))
+
+    placed = []
+    for wave in waves:
+        tr = col((traces or {}).get(wave.source) or pick["trace"],
+                 (255, 214, 64))
+        xy, _bounds = plot_geometry(wave, width, height, 34, view,
+                                    band=band)
+        if len(xy) > 1:
+            pts = " ".join("%.1f,%.1f" % (x, y) for x, y in xy)
+            out.append('<polyline points="%s" fill="none" stroke="%s" '
+                       'stroke-width="1.5"/>' % (pts, tr))
+        name = str(wave.label or wave.source or "")[:8]
+        if name:
+            mark_h, point = 13.0, 6.0
+            mark_w = text_width(name) + 8 + point
+            h2 = mark_h / 2.0
+            zero = view.y_of_volts(wave, 0.0, top, bottom)
+            zero = min(bottom - h2, max(top + h2, zero))
+            x0 = marker_place(placed, left, zero, mark_w, int(mark_h), 1,
+                              right=right, room=width)
+            placed.append((x0, zero, x0 + mark_w))
+            if marker_facing(x0, right) >= 0:
+                poly = [(x0, zero - h2), (x0 + mark_w - point, zero - h2),
+                        (x0 + mark_w, zero),
+                        (x0 + mark_w - point, zero + h2), (x0, zero + h2)]
+                text_x = x0 + 4
+            else:
+                poly = [(x0 + mark_w, zero - h2), (x0 + point, zero - h2),
+                        (x0, zero), (x0 + point, zero + h2),
+                        (x0 + mark_w, zero + h2)]
+                text_x = x0 + point + 4
+            out.append('<polygon points="%s" fill="%s"/>'
+                       % (" ".join("%.1f,%.1f" % p for p in poly), tr))
+            out.append('<text x="%.1f" y="%.1f" font-family="monospace" '
+                       'font-size="10" fill="#000000">%s</text>'
+                       % (text_x, zero + 3.5, _svg_text(name)))
+
+    if caption:
+        out.append('<text x="%.1f" y="%.1f" font-family="monospace" '
+                   'font-size="10" fill="%s" text-anchor="middle">%s</text>'
+                   % ((left + right) / 2.0, bottom + 14, label,
+                      _svg_text(caption)))
+    first = waves[0] if waves else None
+    wfid = (first.wfid or first.source) if first else ""
+    if wfid:
+        out.append('<text x="6" y="%.1f" font-family="monospace" '
+                   'font-size="10" fill="%s">%s</text>'
+                   % (band + 14, label,
+                      _svg_text(wfid[:int(width / 6) - 2])))
+
+    out.append("</svg>")
+    return ("\n".join(out) + "\n").encode("utf-8")
+
+
 # --------------------------------------------------- the instrument's own
 # colours
 
@@ -2232,13 +2611,15 @@ def hls_to_hex(hue, light, sat):
     degree offset above survived the first check. See HUE_ORIGIN.
     """
     h = ((float(hue) - HUE_ORIGIN) % 360.0) / 360.0
-    l = min(1.0, max(0.0, float(light) / 100.0))
+    # `lum` rather than the conventional `l`: lowercase L and the digit
+    # one are the same shape in most of the fonts this gets read in.
+    lum = min(1.0, max(0.0, float(light) / 100.0))
     s = min(1.0, max(0.0, float(sat) / 100.0))
     if s == 0:
-        r = g = b = l
+        r = g = b = lum
     else:
-        q = l * (1 + s) if l < 0.5 else l + s - l * s
-        p = 2 * l - q
+        q = lum * (1 + s) if lum < 0.5 else lum + s - lum * s
+        p = 2 * lum - q
 
         def channel(t):
             t = t % 1.0
@@ -2344,6 +2725,9 @@ class TdsWfm(object):
         # Asked for once and remembered, including the answer "this
         # instrument has no colours" - see display_colours().
         self._colours = None
+        # Set by whoever owns the event queue, to empty it after a
+        # question that answers itself with a refusal. See exists().
+        self.drain = None
 
     def q(self, cmd):
         return self._payload(self.inst.query(cmd)).strip()
@@ -2740,6 +3124,14 @@ class TdsWfm(object):
         when the answer may well be no. Left at the session timeout, a
         single call outlasts the whole allocation it is meant to be
         polling.
+
+        And the "no" arrives as events: 2241, "waveform requested is
+        invalid", and the 420 that follows a query the instrument chose
+        not to answer. They are this question's answer and not a fault,
+        so they are cleared here rather than left for whoever drains the
+        queue next to report as something that went wrong. Asking four
+        references what they hold, on an instrument where three are
+        empty, used to leave half a dozen of them behind.
         """
         was = self.inst.timeout
         self.inst.timeout = self.FIELD_TIMEOUT_MS
@@ -2756,6 +3148,11 @@ class TdsWfm(object):
             return False
         finally:
             self.inst.timeout = was
+            if self.drain is not None:
+                try:
+                    self.drain()
+                except Exception:
+                    pass
 
     def select(self, name, on=True):
         """Show or hide a source on the instrument's screen.

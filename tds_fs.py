@@ -8,7 +8,6 @@ this firmware family actually implements rather than a guess from a manual:
     FILESYSTEM:CWD "hd0:"            set working directory
     FILESYSTEM:CWD?                 query it (reply is quoted)
     FILESYSTEM:DIR?                 list cwd - takes NO argument
-    FILESYSTEM:FREESPACE?           bytes free
     :FILESYSTEM:READF "<path>"      then read raw bytes until EOI
     FILESYSTEM:WRITEFILE "<p>", #0  then raw bytes, EOI on the last one
     :FILESYSTEM:MKDIR "<path>"
@@ -50,14 +49,57 @@ class TdsFs(object):
         self.can_write = True
         self.has_filesystem = True
 
+    #: How long clear() will spend emptying the output queue after the
+    #: device clear, and how long one discarded read may take.
+    DRAIN_BUDGET = 5.0
+    DRAIN_READ = 1.0
+
     def clear(self):
-        """Device clear. Use after any aborted transfer before doing anything
-        else, or the instrument stays stuck mid-block."""
+        """Device clear, then make sure nothing is still queued.
+
+        A device clear on its own does not always empty the output queue.
+        Measured on a TDS 754D: a 640 kB read was interrupted, the
+        session was closed, a new one opened - which device clears - and
+        the first FILESYSTEM:DIR? came back as 4,121 characters of the
+        abandoned transfer, 2,048 NULs and a run of digits, with no event
+        raised. Two more listings after it were the ordinary 25-character
+        reply, so one read was enough to flush it.
+
+        That is worth a few lines here because of what it looks like from
+        above: not an error, but a plausible answer to the wrong
+        question. The same session took two "successful" downloads of a
+        655,360-byte file at 307,240 bytes each.
+
+        So whatever is still waiting is read and thrown away. MAV says
+        whether anything is there without disturbing it, and both the
+        whole drain and each read are bounded - a clear that hangs is
+        worse than a clear that leaves something behind.
+        """
         try:
             self.inst.clear()
             time.sleep(0.5)
         except Exception:
             pass
+        try:
+            was = self.inst.timeout
+        except Exception:
+            return                  # no session left to drain
+        end = time.time() + self.DRAIN_BUDGET
+        try:
+            self.inst.timeout = int(self.DRAIN_READ * 1000)
+            while time.time() < end and self._wait_mav(0.2):
+                try:
+                    self.inst.read_raw()
+                except Exception:
+                    # A read that timed out has still taken some of the
+                    # residue with it. The budget decides whether to go
+                    # round again, so this must not leave the loop.
+                    pass
+        finally:
+            try:
+                self.inst.timeout = was
+            except Exception:
+                pass
 
     def close(self):
         try:
@@ -119,18 +161,6 @@ class TdsFs(object):
     def set_cwd(self, path):
         self.inst.write('FILESYSTEM:CWD "%s"' % path)
 
-    def freespace(self):
-        """Free bytes, or 0 if the instrument will not say.
-
-        An instrument with no disk fitted, or no disk inserted, answers 0
-        or not at all. That is worth reporting as zero rather than raising
-        - it must not be the thing that stops a connection.
-        """
-        try:
-            return int(self.payload(self.inst.query("FILESYSTEM:FREESPACE?")))
-        except Exception:
-            return 0
-
     def dir(self, path=None):
         """List a directory. Note DIR? takes no argument - we cd first."""
         if path is not None:
@@ -152,6 +182,15 @@ class TdsFs(object):
     # inside a second - the big one then streams for twelve, but it starts
     # straight away - so four seconds is well outside the normal range.
     PRINT_START = 4.0
+
+    #: The same ceiling for READFILE, and for the same reason. Measured
+    #: on a TDS 784D: MAV comes up 0.05 to 0.21 s after the command,
+    #: whether the file is 78 bytes or 214 KB, so four seconds is well
+    #: outside the normal case. It replaced a flat one-second sleep,
+    #: which cost most of a whole-disk backup's per-file time - 114
+    #: files is nearly two minutes of waiting for an instrument that
+    #: was ready in a tenth of a second.
+    READ_START = 4.0
 
     # A name that cannot be on any disk: illegal under 8.3, and unlikely
     # in any case. Used to ask a question, never to read anything.
@@ -178,6 +217,20 @@ class TdsFs(object):
         except Exception:
             return False
         time.sleep(0.3)
+        # Anything the instrument has to say is read and thrown away
+        # before the next command goes out. This is asked with queries
+        # as well as commands - FILESYSTEM:CWD? is one of them - and a
+        # query the firmware understood leaves an answer waiting. Left
+        # there, the drain below interrupts it and the instrument logs
+        # 410, "Query INTERRUPTED": an event this program caused by
+        # asking a question and never listening. Serial-polled rather
+        # than read blind, so an instrument with nothing to say costs
+        # no timeout.
+        if self._wait_mav(0.5):
+            try:
+                self.inst.read_raw()
+            except Exception:
+                pass
         return self.UNDEFINED_HEADER not in self.errors()
 
     def apply_known(self, entry):
@@ -204,7 +257,8 @@ class TdsFs(object):
         """
         if self.has_command('FILESYSTEM:READFILE "%s"' % self.NO_SUCH_FILE):
             self.reader = "READFILE"
-        elif self.has_command('FILESYSTEM:PRINT "%s",GPIB' % self.NO_SUCH_FILE):
+        elif self.has_command('FILESYSTEM:PRINT "%s",GPIB'
+                              % self.NO_SUCH_FILE):
             self.reader = "PRINT"
         else:
             self.reader = None
@@ -233,9 +287,20 @@ class TdsFs(object):
         try:
             if self.reader == "PRINT":
                 return self._read_by_print(path)
-            settle = 1.0 if "HD0:" in path.upper() else 3.0
             self.inst.write(':FILESYSTEM:READF "%s"' % path)
-            time.sleep(settle)
+            if not self._wait_mav(self.READ_START):
+                # Swallowed, the same way PRINT swallows the command
+                # after a large transfer - and READFILE does it too.
+                # Measured on a TDS 784D: a 1.2 KB read straight after a
+                # 214 KB one was swallowed 3 times out of 3, silently,
+                # with no event raised. The attempt after that has
+                # always worked, 8 of 8 across two runs, so this is one
+                # retry and one only, for the same reason the print path
+                # stops at one.
+                self.inst.write(':FILESYSTEM:READF "%s"' % path)
+                if not self._wait_mav(self.READ_START):
+                    raise IOError("The instrument did not answer a read "
+                                  "of %s." % path)
             return bytes(self.inst.read_raw())
         finally:
             self.inst.timeout = old
@@ -292,6 +357,13 @@ class TdsFs(object):
                       "instrument's filesystem out of action until it is "
                       "power cycled)." % (path, last))
 
+    #: Bytes per second a WRITEFILE is budgeted at. Measured on a TDS
+    #: 784D at 2842, 2957, 2973, 2974 and 2992 B/s for payloads of 4 kB
+    #: to 256 kB - flat, so a payload's time is predictable. A third of
+    #: the measured rate is used, because this number sets a ceiling for
+    #: giving up and not a wait.
+    WRITE_RATE = 1000.0
+
     def write(self, path, data):
         """Write bytes to a file on the instrument.
 
@@ -301,13 +373,28 @@ class TdsFs(object):
         Header and payload go out as one transfer so that EOI lands on the
         final data byte, which is what terminates the indefinite-length #0
         block. Splitting them would assert EOI after the header.
+
+        The timeout is sized to the payload for the duration of the
+        write. It has to be: this instrument takes about 2.9 kB/s, so the
+        45-second session default is a ceiling of roughly 130 kB, and
+        every file above that was being cut off part way through an
+        indefinite-length block - which leaves the instrument waiting for
+        bytes that will never arrive, so the next command written to it
+        times out as well, and the rest of a folder upload fails behind
+        the first big file in it.
         """
         if not self.can_write:
             raise IOError("This instrument's firmware has no "
                           "FILESYSTEM:WRITEFILE command, so files cannot "
                           "be uploaded to it over GPIB.")
         header = ('FILESYSTEM:WRITEFILE "%s", #0' % path).encode("ascii")
-        self.inst.write_raw(header + data)
+        old = self.inst.timeout
+        self.inst.timeout = max(old, int(len(data) * 1000.0 / self.WRITE_RATE)
+                                + 30000)
+        try:
+            self.inst.write_raw(header + data)
+        finally:
+            self.inst.timeout = old
 
     def wait_done(self, timeout=30.0):
         """Block until the instrument has finished the last operation.
@@ -358,6 +445,39 @@ class TdsFs(object):
         caller is responsible for asking first - the instrument will not.
         """
         self.inst.write(':FILESYSTEM:RMDIR "%s"' % path)
+
+    def format_drive(self, drive):
+        """Format a whole volume. Everything on it goes.
+
+        `FILESystem:FORMat <drive name>`, out of 070-9876-00: "Formats a
+        named drive", the argument a quoted string. There is no query
+        form, no progress and no confirmation - the instrument does it
+        and says nothing, so the caller asks first and checks afterwards
+        by listing what is left.
+
+        On the hard disk that includes the Java runtime and every
+        shipped application. They load back over GPIB, but until they do
+        the instrument runs no applications at all.
+        """
+        self.inst.write(':FILESYSTEM:FORMAT "%s"' % drive)
+
+    def copy(self, source, dest):
+        """Copy on the instrument, without the bytes crossing GPIB.
+
+        387 kB/s against 3.0 kB/s for the same bytes through WRITEFILE,
+        measured on a TDS 784D - 129 times faster - so anything already on
+        the instrument should be duplicated with this and never re-sent.
+
+        Takes a file to a full destination path, a file to an existing
+        directory (copies into it), or `<dir>/*.*` to an existing directory.
+        It does NOT take a directory as the source: the manual's own
+        example, COPY "YOURDIR","hd0:/MYDIR", raises event 257 on v7.4e and
+        creates nothing. Folder copies have to be walked - see Worker.copy.
+
+        Replacing an existing destination is governed by OVERWRITE, the
+        same as WRITEFILE.
+        """
+        self.inst.write(':FILESYSTEM:COPY "%s","%s"' % (source, dest))
 
     def set_overwrite(self, state):
         """ON allows WRITEFILE to replace an existing file."""

@@ -51,6 +51,42 @@ MAGIC = "TDSMASK"
 VERSION = 1
 SUFFIX = ".MSK"
 
+#: A saved limit template. The same file a mask is written to, because a
+#: limits drawing *is* a Mask - held in percent of the graticule, so it
+#: is the same template at any timebase, which is the whole reason
+#: either is worth saving.
+#:
+#: A different extension all the same, and a marker inside, because the
+#: two mean opposite things: a mask says where the signal may NOT go and
+#: a limit envelope says where it MAY. Loading one as the other would
+#: invert it and pass everything it was drawn to catch, without a word.
+#: The marker is a comment line, which from_text already ignores, so a
+#: .LIM file reads through the ordinary reader with nothing added to it.
+LIMIT_SUFFIX = ".LIM"
+LIMIT_MARK = "# KIND LIMIT-ENVELOPE"
+#: Tektronix's own limit templates. Read, never written: what this
+#: program saves is its own format, which keeps the shape in percent
+#: rather than in one instrument's counts.
+ENV_SUFFIX = ".ENV"
+LIMIT_SUFFIXES = (LIMIT_SUFFIX, ENV_SUFFIX)
+
+
+def is_limit_file(data):
+    """Was this written as a limit template rather than as a mask?"""
+    if isinstance(data, bytes):
+        data = data.decode("ascii", "replace")
+    for line in data.replace("\r\n", "\n").split("\n")[:8]:
+        if line.strip().upper() == LIMIT_MARK:
+            return True
+    return False
+
+
+def save_limit_bytes(mask):
+    """The drawing as a limit template file: a mask file, marked."""
+    text = mask.to_text()
+    head, sep, rest = text.partition("\r\n")
+    return (head + sep + LIMIT_MARK + sep + rest).encode("ascii", "replace")
+
 
 class MaskError(ValueError):
     """A mask that cannot be represented, with the reason in words."""
@@ -844,6 +880,158 @@ def percent_to_counts(percent, divisions=ENV_DIVS_Y):
     """
     return int(round((percent - 50.0) / 100.0 * divisions
                      * ENV_COUNTS_PER_DIV))
+
+
+def counts_to_percent(counts, divisions=ENV_DIVS_Y):
+    """The instrument's sixteen-bit counts back as percent up the screen.
+
+    The exact inverse of percent_to_counts, so a template written by this
+    program and read back gives the same shape.
+    """
+    return (counts / (float(divisions) * ENV_COUNTS_PER_DIV)) * 100.0 + 50.0
+
+
+ENV_MARK = ":WFMPRE"
+
+
+def looks_like_env(data):
+    """Is this a Tektronix .ENV limit template?
+
+    Plain SCPI with a PT_FMT of ENV and a CURVE. The REM lines the
+    shipped files start with are Tektronix's, not required, so they are
+    not what this looks for.
+    """
+    if isinstance(data, bytes):
+        data = data.decode("ascii", "replace")
+    upper = data.upper()
+    return "PT_FMT ENV" in upper and ":CURVE" in upper
+
+
+def env_fields(text):
+    """The WFMPRE settings out of a .ENV, as a flat dict of strings.
+
+    Both the plain `:WFMPRE:` lines and the `:WFMPRE:REF1:` ones are
+    read, later winning, which is how the shipped files repeat
+    themselves. The reference name is dropped: what is wanted is the
+    scaling, not which slot Tektronix happened to aim it at.
+    """
+    out = {}
+    for line in text.replace("\r\n", "\n").split("\n"):
+        line = line.strip()
+        if not line.upper().startswith(ENV_MARK):
+            continue
+        body = line.split(":", 2)[2] if line.count(":") >= 2 else ""
+        # ":WFMPRE:REF1:NR_PT 1000;..." - step over the slot name.
+        if body[:3].upper() == "REF" and ":" in body:
+            body = body.split(":", 1)[1]
+        for one in body.split(";"):
+            bits = one.strip().split(None, 1)
+            if len(bits) == 2:
+                out[bits[0].upper()] = bits[1].strip().strip('"')
+    return out
+
+
+def env_pairs(text):
+    """The CURVE of a .ENV as a list of (lower, upper) integer counts."""
+    for line in text.replace("\r\n", "\n").split("\n"):
+        if not line.strip().upper().startswith(":CURVE"):
+            continue
+        body = line.split(None, 1)[1] if " " in line.strip() else ""
+        nums = []
+        for one in body.split(","):
+            one = one.strip()
+            if one:
+                nums.append(int(float(one)))
+        return [(nums[i], nums[i + 1]) for i in range(0, len(nums) - 1, 2)]
+    return []
+
+
+def from_envelope(data, name=""):
+    """A Tektronix .ENV limit template as a Mask of allowed area.
+
+    Tektronix's own limit files are plain SCPI - the same shape this
+    program's envelope_scpi writes - so reading one is that in reverse:
+    the CURVE is pairs of sixteen-bit counts, a lower and an upper for
+    each column, and YOFF biases both.
+
+    A pair at the rails means "no limit in this column", so the columns
+    that do have limits are taken in contiguous runs and each run
+    becomes one polygon: left to right along the bottom, right to left
+    along the top. A file with one run gives one segment, which is the
+    ordinary case; a file that leaves a gap in the middle gives two.
+
+    The result is an *allowed area*, which is what a limit template is
+    and what the limits tab draws, not a keep-out mask. Saved through
+    save_limit_bytes it keeps that distinction.
+    """
+    if isinstance(data, bytes):
+        data = data.decode("ascii", "replace")
+    pairs = env_pairs(data)
+    if not pairs:
+        raise MaskError("this file has no CURVE, so there is no template "
+                        "in it to read.")
+    fields = env_fields(data)
+    try:
+        yoff = int(float(fields.get("YOFF") or 0))
+    except ValueError:
+        yoff = 0
+    # An eight-bit file would carry YOFF and YMULT 256 times the
+    # sixteen-bit pair; the curve itself says which, since a genuine
+    # eight-bit read cannot reach past 127.
+    runs, current = [], []
+    for lo, hi in pairs:
+        if lo <= -ENV_NO_LIMIT or hi >= ENV_NO_LIMIT:
+            if current:
+                runs.append(current)
+                current = []
+            continue
+        current.append((counts_to_percent(lo - yoff),
+                        counts_to_percent(hi - yoff)))
+    if current:
+        runs.append(current)
+    if not runs:
+        raise MaskError("every column in this template is open, so it "
+                        "does not limit anything.")
+    # Where each run sits across the screen. The columns are evenly
+    # spaced whatever the record length, so a run's position is its
+    # index range as a fraction of the whole.
+    wide = float(len(pairs))
+    segments, at = [], 0
+    for run in runs[:SEGMENTS]:
+        # Find where this run started: walk the same test again rather
+        # than carrying an index through the loop above.
+        while at < len(pairs) and (pairs[at][0] <= -ENV_NO_LIMIT
+                                   or pairs[at][1] >= ENV_NO_LIMIT):
+            at += 1
+        start = at
+        at += len(run)
+        xs = [(start + i + 0.5) / wide * 100.0 for i in range(len(run))]
+        floor = [(x, lo) for x, (lo, _hi) in zip(xs, run)]
+        roof = [(x, hi) for x, (_lo, hi) in zip(xs, run)]
+        # Each edge is thinned away from the band, not across it: the
+        # floor down and the roof up. Thinned as one ring instead, a
+        # corner is cut inwards and the template then fails the signal
+        # it was drawn for - see _outward, which is where that was
+        # measured. Half the budget each, because the two make one
+        # polygon and the instrument counts its points together.
+        half = POINTS_PER_SEGMENT // 2
+        floor = thinned(floor, half, outward=-1)
+        roof = thinned(roof, half, outward=1)
+        roof.reverse()
+        segments.append(floor + roof)
+    return Mask(name=name, segments=segments)
+
+
+def load_limit(data, name=""):
+    """A saved limit template, in either format the program can read.
+
+    This program's own `.LIM`, or one of Tektronix's `.ENV` files. One
+    entry point so the library listing and the Open button cannot
+    disagree about which formats exist.
+    """
+    if looks_like_env(data):
+        return from_envelope(data, name=name)
+    return load(data, name=name)
 
 
 def _spans_at(seg, x):

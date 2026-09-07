@@ -249,6 +249,7 @@ def icon_for(tk, name, is_dir=False):
     _cache[key] = image
     return image
 
+
 def globe(tk):
     """A small world, for the language button.
 

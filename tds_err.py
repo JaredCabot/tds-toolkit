@@ -39,6 +39,56 @@ LIMIT = 2000
 CLEAR = "ERRLOG CLEAR"
 
 
+#: What a memory fault calls itself in the log. The instrument's own
+#: sub-test names, out of the firmware symbol table rather than guessed
+#: at: the acquisition ones carry a lettered variant per channel
+#: (digAcqMemAddrDiagA and so on), which is why these match anywhere in
+#: the line rather than whole.
+#:
+#: nvLibrariansDiag belongs here as much as the arrays do - it is the
+#: NVRAM's own checksum walk, and a TDS640A that had been failing its
+#: power-on diagnostics for years names exactly that.
+MEMORY_TESTS = (
+    "digAcqMemAddrDiag", "digAcqMemDataDiag", "digAcqMemPatDiag",
+    "digAtSpeedAcqMemDiag",
+    "dsyRastModeV0Walk", "dsyRastModeV1Walk",
+    "dsyDiagRasRegMem", "dsyDiagPPRegMem",
+    "nvRamDiag", "nvLibrariansDiag",
+)
+
+
+def names_memory(line):
+    """Whether one entry names a memory test at all."""
+    low = (line or "").lower()
+    return any(name.lower() in low for name in MEMORY_TESTS)
+
+
+def severity(line):
+    """The ERROR or WARNING an entry carries, without its colon.
+
+    The first such word, not any of them: the severity follows the
+    timestamp and comes before the text, and the text can contain the
+    word too. "WARNING: ... read error: 5" is a warning.
+    """
+    for word in (line or "").split():
+        if word.upper() in ("ERROR:", "WARNING:", "INFO:"):
+            return word.upper().rstrip(":")
+    return ""
+
+
+def memory_faults(lines):
+    """The entries that are a memory array failing.
+
+    Naming a memory test is not enough. The first line in a
+    freshly-initialised log reads "WARNING: 600 error log initialized,
+    nvRamDiag error log re-initialized", which names one and is the
+    instrument saying it started keeping records - counting that as a
+    fault would report a healthy instrument as having a bad NVRAM.
+    """
+    return [ln for ln in lines
+            if severity(ln) == "ERROR" and names_memory(ln)]
+
+
 def unquote(text):
     """SCPI string delimiters off, everything else left alone."""
     text = (text or "").strip()

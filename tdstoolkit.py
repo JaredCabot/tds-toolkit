@@ -2,7 +2,7 @@
 tdstoolkit.py - a file explorer for the instrument's disk, over GPIB.
 
 tds_fs.py already is the filesystem: dir, read, write, mkdir, delete, cwd,
-freespace, overwrite, and the event-queue drain. This is a front end over it.
+overwrite, and the event-queue drain. This is a front end over it.
 
 Four design points, each of them a lesson from this project rather than a
 preference:
@@ -36,6 +36,7 @@ Usage:
 import ast
 import base64
 import copy
+import hashlib
 import json
 import os
 import queue
@@ -43,6 +44,7 @@ import re
 import shutil
 import struct
 import sys
+import tempfile
 import threading
 import time
 import traceback
@@ -50,6 +52,9 @@ import traceback
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from tds_fs import TdsFs, DEFAULT_ADDR
 import tds_err
+import tds_bak
+import tds_cal
+import tds_fw
 import tds_msk
 import tds_scr
 import tds_set
@@ -58,7 +63,7 @@ import winicons
 import i18n
 from i18n import gettext as _
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 __author__ = "Jared Cabot"
 __email__ = "jetstreamtechnology@protonmail.com"
 __licence__ = "MIT"
@@ -138,6 +143,47 @@ def known_instrument(idn):
         if want == "*" or want.upper() in firmware.upper():
             return row
     return None
+
+
+#: What the System tab's hardcopy and RS-232 boxes offer. One table
+#: rather than lists inline in the widget loops, because the same
+#: spellings are needed twice: to build the comboboxes, and to expand a
+#: reply that came back in Tektronix's short form into the entry it
+#: names. Without the second use a 680B answering NON leaves the Parity
+#: box reading NON, which is not one of the choices and looks truncated.
+#: The self test's areas, and what each one is actually testing.
+#:
+#: ALL is the only argument any of them takes. Measured on a TDS 754D
+#: running v8.0e: DIAg:SELect:<area> with MEMory, FUNCtional or
+#: REGister - the three words the programmer manual's own description
+#: of ALL implies must exist - is refused with event 102 on every one
+#: of the five areas. So there is no memory-only run to be had over the
+#: bus, and the area is as targeted as this gets.
+#:
+#: Which is targeted enough for what people come here for. The
+#: acquisition memory tests live in ACQUISITION and the display memory
+#: tests in DISPLAY, so the two are separately runnable already; what
+#: was missing is anything saying so, because "ACQUISITION" does not.
+#: The sub-test names are out of the firmware's own symbol table -
+#: digAcqMemAddrDiag, digAcqMemDataDiag, digAcqMemPatDiag and
+#: digAtSpeedAcqMemDiag with a lettered variant per channel;
+#: dsyRastModeV0Walk and V1Walk, dsyDiagRasRegMem, dsyDiagPPRegMem.
+#: Ordered for somebody chasing a memory fault: everything, then the
+#: two areas that carry a memory array, then the rest. What each one
+#: covers is said in sys_diag_what, where the sentences can be
+#: translated.
+DIAG_AREAS = ("ALL", "ACQUISITION", "DISPLAY", "CPU", "FPANEL")
+
+SYS_CHOICES = {
+    "sysport": ("GPIB", "RS232", "CENTRONICS", "FILE"),
+    "sysformat": ("BMP", "BMPCOLOR", "TIFF", "PCX", "PCXCOLOR",
+                  "EPSIMAGE", "INTERLEAF", "THINKJET", "DESKJET",
+                  "LASERJET", "EPSON"),
+    "syslayout": ("LANDSCAPE", "PORTRAIT"),
+    "sysbaud": ("300", "600", "1200", "2400", "4800", "9600", "19200"),
+    "sysparity": ("NONE", "EVEN", "ODD"),
+    "sysstop": ("1", "2"),
+}
 
 
 def firmware_options(idn):
@@ -288,6 +334,24 @@ def _describe_char(ch):
                 "character code %d" % ord(ch))
 
 
+def suggest_copy_name(name, taken):
+    """An unused 8.3 name for a copy of `name`.
+
+    "Copy of X" does not fit in eight characters, so the stem is trimmed
+    and numbered instead: REPORT.TXT -> REPORT1.TXT, and REPORT1 taken ->
+    REPORT2. Falls back to the original if every number is used, which
+    leaves the dialog to reject it rather than inventing something worse.
+    """
+    stem, dot, ext = name.upper().partition(".")
+    stem = stem.rstrip("0123456789") or stem
+    for n in range(1, 100):
+        tail = str(n)
+        candidate = stem[:8 - len(tail)] + tail + dot + ext
+        if candidate not in taken:
+            return candidate
+    return name.upper()
+
+
 def check_83(name):
     """Explain why `name` is not a valid 8.3 name, or return None if it is.
 
@@ -392,6 +456,30 @@ EXPECTED_EVENTS = {
 PROBE_OPS = ("volumes",)
 BAD_FILENAME = 257
 
+#: Operations during which "there is no disk in the drive" is an answer
+#: rather than a fault, so the event watcher lets it pass.
+#:
+#: Probing volumes names drives that may be empty. Listing a directory
+#: asks the same question of whichever drive is current, and asks it on
+#: purpose: listdir_split reads the event queue itself and hands back
+#: `no_media`, which the file pane reports as "No disk in the drive".
+#: Without this the same empty drive was reported twice - once properly
+#: by the pane, and once by the watcher as an unexpected instrument
+#: fault, which is what starting the program with an empty floppy drive
+#: used to look like.
+#:
+#: Connecting asks whether this firmware has READFILE by naming a file
+#: that is not there. On an instrument whose current volume is an empty
+#: floppy drive - a TDS 754D with no hard disk fitted, which is where
+#: this turned up - the answer is 252 rather than 256, and it is just as
+#: conclusive: the command was understood. Greeting the user with a
+#: warning box about a drive they know is empty is not.
+#:
+#: Only this code, and only in these operations. 257 during a listing
+#: still means something, and neither code is routine during a
+#: transfer.
+NO_MEDIA_OPS = ("volumes", "split", "connect")
+
 # "Missing media": the drive is there and there is no disk in it. Ordinary
 # while probing - an empty floppy drive is not a fault - and worth saying
 # in as many words when it stops a transfer, because "no disk in the
@@ -407,6 +495,19 @@ UNDEFINED_HEADER = 113
 # for a floppy to spin up and seek, short enough that an instrument which is
 # never going to answer says so in seconds rather than in minutes.
 TRANSFER_TIMEOUT = 20.0
+
+# Bytes per second a READFILE is budgeted at, for sizing a read-back to
+# the file rather than giving every file the same twenty seconds.
+# Measured on a TDS 784D at 19.1, 32.5 and 32.7 kB/s for 4 kB, 64 kB and
+# 256 kB; a third of that is used, because this sets a ceiling for giving
+# up rather than a wait.
+READ_RATE = 10000.0
+
+# How many files in a row may fail before a batch upload gives up. One
+# failure is a file; two in a row is the instrument, and every attempt
+# deletes before it writes, so ploughing on empties folders it cannot
+# refill.
+GIVE_UP_AFTER = 2
 
 # Event 250 "Mass storage error - osError" during a recursive delete is the
 # instrument's own doing, not ours. Measured on a freshly imaged card: with
@@ -536,6 +637,10 @@ class Worker(object):
         # Set to the command name once an instrument has been found not to
         # have it, so nothing tries the same transfer three more times.
         self.no_transfers = None
+        # Whether FILESYSTEM:OVERWRITE ON was understood. Until a
+        # connection says otherwise, assume not and delete before
+        # writing, which is the behaviour that works everywhere.
+        self.can_overwrite = False
         # One correction per connection: if the capability table is wrong
         # about an instrument, ask it once and carry on. Asking again on
         # every subsequent failure would just be the probe by other means.
@@ -554,7 +659,14 @@ class Worker(object):
         """Queue a job. `needs_fs` False for work that runs with no
         instrument open - connecting and scanning, which are how you get
         one. Stated by the caller rather than inferred from the label,
-        because a label is a display name and should not carry meaning."""
+        because a label is a display name and should not carry meaning.
+
+        Giving up on one job is not giving up on the next, so the
+        flag is cleared here: it is the one place every job passes
+        through. Cleared as the job is queued rather than as it is
+        taken up, so a cancel pressed after this cannot be
+        swallowed by the clear."""
+        self.cancelled.clear()
         self.jobs.put((label, fn, needs_fs))
 
     def _run(self):
@@ -602,7 +714,9 @@ class Worker(object):
         here = self.context.split(" ")[0]
         if code == MASS_STORAGE and here in DELETE_OPS:
             return True
-        return code in (BAD_FILENAME, NO_MEDIA) and here in PROBE_OPS
+        if code == NO_MEDIA and here in NO_MEDIA_OPS:
+            return True
+        return code == BAD_FILENAME and here in PROBE_OPS
 
     def _watch_events(self):
         """Record every event the instrument raises, whoever drained it.
@@ -664,6 +778,16 @@ class Worker(object):
         # Left alone, self.fs stayed set while wfm, scr and err still
         # wrapped the session closed above, so the "not connected" guard
         # let jobs through to a handle VISA had already invalidated.
+        # Cleared before it is asked anything. An instrument left
+        # part way through a transfer - by this program being killed, or
+        # by anything else that walked away from a read - still has the
+        # rest of that file to hand over, and it hands it over before it
+        # answers anything new. Measured on a TDS 754D: with 640 kB
+        # still queued, *IDN? never came back and connect reported an
+        # empty address, on an instrument sitting there working
+        # perfectly. The clear used to come thirty lines below this,
+        # which is after the question it protects.
+        self.fs.clear()
         try:
             self.fs.hello()
         except Exception:
@@ -678,7 +802,13 @@ class Worker(object):
         self.err = tds_err.TdsErr(self.fs.inst, TdsFs.payload)
         self.addr = addr or getattr(self.fs, "addr", None) or "default"
         self._watch_events()
-        self.fs.clear()
+        # "Is there a waveform in this source?" is answered, for an
+        # empty one, with 2241 and a 420 in the event queue. That is the
+        # answer, so it is cleared where it is provoked rather than
+        # surfacing later as a fault nobody caused. Quietly - the
+        # watcher would report the very events the question exists to
+        # provoke. See TdsWfm.exists.
+        self.wfm.drain = self._quiet_drain
         # Replies with no command header in front of them. A 784D is
         # already set that way; a 640A is not, and every reply arrives as
         # ":FILESYSTEM:FREESPACE 0" instead of "0".
@@ -708,6 +838,15 @@ class Worker(object):
         except Exception:
             pass
         self.fs.set_overwrite("ON")
+        # Whether that was understood decides how an upload replaces a
+        # file, and it matters more than it looks. With OVERWRITE ON a
+        # write lands straight on top of the old file; without it, the
+        # old file has to be deleted first - and DELETE is what exhausts
+        # this family's filesystem. Measured on a TDS 784D: 21
+        # delete-then-write cycles took mass storage down and wanted a
+        # power cycle, where 120 writes of distinct files with no delete
+        # and 60 replacements over one name raised nothing whatsoever.
+        self.can_overwrite = UNDEFINED_HEADER not in self.fs.errors()
         self.fs.set_delwarn("OFF")
         # Which transfer commands this firmware has. Looked up if this
         # instrument is one we already know, asked if it is not - either
@@ -728,8 +867,7 @@ class Worker(object):
             opts = self.fs.opts()
         except Exception:
             opts = ""
-        out = {"idn": idn, "cwd": self.fs.get_cwd(),
-               "free": self.fs.freespace(), "addr": self.addr,
+        out = {"idn": idn, "cwd": self.fs.get_cwd(), "addr": self.addr,
                "options": opts, "masks": "2C" in opts.upper()}
         out.update(can)
         return out
@@ -755,6 +893,13 @@ class Worker(object):
             raise RuntimeError(
                 "VISA could not list the bus: %s\n\nCheck that a VISA "
                 "runtime and your GPIB driver are installed." % exc)
+        # Swept in numerical order, not the order VISA happened to list
+        # them in: each address is split on its runs of digits and those
+        # are compared as numbers, so the sweep climbs GPIB0::1, ::2 ...
+        # ::17 up the bus rather than ::1, ::17, ::2. A known address is
+        # connected to directly and never reaches a scan at all.
+        addresses.sort(key=lambda res: [int(t) if t.isdigit() else t
+                                        for t in re.split(r"(\d+)", res)])
 
         found, current = [], getattr(self, "addr", None)
         for i, res in enumerate(addresses, 1):
@@ -778,8 +923,16 @@ class Worker(object):
             else:
                 inst = None
                 try:
-                    inst = rm.open_resource(res, open_timeout=1500)
-                    inst.timeout = 2000
+                    # Short, because these two decide how long Cancel
+                    # takes to be noticed: the flag is only looked at
+                    # between addresses, so a scan cannot be stopped
+                    # part way through one. Worst case was 3.5 seconds
+                    # of silence per dead address and is now two. A
+                    # scope that is switched on answers *IDN? in
+                    # milliseconds, so this is still three orders of
+                    # magnitude of headroom.
+                    inst = rm.open_resource(res, open_timeout=800)
+                    inst.timeout = 1200
                     idn = (inst.query("*IDN?") or "").strip()
                 except Exception as exc:
                     # Why it did not answer is worth showing. VISA lists
@@ -835,8 +988,7 @@ class Worker(object):
         if path is not None:
             self.fs.set_cwd(path)
         names = real_names(self.fs.dir())
-        return {"cwd": self.fs.get_cwd(), "names": names,
-                "free": self.fs.freespace()}
+        return {"cwd": self.fs.get_cwd(), "names": names}
 
     def listdir_split(self, path):
         """List a directory, split into folders and files.
@@ -871,8 +1023,15 @@ class Worker(object):
         # or a drive with no disk in it.
         codes = self.fs.errors()
         empty_drive = not names and NO_MEDIA in (codes or [])
+        # No free-space reading here. Nothing has shown one since the
+        # readout left the status bar, and it is a query a listing pays
+        # for every time. It would not be worth having anyway: measured
+        # on a TDS 754D at v8.0e, FILESYSTEM:FREESPACE? answers about 89
+        # million to every ask, climbing 2,100 a second and wrapping, on
+        # a 1.44 MB volume, with a disk in the drive or without one, and
+        # raises no event to say so.
         return {"cwd": base, "dirs": dirs, "files": files,
-                "no_media": empty_drive, "free": self.fs.freespace()}
+                "no_media": empty_drive}
 
     def is_dir(self, cwd, name):
         """Resolve laziy: try to enter it, and put the cwd back either way."""
@@ -1120,15 +1279,38 @@ class Worker(object):
             suffix = "" if attempt == 1 else " (attempt %d of %d)" % (
                 attempt, ATTEMPTS)
             self._progress("Preparing %s%s" % (leaf, suffix), here)
-            try:
-                self.fs.delete(path)
-            except Exception:
-                pass
-            self.fs.wait_done()
+            # Only on a firmware that cannot overwrite. This delete used
+            # to happen before every write, unconditionally, and it is
+            # the single most expensive thing this program did to an
+            # instrument: DELETE is what exhausts the filesystem, and at
+            # one per file an upload of a dozen files was already at the
+            # limit. It was never needed - OVERWRITE ON is set at
+            # connect and has been for as long as this has - so it was
+            # costing the whole upload and buying nothing.
+            #
+            # It also made a failed upload destructive: the old file was
+            # already gone before the new one was sent.
+            if not self.can_overwrite:
+                try:
+                    self.fs.delete(path)
+                except Exception:
+                    pass
+                self.fs.wait_done()
             self._progress("Sending %s, %s bytes%s"
                            % (leaf, format(len(data), ","), suffix),
                            here + step / 3)
-            self.fs.write(path, data)
+            try:
+                self.fs.write(path, data)
+            except Exception as exc:
+                # A write that did not finish left the instrument part
+                # way through an indefinite-length block, waiting for
+                # bytes that are not coming. Everything sent after that
+                # times out too, so without this one device clear the
+                # first big file in a folder takes the rest of the
+                # upload down with it.
+                self.fs.clear()
+                last = "the write did not finish: %s" % exc
+                continue
             self.fs.wait_done()
             # Ask before reading back rather than after: waiting for a
             # read-back of a file that was never created costs a timeout
@@ -1152,18 +1334,48 @@ class Worker(object):
             # discarded does not, and reading back a file that was never
             # created only buys a timeout on the way to the same answer.
             parent = path.rstrip("/").rsplit("/", 1)[0]
-            try:
-                listed = [n.upper() for n in real_names(self.fs.dir(parent))]
-            except Exception:
-                listed = None          # cannot tell - fall through and read
+            # Asked twice before it is believed. Measured on a TDS 784D:
+            # the listing taken straight after a 256 kB write came back
+            # empty, and the file was there all along - the instrument
+            # answers *OPC? before its own directory shows the write.
+            # Rewriting a large file because of that costs minutes and
+            # fixes nothing.
+            for settle in (0.0, 2.0):
+                time.sleep(settle)
+                try:
+                    listed = [n.upper()
+                              for n in real_names(self.fs.dir(parent))]
+                except Exception:
+                    listed = None      # cannot tell - fall through and read
+                if listed is None or leaf.upper() in listed:
+                    break
             if listed is not None and leaf.upper() not in listed:
+                # The write itself did not raise - the bytes went out and
+                # the instrument took them - so the clear beside the
+                # write above was never reached. This is the same wound
+                # and wants the same dressing: measured on a TDS 784D,
+                # once the listing stops showing what was just written,
+                # every command after it times out until the bus is
+                # cleared.
+                self.fs.clear()
                 last = "the file never appeared in %s after writing" % parent
                 continue
             self._progress("Reading %s back to verify it%s" % (leaf, suffix),
                            here + 2 * step / 3)
             try:
-                back = self.fs.read(path, timeout=TRANSFER_TIMEOUT)
+                # Sized to the file, not flat. TRANSFER_TIMEOUT alone is
+                # how long the instrument may take to start talking; a
+                # 1.4 MB read then needs the better part of a minute to
+                # arrive at the measured 32 kB/s, and a flat 20 seconds
+                # cut off every read-back over about half a megabyte.
+                back = self.fs.read(
+                    path, timeout=TRANSFER_TIMEOUT + len(data) / READ_RATE)
             except Exception as exc:
+                # Same reasoning as the write above: a read that stopped
+                # part way leaves bytes in the instrument's output queue,
+                # and the next command is answered with the tail of this
+                # one.
+                self.fs.clear()
                 why = self._transfer_failed("READFILE", path, exc, 0.0)
                 if self.no_transfers:
                     raise IOError(why)
@@ -1177,9 +1389,57 @@ class Worker(object):
         raise RuntimeError("upload not verified after %d attempts (%s)"
                            % (ATTEMPTS, last))
 
+    #: Where a waveform sent to the instrument's disk is put. At the
+    #: root of the drive rather than in whichever folder the Files tab
+    #: happens to be showing: the instrument recalls a waveform from
+    #: wherever it is pointed, and one known place is easier to find
+    #: again than wherever somebody was last browsing.
+    WFM_DIR = "WAVEFORM"
+
+    def wfm_to_disk(self, data, drive, stem):
+        """Write a .WFM into WAVEFORM on this drive, under a fresh name.
+
+        The folder is made if it is not there. The name is the source
+        the trace came from with a four-digit serial after it, and the
+        serial is the first the folder does not already hold - so
+        sending CH1 twice leaves two files rather than one overwritten
+        one. Four characters of source and four of serial is the whole
+        of an 8.3 stem.
+        """
+        drive = drive.rstrip("/")
+        folder = "%s/%s" % (drive, self.WFM_DIR)
+        # is_dir asks by trying to enter the name, so it answers about
+        # wherever the instrument is standing. Moved to the drive first,
+        # or a WAVEFORM folder under the folder last browsed would be
+        # taken for this one.
+        self.fs.set_cwd(drive)
+        if not self.is_dir(drive, self.WFM_DIR):
+            self.fs.mkdir(folder)
+            self.fs.wait_done()
+            self.fs.errors()
+        # Proved rather than assumed: a MKDIR that failed for any other
+        # reason would otherwise leave the write aimed at a path that is
+        # not there, and the read-back would report it as a bad bus.
+        self.fs.set_cwd(folder)
+        if (self.fs.get_cwd() or "").rstrip("/").upper() != folder.upper():
+            raise RuntimeError("%s could not be made on the instrument"
+                               % folder)
+        taken = {n.upper() for n in real_names(self.fs.dir())}
+        self.fs.errors()
+        head = "".join(c for c in (stem or "WAVE").upper()
+                       if c.isascii() and c.isalnum())[:4] or "WAVE"
+        for serial in range(1, 10000):
+            name = "%s%04d.WFM" % (head, serial)
+            if name not in taken:
+                break
+        else:
+            raise RuntimeError("%s already holds every %s name there is"
+                               % (folder, head))
+        return self.write_verified("%s/%s" % (folder, name), data)
+
     def delete(self, path):
         """Delete a file, from the volume root, after the protection check."""
-        why = self.protected_reason(path)
+        why = self.refuse_reason(path)
         if why:
             raise RuntimeError(why)
         parent = path.rstrip("/").rsplit("/", 1)[0]
@@ -1430,11 +1690,14 @@ class Worker(object):
     def mid_level(self, name):
         """Halfway up whatever that input is carrying, in volts.
 
-        There is no set-to-50% on this firmware - TRIGGER:MAIN:SETLEVEL
-        answers 113, "Undefined header" - so a trigger level has to be
-        measured. Zero is not a safe default for it: one leg of a
-        differential pair swings between ground and its supply and
-        never goes near zero on the way down.
+        The instrument's own set-to-50% is TRIGGER:MAIN SETLEVEL - the
+        front panel's Set 50% button - but it acts on the live trigger
+        source. The level is measured here instead so it can be set
+        exactly, from the captured clock, without the clock having to
+        stay the trigger source and while it is still displayed. Zero
+        is not a safe default: one leg of a differential pair swings
+        between ground and its supply and never goes near zero on the
+        way down.
         """
         try:
             volts = [v for _t, v in
@@ -1716,10 +1979,12 @@ class Worker(object):
             if not looks:
                 out["nameless"], level = clocked, 0.0
         if clock:
-            # The level is measured because there is no set-to-50% on
-            # this firmware - TRIGGER:MAIN:SETLEVEL answers 113,
-            # "Undefined header" - and a clock is as likely to be a 0 to
-            # 5 V logic swing as one sitting about zero.
+            # The level is measured rather than using the instrument's
+            # own set-to-50% (TRIGGER:MAIN SETLEVEL): measuring gives an
+            # exact level from the captured clock, needs the clock only
+            # to be displayed rather than to be the live trigger source,
+            # and copes with a clock that is a 0 to 5 V logic swing as
+            # readily as one sitting about zero.
             inst.write("TRIGGER:MAIN:EDGE:SOURCE %s;COUPLING DC;SLOPE RISE"
                        % clock)
             inst.write("TRIGGER:MAIN:LEVEL %g" % level)
@@ -2089,11 +2354,15 @@ class Worker(object):
         inst.write("LIMIT:TEMPLATE STORE")
         self.wfm.q("*OPC?")
         time.sleep(0.6)
+        # What the store itself said, read before exists() is asked -
+        # that question clears the queue behind it, and a template that
+        # was not made would otherwise be reported with no reason
+        # attached to it.
+        told = [m for m in tds_err.TdsErr(inst, self.fs.payload).drain()
+                if not m.startswith("0,")]
         made = self.wfm.exists(dest)
-        said = [] if made else [
-            m for m in tds_err.TdsErr(inst, self.fs.payload).drain()
-            if not m.startswith("0,")]
-        return {"dest": dest, "source": source, "why": said,
+        return {"dest": dest, "source": source,
+                "why": [] if made else told,
                 "made": made,
                 "vertical": vertical, "horizontal": horizontal}
 
@@ -2121,6 +2390,34 @@ class Worker(object):
             inst.write("ACQUIRE:STOPAFTER LIMIT")
             inst.write("ACQUIRE:STATE RUN")      # and no *OPC? after it
         return {"dest": dest, "source": source, "on": on, "why": why}
+
+    def lim_survey(self, names=None):
+        """What each named reference holds. Reads only.
+
+        `names` None means all four. The tab asks for one at a time -
+        the one that was double-clicked - because reading a reference
+        that holds nothing costs a refusal and an event, and doing that
+        to all four every time the tab is opened is four refusals
+        nobody asked for.
+
+        An envelope read off a reference that holds nothing comes back
+        empty rather than raising, and a reference that has been
+        deleted refuses the read - both of which mean the same thing
+        here, so both are reported as empty. See TdsWfm.read_envelope
+        and delete_ref.
+
+        Cheap where it matters: a reference with nothing in it costs a
+        refusal rather than a curve, so a bench with one template in
+        use pays for one real read.
+        """
+        out = []
+        for name in (names or tds_wfm.REFS):
+            try:
+                band = self.wfm.read_envelope(name)
+            except Exception:
+                band = []
+            out.append({"name": name, "columns": len(band)})
+        return {"refs": out}
 
     def lim_picture(self, source, dest):
         """The template and a live trace, for drawing.
@@ -2187,11 +2484,68 @@ class Worker(object):
     # does when one file of a selection is in use.
 
     def _progress(self, text, frac=None):
-        """Tell the UI where we are. `frac` is 0..1, or None for unknown."""
-        self.out.put(("progress", True, {"text": text, "frac": frac}))
+        """Tell the UI where we are. `frac` is 0..1, or None for unknown.
+
+        Carries the job it belongs to. A progress line is labelled
+        "progress" and not with the work that raised it, so without
+        this the only way to tell whose it was is a flag the UI sets
+        when it starts something - and a flag can be left standing.
+        """
+        self.out.put(("progress", True, {"text": text, "frac": frac,
+                                         "job": self.context}))
+
+    def _folder_names(self, folder):
+        """What is in `folder` now, asking twice if it answers empty.
+
+        A listing taken straight after a write or a delete can come back
+        empty on this instrument and be right again a moment later - see
+        INSTRUMENT-NOTES, "After a big write, the directory can lag" - so
+        an empty answer is asked again before it is believed. Without
+        that, the loss check below would cry wolf on a folder that is
+        merely slow.
+        """
+        for wait in (0.0, 2.0):
+            if wait:
+                time.sleep(wait)
+            try:
+                self.fs.set_cwd(folder)
+                names = real_names(self.fs.dir())
+            except Exception:
+                names = []
+            self.fs.errors()
+            if names:
+                return names
+        return []
+
+    def _lost(self, folder, before, asked):
+        """Names that vanished from `folder` without being asked for.
+
+        This instrument has, twice, emptied a directory of things nobody
+        deleted. It has not been reproduced in about fifty attempts and
+        the mechanism is unknown, so there is nothing to fix - but it is
+        silent, and silent data loss is the one thing worth spending a
+        listing on. Comparing what was there against what is there costs
+        one DIR? and turns the loss into a warning.
+
+        Deliberately one-directional: it reports what went, never what
+        arrived, so another program writing to the same folder is not
+        mistaken for damage.
+        """
+        if not before:
+            return []
+        asked = {n.upper() for n in asked}
+        after = {n.upper() for n in self._folder_names(folder)}
+        return [n for n in before
+                if n.upper() not in after and n.upper() not in asked]
 
     def delete_many(self, paths):
         done, failed = [], []
+        # Every path in one delete comes from one folder, which is what
+        # the file list can select. Taking the folder from the first is
+        # enough, and a mixed list simply checks the wrong folder rather
+        # than breaking.
+        folder = paths[0].rsplit("/", 1)[0] if paths else None
+        before = self._folder_names(folder) if folder else []
         for i, p in enumerate(paths, 1):
             self._progress("Deleting %d of %d: %s"
                            % (i, len(paths), p.rsplit("/", 1)[-1]),
@@ -2201,7 +2555,10 @@ class Worker(object):
                 done.append(p)
             except Exception as exc:
                 failed.append((p, str(exc)))
-        return {"done": done, "failed": failed}
+        lost = self._lost(folder, before,
+                          [p.rsplit("/", 1)[-1] for p in paths])
+        return {"done": done, "failed": failed, "lost": lost,
+                "folder": folder}
 
     def upload_many(self, items):
         """`items` is [(path on the PC, destination path on the instrument)].
@@ -2209,7 +2566,7 @@ class Worker(object):
         Every file is verified individually by write_verified, so a batch
         that reports success really did land byte for byte.
         """
-        done, failed = [], []
+        done, failed, running = [], [], 0
         for i, (src, dest) in enumerate(items, 1):
             share = 1.0 / len(items)
             try:
@@ -2217,12 +2574,34 @@ class Worker(object):
                     data = fh.read()
                 self.write_verified(dest, data, (i - 1.0) * share, share)
                 done.append((dest, len(data)))
+                running = 0
             except Exception as exc:
                 failed.append((dest, str(exc)))
-        return {"done": done, "failed": failed}
+                running += 1
+                # Two in a row is an instrument that has stopped
+                # answering, not two awkward files, and carrying on is
+                # actively harmful: every attempt deletes the file it is
+                # about to replace, so a batch that ploughs on through a
+                # dead bus empties a folder it cannot refill. Measured on
+                # a TDS 784D - it stopped answering part way through a
+                # 70-file upload and every file after it failed four
+                # times, having deleted the instrument's copy first.
+                if running >= GIVE_UP_AFTER and i < len(items):
+                    skipped = [d for _s, d in items[i:]]
+                    log_note("upload_many",
+                             "stopped after %d consecutive failures with "
+                             "%d file(s) not attempted"
+                             % (running, len(skipped)))
+                    return {"done": done, "failed": failed,
+                            "skipped": skipped}
+        return {"done": done, "failed": failed, "skipped": []}
 
-    def download_tree(self, path, destdir):
+    def download_tree(self, path, destdir, as_name=None):
         """Download a folder and everything beneath it.
+
+        `as_name` renames the folder written on the PC. A whole volume is
+        why: "hd0:" is a perfectly good name on the instrument and not a
+        legal one on Windows.
 
         The whole tree is enumerated first so that progress can be
         reported against a known total. That costs one listing per folder
@@ -2230,7 +2609,7 @@ class Worker(object):
         themselves, and much better than a bar that cannot say how far
         along it is.
         """
-        leaf = path.rstrip("/").rsplit("/", 1)[-1]
+        leaf = as_name or path.rstrip("/").rsplit("/", 1)[-1]
         want, folders = [], []
 
         def walk(remote, local):
@@ -2289,28 +2668,38 @@ class Worker(object):
 
     # ---------------------------------------------------------- protection
     #
-    # The Java runtime is what makes the instrument's application support
-    # work at all, and it is spread across a folder and two boot scripts at
-    # the root. Losing any of it means reimaging the CF card, which is not a
-    # small job. None of it is deletable through this program.
+    # Two different answers, and they used to be one.
     #
-    # Learned the hard way: an RMDIR test wedged the filesystem subsystem and
-    # cost a reimage. The guards below are not decoration.
-    RUNTIME_MSG = ("It is part of the Java runtime. Deleting it would stop "
-                   "the instrument from running applications, and putting it "
-                   "back means reimaging the CF card.")
+    # A drive is not a file and a phantom directory entry is not a file
+    # either; deleting one is meaningless or damaging and there is nothing
+    # to confirm. Those are refused outright.
+    #
+    # The Java runtime, the boot chain and the shipped applications are a
+    # different matter. They were refused outright too, on the belief that
+    # putting one back meant reimaging the card. That turned out to be
+    # wrong: every system file loads back over GPIB, so this is somebody
+    # else's instrument and somebody else's decision. They are now
+    # deletable, behind a warning of their own that has to be answered
+    # before the ordinary delete confirmation is even asked.
+    #
+    # Still worth being careful about: an RMDIR test wedged the filesystem
+    # subsystem and cost a reimage. That is why the working directory is
+    # moved to the volume root first, and that guard is not negotiable.
+    RUNTIME_MSG = ("It is part of the Java runtime. Deleting it will stop "
+                   "the instrument from running applications until the "
+                   "file is put back.")
     BOOT_MSG = ("It is part of the instrument's boot chain. Deleting it "
-                "would stop the runtime starting at power-on.")
+                "will stop the runtime starting at power-on.")
 
     # SYSTEM~1 is deliberately not here. It is the card's own recycle
     # folder and holds nothing the instrument needs; it fills up with
     # whatever was deleted from a PC and is exactly the sort of thing
     # somebody opens this program to clear out.
-    PROTECTED_DIRS = {
+    SYSTEM_DIRS = {
         "APP": ("It holds the Java runtime and every shipped application."),
         "TDSRTE1": RUNTIME_MSG,
     }
-    PROTECTED_FILES = {
+    SYSTEM_FILES = {
         "STARTUP.BAT": BOOT_MSG, "OSSA.BAT": BOOT_MSG,
         "RTE1.BAT": BOOT_MSG, "RTE1ORIG.BAT": BOOT_MSG,
         "RT.JAR": RUNTIME_MSG, "JAVA68K.O": RUNTIME_MSG,
@@ -2319,22 +2708,19 @@ class Worker(object):
         "LOGO.BIN": RUNTIME_MSG, "VERSION.DAT": RUNTIME_MSG,
     }
     # Everything at or below this path is the runtime itself.
-    PROTECTED_TREES = ("APP/TDSRTE1",)
+    SYSTEM_TREES = ("APP/TDSRTE1",)
 
     @classmethod
-    def protected_reason(cls, path):
-        """Why `path` may not be deleted, or None if it may be."""
+    def refuse_reason(cls, path):
+        """Why `path` cannot be deleted at all, or None.
+
+        Only the two that are not files: a drive, and the phantom entry
+        that carries half of somebody's long file name.
+        """
         p = path.rstrip("/")
         leaf = p.rsplit("/", 1)[-1].upper()
-        upper = p.upper()
         if "/" not in p:
             return "'%s' is a drive, not a file or folder." % p
-        # Nothing on a floppy is protected. The protection exists for the
-        # instrument's own applications and its Java runtime, which live
-        # on the hard disk; a floppy holds whatever the user put there
-        # and is theirs to empty.
-        if upper.split("/", 1)[0].startswith("FD"):
-            return None
         if is_phantom(leaf):
             # Should be unreachable - these never reach the UI - but a
             # DELETE aimed at one would strip the long name off the real
@@ -2342,14 +2728,53 @@ class Worker(object):
             return ("'%s' is not a file. It is part of how a long file "
                     "name is stored on the card, and deleting it would "
                     "damage the file it belongs to." % leaf)
-        for tree in cls.PROTECTED_TREES:
-            if ("/" + tree) in upper or upper.endswith("/" + tree):
-                return "'%s' cannot be deleted.\n\n%s" % (leaf,
-                                                          cls.RUNTIME_MSG)
-        for table in (cls.PROTECTED_DIRS, cls.PROTECTED_FILES):
-            if leaf in table:
-                return "'%s' cannot be deleted.\n\n%s" % (leaf, table[leaf])
         return None
+
+    @classmethod
+    def system_reason(cls, path):
+        """Why `path` is the instrument's own, or None if it is not.
+
+        Not a refusal. The caller asks about it first and deletes it if
+        the answer is yes.
+        """
+        p = path.rstrip("/")
+        leaf = p.rsplit("/", 1)[-1].upper()
+        upper = p.upper()
+        if "/" not in p:
+            return None
+        # Nothing on a floppy is the instrument's. The system files live
+        # on the hard disk; a floppy holds whatever the user put there
+        # and is theirs to empty.
+        if upper.split("/", 1)[0].startswith("FD"):
+            return None
+        for tree in cls.SYSTEM_TREES:
+            if ("/" + tree) in upper or upper.endswith("/" + tree):
+                return cls.RUNTIME_MSG
+        for table in (cls.SYSTEM_DIRS, cls.SYSTEM_FILES):
+            if leaf in table:
+                return table[leaf]
+        return None
+
+    def format_volume(self, plan):
+        """Format a whole volume, and check afterwards that it is empty.
+
+        The instrument says nothing either way - FILESYSTEM:FORMAT has no
+        query form and raises no event on success - so the listing
+        afterwards is the only report there is. A volume that still holds
+        names did not format, and saying so beats a silent success.
+        """
+        drive = plan["drive"]
+        self.context = "format %s" % drive
+        self._progress("Formatting %s ..." % drive, None)
+        self.fs.set_cwd(drive)
+        self.fs.format_drive(drive)
+        self.fs.wait_done()
+        events = self.fs.errors()
+        self._progress("Checking what is left on %s" % drive, None)
+        self.fs.set_cwd(drive)
+        left = real_names(self.fs.dir())
+        self.fs.errors()
+        return {"drive": drive, "left": left, "events": events}
 
     def survey(self, path):
         """What is inside a folder, for the confirmation dialog.
@@ -2367,37 +2792,180 @@ class Worker(object):
         return {"path": path, "names": names}
 
     def rmdir(self, path):
-        """Remove a folder. Recursive and silent - see tds_fs.rmdir.
+        """Remove a folder and everything in it, deepest folder first.
+
+        FILESYSTEM:RMDIR is recursive on this firmware - see tds_fs.rmdir -
+        and on a large tree it does not finish. Measured on a TDS 784D:
+        one RMDIR aimed at a folder of 11 subfolders and about 30 files
+        raised event 250 and stopped part way, having emptied seven of
+        the subfolders and removed one outright, and the folder itself
+        was still there afterwards. A half-deleted folder is the worst
+        of the three outcomes, so the walk is done here instead: one
+        folder at a time, from the bottom up, each command small enough
+        for the instrument to finish before the next one arrives.
+
+        Costs more commands than the single RMDIR. It buys a progress
+        bar on a tree that took minutes in silence, and a failure part
+        way that can simply be run again - the walk finds whatever is
+        left, so a second attempt carries on where the first stopped.
 
         Refuses a protected name, and verifies afterwards rather than
         trusting the empty event queue, because on this instrument silence
-        means nothing either way.
+        means nothing either way. Only the folder named is checked against
+        the protection table, which is what the recursive RMDIR did too:
+        the names inside a copy are the same names as inside the original,
+        so checking them all would make any copy of APP undeletable.
         """
-        why = self.protected_reason(path)
+        why = self.refuse_reason(path)
         if why:
             raise RuntimeError(why)
         leaf = path.rstrip("/").rsplit("/", 1)[-1].upper()
         parent = path.rstrip("/").rsplit("/", 1)[0]
+        volume = path.split("/")[0]
         self.context = "rmdir %s" % path
-        # Stand at the VOLUME ROOT, which cannot be inside the target at any
-        # depth. RMDIR is refused with event 257 if the cwd is within the
-        # folder being removed, and that refusal is what wedged the
-        # filesystem subsystem badly enough to need a reimage.
-        self.fs.set_cwd(path.split("/")[0])
-        self.fs.errors()
-        self.fs.rmdir(path)
-        # Wait for the instrument to say it has finished, rather than
-        # sleeping a guessed interval. A query arriving while dosFs is
-        # still walking the directory is what raises event 250.
-        self.fs.wait_done()
-        events = self.fs.errors()
-        self.fs.set_cwd(parent)
-        gone = leaf not in [n.upper() for n in self.fs.dir()]
-        self.fs.errors()
+        # What else is in the folder this one is being taken out of.
+        # Removing a tree is the operation the unexplained loss has shown
+        # up around, so the neighbours are counted before and after; see
+        # _lost.
+        beside = self._folder_names(parent)
+
+        # Children before parents, which is the order they have to go in.
+        tree = []
+
+        def walk(where):
+            self._progress("Looking in %s ..." % where, None)
+            listing = self.listdir_split(where)
+            for one in listing["dirs"]:
+                walk("%s/%s" % (where, one))
+            tree.append((where, listing["files"]))
+
+        walk(path)
+        for i, (where, files) in enumerate(tree, 1):
+            # Stand at the VOLUME ROOT, which cannot be inside the target
+            # at any depth. RMDIR is refused with event 257 if the cwd is
+            # within the folder being removed, and that refusal is what
+            # wedged the filesystem subsystem badly enough to need a
+            # reimage. listdir_split above left the cwd inside the tree,
+            # so this is not optional.
+            self._progress("Emptying %s (%d of %d)"
+                           % (where.rsplit("/", 1)[-1], i, len(tree)),
+                           (i - 1.0) / len(tree))
+            if files:
+                # One command for the whole folder, not one per file.
+                # DELETE is the operation that exhausts this firmware -
+                # about two dozen and mass storage goes down - so a
+                # folder of seventy files was three times over the limit
+                # on its own. Measured on a TDS 784D: the wildcard form
+                # cleared eight files in 0.2 s with an empty event
+                # queue, and 120 in about four seconds, with the
+                # instrument writing and reading normally straight
+                # afterwards. Event 250 is common here and means
+                # nothing; the re-listing below is what decides.
+                self.fs.set_cwd(volume)
+                self.fs.delete("%s/*.*" % where)
+                self.fs.wait_done()
+                self.fs.errors()
+                # Whatever *.* did not match, by hand. On a TDS 784D it
+                # matches everything - a folder of WITHEXT.TXT, NOEXT,
+                # DOTTED. and X.B was cleared by one wildcard - so this
+                # loop is expected never to run there. It stays because
+                # the same code serves a 640A, a 680B and a 784C, none
+                # of which have been asked, and because the cost of
+                # being wrong is a folder that will not delete. One
+                # listing a folder is a cheap way not to guess.
+                try:
+                    self.fs.set_cwd(where)
+                    stayed = real_names(self.fs.dir())
+                except Exception:
+                    stayed = []
+                for name in stayed:
+                    self.fs.set_cwd(volume)
+                    self.fs.delete("%s/%s" % (where, name))
+                    # A query arriving while dosFs is still working is
+                    # what raises event 250.
+                    self.fs.wait_done()
+            self.fs.errors()
+            self.fs.set_cwd(volume)
+            self.fs.rmdir(where)
+            self.fs.wait_done()
+            events = self.fs.errors()
+
+        still = self._folder_names(parent)
+        gone = leaf not in [n.upper() for n in still]
         if not gone:
-            raise RuntimeError("RMDIR did not remove %s (events %s)"
-                               % (path, events))
-        return {"path": path, "events": events, "removed": True}
+            raise RuntimeError("%s is still there after removing the %d "
+                               "folder(s) inside it (events %s). Running "
+                               "it again will carry on from here."
+                               % (path, len(tree), events))
+        lost = [n for n in beside
+                if n.upper() != leaf
+                and n.upper() not in {s.upper() for s in still}]
+        return {"path": path, "events": events, "removed": True,
+                "folders": len(tree), "lost": lost, "folder": parent}
+
+    def copy(self, source, dest, is_dir):
+        """Copy a file or a folder on the instrument. No GPIB transfer.
+
+        387 kB/s against 3.0 kB/s for the same bytes through WRITEFILE, so
+        this is 129 times faster than downloading and re-uploading and it
+        is the right way to duplicate anything already on the instrument.
+
+        A file is one command. A folder has to be walked, because COPY
+        refuses a directory source - the manual's own example raises event
+        257 on v7.4e and creates nothing. The walk is top down, unlike
+        rmdir's: a destination folder has to exist before anything can be
+        copied into it. One wildcard per folder rather than one command
+        per file, which is the same economy the wildcard delete gets.
+
+        Verifies by listing rather than by the event queue, because on this
+        instrument an empty queue means nothing either way.
+        """
+        volume = dest.split("/")[0]
+        self.context = "copy %s to %s" % (source, dest)
+        if not is_dir:
+            self._progress("Copying %s ..." % source.rsplit("/", 1)[-1], None)
+            self.fs.set_cwd(volume)
+            self.fs.copy(source, dest)
+            self.fs.wait_done()
+            self.fs.errors()
+            return self._copied(dest, 1)
+
+        # Parents before children: a folder must exist to be copied into.
+        tree = []
+
+        def walk(where, under):
+            self._progress("Looking in %s ..." % where, None)
+            listing = self.listdir_split(where)
+            tree.append((where, under, listing["files"]))
+            for one in listing["dirs"]:
+                walk("%s/%s" % (where, one), "%s/%s" % (under, one))
+
+        walk(source, dest)
+        for i, (where, under, files) in enumerate(tree, 1):
+            self._progress("Copying %s (%d of %d)"
+                           % (under.rsplit("/", 1)[-1], i, len(tree)),
+                           (i - 1.0) / len(tree))
+            self.fs.set_cwd(volume)
+            self.fs.mkdir(under)
+            self.fs.wait_done()
+            self.fs.errors()
+            if files:
+                self.fs.set_cwd(volume)
+                self.fs.copy("%s/*.*" % where, under)
+                self.fs.wait_done()
+                self.fs.errors()
+        return self._copied(dest, len(tree))
+
+    def _copied(self, dest, folders):
+        """Confirm the destination arrived, by listing its parent."""
+        parent = dest.rstrip("/").rsplit("/", 1)[0]
+        leaf = dest.rstrip("/").rsplit("/", 1)[-1].upper()
+        self.fs.set_cwd(parent)
+        there = leaf in [n.upper() for n in self.fs.dir()]
+        self.fs.errors()
+        if not there:
+            raise RuntimeError("%s is not there after the copy." % dest)
+        return {"dest": dest, "folders": folders, "copied": True}
 
     # ------------------------------------------------- the system tab
     # Housekeeping the instrument keeps in non-volatile memory: its
@@ -2438,6 +3006,106 @@ class Worker(object):
     #: processor board fault when they are switched on without their
     #: calibration data.
     OPTION_SOFT = ("1M", "2F", "2C", "1G")
+
+    #: What *OPT? calls an option, where that is not what the option
+    #: word list calls it. Measured, not guessed: a TDS 680B on v4.4.1e
+    #: answers "13:Rs232/cent,1M:extended record length,0,2F:math
+    #: pack,0,FD:1.44MB floppy drive,0,0,0,0,0,0" - and its floppy is
+    #: FD there and 1F here. Anything not in this table is taken to
+    #: name itself.
+    OPTION_ALIASES = {"FD": "1F"}
+
+    #: ATOFFSET numbers a word one higher than ATPUT does.
+    #:
+    #: The option words are written with WORDCONSTANT:ATPUT <word>, and
+    #: read back with WORDCONSTANT:ATOFFSET? <base>,0 - and the two do
+    #: not agree about which word is which. Reading at the address
+    #: ATPUT writes gives the word *before* it.
+    #:
+    #: Measured, and confirmed against a second source rather than
+    #: assumed. On a TDS 680B, reading at the ATPUT addresses says 05,
+    #: 2F and 1F are on and 1M and 13 are off; *OPT? on the same
+    #: instrument says 1M, 13, 2F and the floppy. Adding one makes all
+    #: ten agree with *OPT? exactly, including the seven that are off.
+    #: Two independent readings of the same ten facts, so this is the
+    #: relationship and not a coincidence of one scope's option set.
+    #:
+    #: Confirmed again on a TDS 754D running v8.0e - a different family
+    #: and a different option set - where the ten biased reads agree
+    #: with its *OPT? on all ten, 13, 2F, 1F, 2C and 2M on. Reading at
+    #: the unbiased addresses on that instrument gives 0, 0, 0, 1, 1,
+    #: 0, 1, 0, 0, 23347, which agrees with nothing.
+    OPTION_ATOFFSET_BIAS = 1
+
+    def options_read(self):
+        """Which options the instrument's own words say are enabled.
+
+        Better than *OPT? for this, because it reads exactly what the
+        dialog writes: no code-name mapping in between, and it works on
+        an instrument whose *OPT? says nothing useful. Read-only.
+
+        Returns {code: bool}, or None if any word could not be read -
+        a partial answer is not usable here, because a code missing
+        from it would leave its box unticked and unticked disables.
+        """
+        out = {}
+        for code, word, on, _what in self.OPTION_WORDS:
+            try:
+                got = tds_cal.word(self.wfm.q, 0,
+                                   word + self.OPTION_ATOFFSET_BIAS)
+            except Exception:
+                return None
+            out[code] = (got == on)
+        return out
+
+    @classmethod
+    def options_fitted(cls, reply):
+        """Which option codes *OPT? reported, spelled as OPTION_WORDS.
+
+        None - not an empty set - when the reply says nothing useful.
+        The difference matters: the dialog ticks boxes from this, and a
+        box left unticked switches an option *off*. "This instrument
+        did not tell me" has to be distinguishable from "it told me it
+        has none", or a scope that answers nothing gets everything it
+        owns turned off by somebody trusting the ticks.
+        """
+        reply = (reply or "").strip()
+        if not reply:
+            return None
+        codes, said_anything = set(), False
+        for field in reply.split(","):
+            field = field.strip()
+            if not field or field == "0":
+                continue
+            code = field.split(":", 1)[0].strip().upper()
+            if not code or code == "0":
+                continue
+            said_anything = True
+            codes.add(cls.OPTION_ALIASES.get(code, code))
+        return codes if said_anything else None
+
+    def sys_clock_read(self):
+        """Just the instrument's date and time.
+
+        The tab reads everything once and then leaves the instrument
+        alone, but a clock is the one thing on it that is wrong a
+        second after it was read. This is two queries rather than the
+        dozen sys_read costs, so it can run every time the tab is
+        opened without the tab becoming expensive to look at.
+        """
+        def ask(what):
+            try:
+                got = self.wfm.q(what)
+            except IOError:
+                return None
+            # Quoted strings come back quoted, and the boxes want the
+            # date, not the quotation marks round it. sys_read strips
+            # them too; this path is the one the tab uses every time it
+            # is opened, so it stripped nothing and the marks showed.
+            got = str(got).strip().strip('"') if got is not None else ""
+            return got or None
+
+        return {"date": ask("DATE?"), "time": ask("TIME?")}
 
     def sys_read(self):
         """Everything the system tab shows, in one trip round the bus.
@@ -2499,24 +3167,41 @@ class Worker(object):
         return {"sent": len(lines), "refused": refused,
                 "now": self.sys_read()}
 
-    def sys_spc(self):
+    def sys_spc(self, most=1500.0):
         """Signal path compensation: *CAL?, which answers 0 for pass.
 
-        Minutes, not seconds, and nothing else runs on the bus while it
-        does - the manual says so and the instrument means it. The
-        timeout is pushed out and put back, because the ordinary one is
-        set for reads that answer immediately.
+        Minutes, not seconds, and nothing else can use the bus while it
+        runs - the manual says so and the instrument means it. So it
+        cannot truly be started and walked away from: *CAL? is a query,
+        and an answer nobody reads is left in the output queue for the
+        next query to collect as its own. That is a nasty class of bug
+        to leave lying about, and it is worse than waiting.
+
+        What it can do is wait longer than any of these instruments
+        take, and give up without calling it a failure. Twenty-five
+        minutes covers the slowest of them with room to spare; past
+        that the instrument is still working perfectly well, and the
+        session is cleared so that whatever it eventually answers
+        cannot be read as the reply to a later question.
         """
         was = getattr(self.fs.inst, "timeout", None)
         try:
-            self.fs.inst.timeout = 600000
+            self.fs.inst.timeout = int(most * 1000)
             said = str(self.wfm.q("*CAL?")).strip()
+        except IOError:
+            try:
+                self.fs.inst.clear()
+            except Exception:
+                pass
+            return {"result": None, "passed": False, "waited": most,
+                    "stillgoing": True}
         finally:
             if was is not None:
                 self.fs.inst.timeout = was
-        return {"result": said, "passed": said.strip().startswith("0")}
+        return {"result": said, "passed": said.strip().startswith("0"),
+                "stillgoing": False}
 
-    def sys_diag(self, area="ALL", most=240.0):
+    def sys_diag(self, area="ALL", most=300.0, settle=150.0, poll=15.0):
         """Extended diagnostics: select, execute, wait, then read the log.
 
         `DIAg:STATE EXECute` warm-boots the instrument, and the manual
@@ -2528,30 +3213,100 @@ class Worker(object):
         out after five minutes with the instrument sitting there
         finished and idle.
 
-        The manual's own answer is a Service Request on the power-on
-        event. This asks *IDN? every couple of seconds instead, which
-        needs no status plumbing and says the same thing: when the
-        instrument answers again, it has finished booting.
+        SO NOTHING IS SAID TO IT WHILE IT BOOTS. This is the whole
+        reason the wait is shaped the way it is, and it was learned the
+        expensive way.
+
+        An earlier version asked *IDN? every two seconds from the
+        moment the command went out - the manual's own advice is a
+        Service Request on the power-on event, and polling was chosen
+        instead because it needed no status plumbing. It hung a TDS
+        754D twice, on two different areas, one of which passes. Both
+        times the instrument had to be power-cycled. It was not the
+        instrument's faults and it was not the command:
+
+          - 784D, EXECute sent, VISA session closed, silence for 150 s,
+            then one query: answered instantly, FLAG? PASS, LOG? two
+            passing modules. Clean.
+          - 784D, the same with 60 s of silence: the one query timed
+            out and the instrument was still on its Java splash screen.
+            It finished booting by itself a little later and was fine,
+            so a single query mid-boot is survivable - it is the
+            hammering that is not.
+          - 754D, polled every two seconds: hung, twice.
+
+        So: send the command, then say nothing at all for `settle`,
+        which is the measured-good 150 s rather than a guess. Only then
+        start asking, and slowly - `poll` is fifteen seconds, not two.
+
+        How much of the 150 is margin has since been measured: silent
+        for 60 s and then one query every 10 s, a healthy 784D answered
+        at 112 s twice, so the boot itself is 102 to 112 s. 150 keeps
+        about a third in hand, which stays - a failing instrument and a
+        slower model are both unmeasured, and trimming it would save
+        twenty seconds on a two-minute operation. Sixty seconds is known
+        to be too short, so anything shorter than the settle used here
+        needs measuring again before it is trusted.
+
+        The result log names modules and says pass or fail. What
+        failed inside one is in the instrument's error log, which is
+        why a failing module reads "(see error log)" - and the detail
+        there is worth having in as many words:
+
+            ERROR: diagnostic test failure, dsyRastModeV0Walk,
+            raster fail @ 1,1 read: 8, expect: f
+
+        Sub-test, coordinates, read and expected. That is a per-bit
+        memory result, which is the whole reason for running this from
+        here rather than reading PASS or FAIL off the screen. So the
+        log is read before and after and the difference comes back
+        with the verdict.
         """
         was = getattr(self.fs.inst, "timeout", None)
         flag = log = ""
+        # What the log holds before the run, so what it holds after can
+        # be told apart from years of older history. Not cleared: that
+        # is the instrument's own service record and there is no undo.
+        before = self._errlog()
         try:
             self.fs.inst.write("DIAG:SELECT:%s ALL" % area)
             self.fs.inst.write("DIAG:STATE EXECUTE")
+            # Silence. Not a poll loop with a long interval - nothing
+            # is sent at all until this is over. See the docstring.
+            end = time.time() + most
+            waited, step = 0.0, 5.0
+            while waited < settle:
+                if self.cancelled.is_set():
+                    break
+                time.sleep(min(step, settle - waited))
+                waited += step
+                self._progress(
+                    "Letting the instrument restart undisturbed "
+                    "(%d of %d seconds)" % (min(int(waited), int(settle)),
+                                            int(settle)),
+                    waited / settle)
             # Short, so each attempt while it is still down fails
             # quickly rather than eating the whole budget in one go.
             self.fs.inst.timeout = 3000
-            back, end = False, time.time() + most
-            while time.time() < end:
-                time.sleep(2.0)
+            # `poll` and `settle` are parameters so the checks can drive
+            # this whole sequence without waiting minutes for an
+            # instrument that is imaginary.
+            # The deadline is checked at the bottom, so one attempt
+            # always happens however small the budget is.
+            back = False
+            while True:
                 try:
                     if str(self.wfm.q("*IDN?")).strip():
                         back = True
                         break
                 except Exception:
-                    continue
+                    pass
+                if time.time() >= end:
+                    break
+                self._progress("Asking whether it is back yet", None)
+                time.sleep(poll)
             if not back:
-                return {"area": area, "flag": "", "log": "",
+                return {"area": area, "flag": "", "log": "", "found": [],
                         "passed": False, "back": False}
             self.fs.inst.timeout = 30000
             # Both come back as quoted strings. The quotation marks are
@@ -2563,7 +3318,35 @@ class Worker(object):
             if was is not None:
                 self.fs.inst.timeout = was
         return {"area": area, "flag": flag, "log": log, "back": True,
-                "passed": flag.upper().startswith("PASS")}
+                "found": self._errlog_since(before),
+                # PAS, not PASS. With VERBOSE off the instrument
+                # abbreviates every keyword to four significant
+                # characters, so the flag is PAS or FAI - and matching
+                # "PASS" therefore never matched, which made every run
+                # on this firmware read as a failure. Measured on a TDS
+                # 754D: VERBOSE OFF gives 'FAI' and VERBOSE ON 'FAIL'.
+                "passed": flag.upper().startswith("PAS")}
+
+    def _errlog(self):
+        """The instrument's error log, or [] if it has not got one."""
+        try:
+            return self.err.entries()
+        except Exception:
+            return []
+
+    def _errlog_since(self, before):
+        """The entries added since `before` was taken.
+
+        The log is a ring: once it is full the oldest entries fall off,
+        and then what was read first is no longer a prefix of what is
+        read now. So the common-prefix answer is checked rather than
+        assumed, and anything that does not fit it falls back to
+        "whatever is there that was not there before".
+        """
+        after = self._errlog()
+        if after[:len(before)] == before:
+            return after[len(before):]
+        return [one for one in after if one not in before]
 
     def sys_secure(self):
         """TEKSecure: zero every reference waveform and every setup.
@@ -2643,6 +3426,843 @@ class Worker(object):
         return [p.strip() for p in got.split(",") if p.strip()]
 
 
+    # ------------------------------------------- calibration constants
+    def _refusals(self):
+        """What the instrument logged, less the line that means nothing.
+
+        The same drain the factory options use, and "0,..." is the reply
+        that means there was nothing to say.
+        """
+        return [str(e) for e in self.fs.errors()
+                if not str(e).startswith("0,")]
+
+    def cal_read(self, base=None, check=True):
+        """The acquisition board's calibration words, read twice.
+
+        Read-only. The service unlock is sent only if the first word is
+        refused without it: an instrument that answers has nothing to
+        unlock, and a command it does not know goes in its event log
+        for no reason.
+        """
+        base = tds_cal.BASE if base is None else base
+        # Quietly: this drain throws away whatever happened before the
+        # read started, so by definition those events belong to
+        # something else and are not this operation's to report. An
+        # instrument with no disk in its drive raises 252 whenever
+        # anything goes near the filesystem, and the watcher was
+        # blaming the next operation to drain the queue - which is how
+        # pressing Back up... on a TDS 754D with an empty floppy drive
+        # produced "cal_read 252 Missing media" about a read that never
+        # touches the filesystem at all.
+        self._progress("Clearing the bus of anything left over", 0.0)
+        self._quiet_drain()
+        # On a short leash, and that is the whole point of it. This one
+        # query is asked to find out whether the service unlock is
+        # needed, and on an instrument that needs it the answer is
+        # silence - so at the session's ordinary timeout the button sat
+        # there for the better part of a minute before the first word
+        # was read, with nothing on screen to say why. A word that is
+        # going to arrive arrives in milliseconds.
+        self._progress("Asking whether the constants are locked", 0.0)
+        was = self.fs.inst.timeout
+        try:
+            self.fs.inst.timeout = 3000
+            tds_cal.word(self.wfm.q, 0, base)
+        except Exception:
+            self.fs.inst.timeout = was
+            self._progress("Sending the service unlock", 0.0)
+            self.fs.inst.write(tds_cal.UNLOCK)
+            tds_cal.word(self.wfm.q, 0, base)      # still refused: raise
+        finally:
+            self.fs.inst.timeout = was
+        got = tds_cal.read(self.wfm.q, base, note=self._progress,
+                           stop=self.cancelled.is_set)
+        if check:
+            self._progress("Checking the calibration constants", 0.0)
+            # Reported like the first pass. Both are 252 queries, so a
+            # silent second one is half the operation with nothing to
+            # watch - which reads as a hang rather than as care.
+            if tds_cal.read(self.wfm.q, base,
+                            note=lambda t, f: self._progress(
+                                "Checking the calibration constants - %s"
+                                % t.split(" - ")[-1], f),
+                            stop=self.cancelled.is_set) != got:
+                raise RuntimeError(
+                    "The calibration constants read differently the "
+                    "second time. That is the bus, not the instrument. "
+                    "Nothing has been written and nothing is lost, but "
+                    "the backup cannot be trusted, so this stopped "
+                    "here.")
+        self._progress("Adding the words up to check them against "
+                       "word 0", 1.0)
+        held = tds_cal.words(got)
+        return {"data": got, "base": base,
+                "flat": tds_cal.looks_empty(got),
+                # The block's own check word and what the words after it
+                # actually add up to, so the report can show the pair
+                # the way the NVRAM's sections are shown rather than
+                # only saying whether they agreed.
+                "check": held[0], "sum": tds_cal.checksum(held),
+                # Word 0 is the sum of the rest. A block that disagrees
+                # with it is damaged, and saying so at the moment of
+                # backup is the difference between finding that out now
+                # and finding it out while restoring it.
+                "sound": tds_cal.sound(got),
+                "events": self._refusals()}
+
+    def _cal_store(self):
+        """Commit the working copy, and report what the instrument said.
+
+        A query rather than a command, and the answer is the point: 0
+        means stored, anything else means it was not. On a TDS 754D
+        with the protection switch protected it answers 357 and raises
+        no event, so the return value is the only sign there is.
+
+        An instrument that does not know the command at all is a
+        different thing from one that refused, and is reported as its
+        own case rather than as a failure to store: no such firmware
+        has been seen, and guessing which way to call it would be
+        guessing about somebody's calibration.
+        """
+        try:
+            said = self.wfm.q("CALIBRATE:STORE?")
+        except Exception as exc:
+            return {"stored": None, "store_said": str(exc)[:80]}
+        digits = tds_cal.NUMBER.findall(said or "")
+        if not digits:
+            return {"stored": None, "store_said": (said or "")[:80]}
+        code = int(digits[-1])
+        return {"stored": code == 0, "store_code": code}
+
+    def _cal_put(self, n, value, base):
+        """Send one word. *OPC? is the wait, and it may be all the
+        answer there is."""
+        self.fs.inst.write(tds_cal.setting(n, value, base))
+        try:
+            self.wfm.q("*OPC?")
+        except IOError:
+            pass
+
+    def cal_write(self, plan):
+        """Put saved calibration constants back, then store them.
+
+        Two different things, and the difference is the whole of this
+        method. `WORDCONSTANT:ATOFFSET` writes into a working copy in
+        the instrument's RAM. `CALIBRATE:STORE?` is what commits that
+        copy to the EEPROMs on the acquisition board, and it answers 0
+        when it did. Tektronix's own field adjustment software ends
+        every adjustment that way and treats any other answer as a
+        fault; see INSTRUMENT-NOTES, "A calibration word is not stored
+        until CALIBRATE:STORE? is sent".
+
+        Measured on a TDS 754D, because it is worth being exact about:
+        with the NVRAM protection switch protected, every word was
+        written, every word read back as what was sent, the block
+        agreed with its own checksum - and a power cycle brought the
+        old constants back, because nothing had been stored. Reading
+        the words back proves the transfer arrived. It cannot prove
+        anything else, because what it reads is the copy just written.
+
+        Every word is written, not only the ones that differ. The point
+        is the EEPROM rather than the bus: rewriting a cell refreshes
+        the charge holding it, so a wholesale write leaves the whole
+        block freshly written instead of leaving the untouched words to
+        go on ageing.
+
+        Nothing is read first. What was there is not needed to decide
+        what to write, and keeping a copy of it is Back up...'s job.
+        """
+        base = plan.get("base") or tds_cal.BASE
+        want = tds_cal.words(plan["data"])
+        self.fs.errors()
+        self._progress("Sending the service unlock", 0.0)
+        self.fs.inst.write(tds_cal.UNLOCK)
+        self.wfm.q("*OPC?")
+        report = {"base": base, "wrote": 0, "words": tds_cal.WORDS}
+        for n in range(tds_cal.WORDS):
+            if self.cancelled.is_set():
+                report["cancelled"] = True
+                break
+            self._cal_put(n, want[n], base)
+            got = tds_cal.word(self.wfm.q, n, base)
+            if got != want[n]:
+                # The transfer, not the storage: a word that does
+                # not read back as what was sent did not even
+                # reach the working copy, so there is nothing
+                # worth committing and this stops here.
+                report["stuck"] = {"word": n, "wanted": want[n],
+                                   "got": got}
+                break
+            report["wrote"] += 1
+            if not n % 8:
+                self._progress("Writing the calibration constants - word "
+                               "%d of %d" % (n + 1, tds_cal.WORDS),
+                               n / float(tds_cal.WORDS))
+        if report["wrote"] == tds_cal.WORDS:
+            self._progress("Storing them on the acquisition board", 1.0)
+            report["check"] = want[0]
+            report["sum"] = tds_cal.checksum(want)
+            report.update(self._cal_store())
+        report["events"] = self._refusals()
+        return report
+
+    # --------------------------------------------------- backup and restore
+    #
+    # tds_bak builds the file and checks it. Everything here is what has
+    # to come off the instrument, or go back on to it, first.
+
+    def bak_survey(self):
+        """What there is to back up, so the tab offers only that.
+
+        Each reference is asked whether it holds anything. Four bounded
+        queries, and the alternative is offering to save four empty
+        references and reporting three failures.
+        """
+        found = self.volumes()
+        selection = self.wfm.selection()
+        return {"idn": self.fs.idn(), "volumes": found["volumes"],
+                "refs": [n for n, _on in selection
+                         if n.startswith("REF") and self.wfm.exists(n)]}
+
+    def bak_setup_read(self):
+        """*LRN? - every setting the instrument will say, in one string.
+
+        HEADER and VERBOSE have to be on or the reply is values with no
+        commands in front of them, which cannot be sent back. Both are
+        put back as they were found: this program runs with headers off
+        and something else on the bench may not.
+        """
+        was_head = str(self.wfm.q("HEADER?")).strip()
+        was_verb = str(self.wfm.q("VERBOSE?")).strip()
+        self.fs.inst.write("HEADER ON;VERBOSE ON")
+        try:
+            said = self.fs.inst.query("*LRN?")
+        finally:
+            self.fs.inst.write("VERBOSE %s" % ("ON" if was_verb in ("1", "ON")
+                                               else "OFF"))
+            self.fs.headers("ON" if was_head in ("1", "ON") else "OFF")
+        return {"text": said.strip()}
+
+    def bak_make(self, plan):
+        """Gather what was asked for and write it into one zip.
+
+        Collected into a temporary folder and zipped at the end, because
+        download_tree already writes a folder tree to disk and a second
+        way of walking the instrument would be a second thing to get
+        wrong.
+
+        Every part is attempted on its own. A floppy with no disk in it
+        should cost that part and not the whole backup.
+        """
+        want = plan.get("parts") or {}
+        work = tempfile.mkdtemp(prefix="tdsbak")
+        report = {"path": plan["path"], "failed": []}
+        about = {"app": __version__, "idn": self.fs.idn(),
+                 "addr": self.addr}
+        try:
+            # Everything the System tab reads, less the identity, which
+            # is already here. Measured on a 784D: *LRN? carries none of
+            # the hardcopy port, format or layout, none of the RS-232
+            # settings and neither the date nor the time - so a backup
+            # that only held *LRN? would not record them anywhere.
+            #
+            # Under one key rather than spread across the manifest: the
+            # hardcopy setting is called "format" and so is the bundle's
+            # own version number, and the bundle's won.
+            about["system"] = {key: value for key, value
+                               in self.sys_read().items() if key != "idn"}
+
+            def part(name, job):
+                if not want.get(name):
+                    return
+                try:
+                    job()
+                except Exception as exc:
+                    log_note("bak_make", "%s: %s" % (name, exc))
+                    report["failed"].append((name, str(exc)))
+
+            def keep(name, data):
+                dest = os.path.join(work, *name.split("/"))
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                with open(dest, "wb") as fh:
+                    fh.write(data)
+
+            def volume(drive, as_name):
+                got = self.download_tree(drive, work, as_name)
+                if got["failed"]:
+                    report["failed"].append(
+                        (as_name, "%d file(s) would not read"
+                         % len(got["failed"])))
+
+            part("disk", lambda: volume("hd0:", tds_bak.DISK))
+            part("floppy", lambda: volume("fd0:", tds_bak.FLOPPY))
+            part("setup", lambda: keep(
+                tds_bak.SETUP,
+                self.bak_setup_read()["text"].encode("ascii", "replace")))
+            part("refs", lambda: self._bak_refs(plan.get("refs") or [], keep))
+            part("cal", lambda: keep(tds_bak.CAL, self.cal_read()["data"]))
+            self._progress("Writing the backup file", None)
+            manifest = tds_bak.pack(work, plan["path"], about)
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+        report["manifest"] = manifest
+        report["holds"] = tds_bak.holds(manifest)
+        report["bytes"] = os.path.getsize(plan["path"])
+        return report
+
+    def _bak_refs(self, names, keep):
+        """The stored references, each as the .wfm this program writes."""
+        if not names:
+            raise IOError("no reference holds a waveform")
+        waves, refused, _how = self.wfm.capture(
+            [], list(names),
+            note=lambda name, done: self._progress("Reading %s" % name, done))
+        for wave in waves:
+            keep("%s/%s.wfm" % (tds_bak.REFS, wave.source), wave.to_wfm())
+        if refused:
+            raise IOError("; ".join("%s: %s" % (n, why) for n, why in refused))
+
+    def upload_plan(self, made, items):
+        """Make these folders, then write these files. Both already named.
+
+        MKDIR first and its refusals ignored - a folder that is already
+        there refuses, and so does one that cannot be made. Which it was
+        shows up as the file writes either landing or not, and those are
+        verified byte for byte, so guessing from the MKDIR would only be
+        a second, worse answer to the same question.
+
+        Folders are made in the order given, which has to be parents
+        before children or the children have nowhere to go.
+
+        Split out from upload_tree because the two callers name things
+        differently. A restore is putting back names that came off the
+        instrument, so they are already legal; a folder dragged in from
+        Explorer is not, and every segment of it has to go through the
+        8.3 rule first - which is the UI's job, because only the UI
+        knows what is already in the destination and therefore what a
+        proposed name would collide with.
+        """
+        for i, one in enumerate(made):
+            self._progress("Making folder %d of %d" % (i + 1, len(made)),
+                           None)
+            try:
+                self.mkdir(one)
+            except Exception as exc:
+                log_note("upload_plan", "mkdir %s: %s" % (one, exc))
+        out = (self.upload_many(items) if items
+               else {"done": [], "failed": [], "skipped": []})
+        out["folders"] = len(made)
+        return out
+
+    def upload_tree(self, folder, dest):
+        """Put a local tree back on the instrument, folders and all.
+
+        Names go up as they are. This is the restore path: what is in
+        the bundle came off an instrument, so it already fits 8.3.
+        """
+        items, made = [], []
+        for here, _dirs, names in os.walk(folder):
+            rel = os.path.relpath(here, folder).replace(os.sep, "/")
+            remote = dest if rel == "." else "%s/%s" % (dest, rel)
+            if rel != ".":
+                made.append(remote)
+            for name in sorted(names):
+                items.append((os.path.join(here, name),
+                              "%s/%s" % (remote, name)))
+        return self.upload_plan(made, items)
+
+    def bak_put(self, plan):
+        """Put parts of a backup back on the instrument.
+
+        Calibration is deliberately not one of them. It needs the NVRAM
+        protection switch moved and a confirmation of its own, and
+        folding it into a bulk restore is how somebody restores it by
+        accident.
+        """
+        want = plan.get("parts") or {}
+        work = tempfile.mkdtemp(prefix="tdsput")
+        report = {"path": plan["path"], "done": [], "failed": []}
+        try:
+            def part(name, job):
+                if not want.get(name):
+                    return
+                try:
+                    report["done"].append((name, job()))
+                except Exception as exc:
+                    log_note("bak_put", "%s: %s" % (name, exc))
+                    report["failed"].append((name, str(exc)))
+
+            def volume(where, drive):
+                tds_bak.unpack(plan["path"], work, where + "/")
+                got = self.upload_tree(os.path.join(work, where), drive)
+                if got["failed"]:
+                    raise IOError("%d file(s) would not write"
+                                  % len(got["failed"]))
+                return "%d file(s)" % len(got["done"])
+
+            def setup():
+                tds_bak.unpack(plan["path"], work, tds_bak.SETUP)
+                # Through the one reader, so a setup out of a backup is
+                # decoded exactly as one beside a mask is.
+                lines = tds_bak.setup_lines(
+                    tds_set.contents(os.path.join(work, tds_bak.SETUP)))
+                said = self.set_send(lines)
+                if said["refused"]:
+                    raise IOError("%d of %d command(s) refused: %s"
+                                  % (len(said["refused"]), len(lines),
+                                     "; ".join(said["refused"][:3])))
+                return "%d command(s)" % len(lines)
+
+            def refs():
+                got = tds_bak.unpack(plan["path"], work, tds_bak.REFS + "/")
+                items = []
+                for _arc, path in got:
+                    wave = tds_wfm.load(path)
+                    items.append((os.path.splitext(os.path.basename(path))[0]
+                                  .upper(), wave))
+                if not items:
+                    raise IOError("the backup holds no references")
+                # A reference that holds nothing cannot be written to:
+                # every field describing the waveform is refused and the
+                # curve is truncated, silently. One live channel brings
+                # it into being first - see TdsWfm.send_to_ref.
+                #
+                # Which matters here more than anywhere else. The
+                # Waveforms tab sends into references that usually hold
+                # something already; a restore is run precisely when
+                # they are empty, so the one path that always needs the
+                # allocation was the one path not asking for it. It
+                # failed on a 784D with "REF1 is empty, and an empty
+                # reference cannot be written to".
+                live = [n for n, on in self.wfm.selection()
+                        if on and not n.startswith("REF")]
+                if not live:
+                    raise IOError(
+                        "no channel is displayed on the instrument. An "
+                        "empty reference can only be created from a "
+                        "live channel, so switch one on and try again.")
+                self.wfm_send_many(items, live[0])
+                return "%d reference(s)" % len(items)
+
+            part("disk", lambda: volume(tds_bak.DISK, "hd0:"))
+            part("floppy", lambda: volume(tds_bak.FLOPPY, "fd0:"))
+            part("setup", setup)
+            part("refs", refs)
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+        return report
+
+    # ------------------------------------------------------------ firmware
+    #
+    # An instrument started with its NVRAM protection switch unprotected
+    # comes up in the ROM monitor rather than in its firmware, at its own
+    # GPIB address, answering no *IDN?. So none of the rest of this class
+    # applies: there is no TdsFs, no SCPI, and no identification to be had.
+    # These three open their own session, do their work and close it.
+
+    def fw_session(self, resource, normal=""):
+        import pyvisa
+        self._progress("Opening the bootloader monitor at %s"
+                       % resource, None)
+        try:
+            inst = pyvisa.ResourceManager().open_resource(resource,
+                                                          open_timeout=5000)
+        except Exception as exc:
+            raise RuntimeError(self.fw_absent(resource, normal, exc))
+        try:
+            inst.clear()
+        except Exception:
+            pass                       # not every driver offers a clear
+        return inst
+
+    def fw_absent(self, resource, normal, exc):
+        """Why the monitor is not there, said as something to do.
+
+        The commonest reason by a distance is that the switch was not
+        moved, and there is a way to tell: an instrument running its
+        firmware answers *IDN? at its ordinary address, and one sitting
+        in its bootloader answers nothing anywhere but 29. So the
+        ordinary address is asked before anything is said, and the
+        answer decides which of the two this is. Reporting
+        VI_ERROR_RSRC_NFOUND instead leaves the user to work that out.
+        """
+        # Only two VISA errors mean nothing is there: the address is
+        # not in its list, or nothing answered at it. Anything else -
+        # the resource held by another program, an interface that is
+        # not controller in charge - is a different fault, and telling
+        # someone to go and move a switch over it sends them to the
+        # bench for nothing.
+        vanished = ("VI_ERROR_RSRC_NFOUND" in "%s" % exc
+                    or "VI_ERROR_TMO" in "%s" % exc)
+        told = ""
+        if normal and vanished:
+            try:
+                if self.fs is not None:
+                    told = self.fs.idn()
+                else:
+                    import pyvisa
+                    one = pyvisa.ResourceManager().open_resource(
+                        normal, open_timeout=1500)
+                    one.timeout = 2000
+                    try:
+                        told = (one.query("*IDN?") or "").strip()
+                    finally:
+                        one.close()
+            except Exception:
+                told = ""
+        if told:
+            return ("The instrument is running its firmware rather than "
+                    "its bootloader: it answered at %s as %s.\n\n"
+                    "Switch it off, move the NVRAM protection switch to "
+                    "unprotected, and switch it on again. In the "
+                    "bootloader the screen stays dark, every front-panel "
+                    "light stays on, and it answers at %s instead."
+                    % (normal, told, resource))
+        return ("Nothing answered at %s - %s.%s\n\n"
+                "Check the instrument is switched on and its GPIB cable "
+                "is connected. It reaches its bootloader by being "
+                "switched on with the NVRAM protection switch "
+                "unprotected; the screen then stays dark and every "
+                "front-panel light stays on."
+                % (resource, describe_visa_error(exc),
+                   " Nothing answered at %s either." % normal
+                   if normal and vanished else ""))
+
+    def fw_probe(self, resource, normal=""):
+        """Is the monitor there, and what flash is behind it."""
+        inst = self.fw_session(resource, normal)
+        try:
+            mon = tds_fw.Monitor(inst)
+            try:
+                head = mon.awake()
+            except Exception as exc:
+                # The address existed but nothing spoke the protocol,
+                # which is the same story to tell as nothing being there.
+                raise RuntimeError(self.fw_absent(resource, normal, exc))
+            flash = tds_fw.Flash(mon)
+            # Named rather than left to the order a dict literal happens
+            # to evaluate in: span reads the array, so the part has to
+            # have been identified and put back to reading it first.
+            name = flash.identify()
+            return {"flash": name, "paged": flash.paged,
+                    "span": flash.span(), "fitted": flash.fitted(),
+                    "head": head, "resource": resource}
+        finally:
+            try:
+                inst.close()
+            except Exception:
+                pass
+
+    def fw_catalogue(self, folder):
+        """Every distinct image in the folder.
+
+        Reads a quarter of a gigabyte.
+        """
+        return {"images": tds_fw.catalogue(folder, note=self._progress),
+                "folder": folder}
+
+    def fw_keep(self, flash, what, base, length, plan, report, stop):
+        """Read one region, check it, and write it out as a .bin.
+
+        Read twice and compared when the plan asks for it, because the
+        only thing a backup has to be is what was there, and the bus is
+        the part that can be wrong.
+        """
+        self._progress("Reading the existing %s ..." % what, 0.0)
+        got = flash.read(length, base=base, stop=stop,
+                         note=lambda t, f, w=what: self._progress(
+                             "Backing up %s - %s" % (w, t), f))
+        if plan.get("check_backup"):
+            self._progress("Reading the %s back to check it" % what, 0.0)
+            again = flash.read(length, base=base, stop=stop,
+                               note=lambda t, f, w=what: self._progress(
+                                   "Checking the %s backup - %s" % (w, t), f))
+            # Where the two reads differ, and which of those differences
+            # are the clock rather than the bus.
+            #
+            # This used to allow any handful of moved bytes anywhere,
+            # which is a threshold standing in for a fact. The fact is
+            # in the DS1486 datasheet: its timekeeping registers are the
+            # FIRST FOURTEEN BYTES of the part, and on a TDS680B that
+            # part sits at the base of the window - the sixteen bytes
+            # read there decode as hundredths, seconds, minutes, hours,
+            # day, date, month, year and the command register, and they
+            # gave the right date and time to the second. So those
+            # fourteen bytes are expected to move and every other byte
+            # is not.
+            #
+            # No break aimed at the length: nothing the simulator can do
+            # makes the monitor hand back a short read, so a break there
+            # would only prove that the line exists. It stays because
+            # zip() stops at the shorter of the two, so without it a
+            # truncated second read would compare its own length and
+            # pass.
+            if len(again) != len(got):
+                raise RuntimeError(
+                    "The %s read a different length the second time. "
+                    "That is the bus, not the instrument - nothing has "
+                    "been written and nothing is lost, but the backup "
+                    "cannot be trusted, so this stopped here." % what)
+            moved = [i for i, (a, b) in
+                     enumerate(zip(bytearray(got), bytearray(again)))
+                     if a != b]
+            ticking = [i for i in moved
+                       if base == tds_fw.NVRAM_BASE and i < tds_fw.RTC_LEN]
+            rest = [i for i in moved if i not in set(ticking)]
+            if rest:
+                raise RuntimeError(
+                    "The %s read differently the second time, at %d "
+                    "place(s) outside the clock, the first at 0x%X. That "
+                    "is the bus, not the instrument - nothing has been "
+                    "written and nothing is lost, but the backup cannot "
+                    "be trusted, so this stopped here."
+                    % (what, len(rest), rest[0]))
+            if ticking:
+                # Not a fault and not tolerated noise: the instrument
+                # keeping time while it is read. A backup of a running
+                # clock is a snapshot of something live and cannot be
+                # otherwise.
+                report.setdefault("ticked", []).append(
+                    {"what": what, "bytes": len(ticking)})
+        # A name the plan chose for this region, if it chose one. The
+        # NVRAM backup is asked for through a save dialog, and handing
+        # back a file under a different name than the one just typed is
+        # a small betrayal. Anything not named keeps the derived name.
+        path = os.path.join(
+            plan["backup_dir"],
+            (plan.get("names") or {}).get(what) or "%s_%s_%s.bin" % (
+                plan.get("model") or "TDS", what, plan["stamp"]))
+        with open(path, "wb") as fh:
+            fh.write(got)
+        report.setdefault("backups", []).append(
+            {"what": what, "path": path, "bytes": len(got),
+             "sha": hashlib.sha256(got).hexdigest()})
+        return report
+
+    def fw_nvram(self, plan):
+        """The NVRAM alone, for its own sake rather than before a write.
+
+        The same monitor and the same reader the firmware job uses. It
+        is here and not on the Backup tab's tick list because the
+        instrument cannot be in two states at once: everything else that
+        tab collects is read from an instrument running its firmware,
+        and this is read from one sitting in its bootloader with the
+        protection switch moved.
+        """
+        report = {"backups": []}
+        inst = self.fw_session(plan["resource"], plan.get("normal") or "")
+        try:
+            flash = tds_fw.Flash(tds_fw.Monitor(inst))
+            self._progress("Measuring the NVRAM window", None)
+            keep = flash.nvram_keep_len(stop=self.cancelled.is_set)
+            self.fw_keep(flash, "NVRAM", tds_fw.NVRAM_BASE,
+                         keep, plan, report,
+                         self.cancelled.is_set)
+        finally:
+            try:
+                inst.close()
+            except Exception:
+                pass
+        return report
+
+    def fw_nvram_put(self, plan):
+        """Write a saved NVRAM back.
+
+        Nothing is kept first. The Back up... button beside Restore...
+        does exactly that and does it better - it names the file and
+        checks the read - so taking a second copy here by a second route
+        was a minute of every restore spent on a duplicate. Whoever
+        presses Restore is expected to have one, and the confirmation
+        says so before anything is written.
+
+        The clock is not written. `write_span` skips it - see there.
+        """
+        stop = self.cancelled.is_set
+        with open(plan["path"], "rb") as fh:
+            data = fh.read()
+        report = {"path": plan["path"], "wrote": 0, "backups": []}
+        inst = self.fw_session(plan["resource"], plan.get("normal") or "")
+        try:
+            flash = tds_fw.Flash(tds_fw.Monitor(inst))
+            # No undo taken here any more. It used to read the whole
+            # megabyte back first, which is a minute of the operation
+            # spent duplicating what the Back up... button beside this
+            # one does on its own - and doing it twice by two routes is
+            # two things to keep right. The undo is whatever was backed
+            # up before pressing Restore, and the confirmation says so.
+            # How much of the window is distinct memory, measured on
+            # this instrument rather than inferred from the file. A part
+            # smaller than the window answers at more than one address,
+            # so writing a whole dump writes those cells twice and the
+            # second copy wins. Content cannot answer it: blank memory
+            # reads alike at every address whether it is aliased or not,
+            # and a wiped NVRAM is exactly what somebody reaching for
+            # Restore is holding. The probe writes, which is why it
+            # waits until what is in the instrument is already on disk.
+            self._progress("Measuring what the window really holds", None)
+            here = flash.measure_distinct(tds_fw.NVRAM_BASE,
+                                          tds_fw.NVRAM_LEN, stop=stop)
+            # And what the file says about itself, as corroboration
+            # rather than as the measurement. A dump that repeats
+            # somewhere this instrument does not came off a differently
+            # laid out one.
+            told = tds_fw.nvram_distinct(data)
+            report["distinct"], report["held"] = here, len(data)
+            if told < len(data) and told != here:
+                raise RuntimeError(
+                    "This file was taken from an instrument whose NVRAM "
+                    "is laid out differently: it repeats itself from %s "
+                    "and this instrument holds %s of distinct memory. "
+                    "Restoring it would write the wrong cells. Nothing "
+                    "has been written and the instrument still holds "
+                    "what it did."
+                    % (human_bytes(told), human_bytes(here)))
+            self._progress("Writing the NVRAM ...", 0.0)
+            wrote_to = min(len(data), here)
+            report["wrote"] = flash.write_span(
+                data[:wrote_to], base=tds_fw.NVRAM_BASE,
+                skip=tds_fw.RTC_LEN, stop=stop,
+                note=lambda t, f: self._progress(
+                    "Restoring NVRAM - %s" % t, f))
+            self._progress("Reading it back to check it", 0.0)
+            back = flash.read(len(data), base=tds_fw.NVRAM_BASE, stop=stop,
+                              note=lambda t, f: self._progress(
+                                  "Checking the NVRAM - %s" % t, f))
+            # From the clock upwards, because the clock was not written
+            # and has moved on since anyway.
+            wrong = [i for i in range(tds_fw.RTC_LEN, len(data))
+                     if back[i] != data[i]]
+            report["wrong"] = len(wrong)
+            # Two different failures, and one message for both of them
+            # sends the reader after the wrong thing. Below `wrote_to`
+            # the bytes were written and did not take, which is the bus
+            # or the part. Above it they were never written: they are
+            # the same cells as somewhere lower down and were supposed
+            # to follow, so a difference there says the measurement was
+            # wrong and not that anything failed to write.
+            if wrong and wrong[0] >= wrote_to:
+                raise RuntimeError(
+                    "The %s of this file above %s does not match what "
+                    "the instrument reads back, at %d place(s), the "
+                    "first at 0x%X. That part was not written: it is the "
+                    "same memory as lower down and should have followed "
+                    "it. The measurement of what this instrument holds "
+                    "was wrong, or the file is from a differently laid "
+                    "out one. What was written below that point went in "
+                    "correctly."
+                    % (human_bytes(len(data) - wrote_to),
+                       human_bytes(wrote_to), len(wrong), wrong[0]))
+            if wrong:
+                raise RuntimeError(
+                    "The NVRAM did not read back as what was written, at "
+                    "%d place(s), the first at 0x%X. What is in the "
+                    "instrument now is neither what was there before nor "
+                    "what is in the file. Whatever Back up NVRAM... "
+                    "wrote before this is the way back."
+                    % (len(wrong), wrong[0]))
+        finally:
+            try:
+                inst.close()
+            except Exception:
+                pass
+        return report
+
+    def fw_run(self, plan):
+        """Back up, verify, erase, program, verify.
+
+        One job rather than five, because the instrument is only in this
+        state once and every step after the first depends on the one
+        before it. It is cancellable between chunks; the report says how
+        far it got.
+
+        The backups themselves are fw_keep, which the Backup tab's NVRAM
+        button calls on its own. One reader, so a backup taken for its
+        own sake is the same bytes and the same check as the one taken
+        on the way to a write.
+        """
+        stop = self.cancelled.is_set
+        image = tds_fw.read_image(plan["image"], plan.get("archive") or "")
+        if not image.startswith(tds_fw.IMAGE_HEAD):
+            raise RuntimeError(
+                "%s does not begin like a firmware image for this family."
+                % os.path.basename(plan["image"]))
+        report = {"image": plan["image"], "wrote": len(image), "backups": []}
+        inst = self.fw_session(plan["resource"], plan.get("normal") or "")
+        try:
+            mon = tds_fw.Monitor(inst)
+            flash = tds_fw.Flash(mon)
+            report["flash"] = flash.identify()
+
+            # The low 640 kB always, in full - it holds the two memory
+            # parts and everything a backup exists to save: user
+            # settings, saved waveforms, limits, masks, and on the
+            # earlier instruments the calibration constants. What sits
+            # above it is read only if a probe finds bytes there that
+            # the low region does not already carry; on a TDS680B it is
+            # the 512 kB part repeating and on a TDS784C it is empty, and
+            # a restore reproduces either from the low region. So the
+            # trim can only ever drop empty or duplicate bytes - the one
+            # part nobody can re-derive is never in the part trimmed.
+            self._progress("Measuring the NVRAM window", None)
+            nvram_keep = flash.nvram_keep_len(stop=stop)
+            for what, base, length in (
+                    ("NVRAM", tds_fw.NVRAM_BASE, nvram_keep),
+                    ("Firmware", tds_fw.FLASH_BASE, plan["backup_len"])):
+                self.fw_keep(flash, what, base, length, plan, report, stop)
+
+            # Does it fit? Measured now, while the part still holds
+            # something to measure - after the erase every boundary
+            # reads 0xFF and span() can only fall back to the
+            # catalogued size, which is the number this is checking.
+            #
+            # Nothing has ever been written to a part smaller than the
+            # image meant for it, and nothing should be: program()
+            # writes from the base for the length of the image, so an
+            # image longer than the array wraps and overwrites its own
+            # start. The images are not all one size - 25 are 4 MB,
+            # three are 3 MB and three are 1.5 MB - and which part a
+            # model carries does not follow from the image it runs, so
+            # this is asked rather than assumed.
+            room = flash.span()
+            if len(image) > room:
+                raise RuntimeError(
+                    "This image is %s and the flash in this instrument "
+                    "measures %s. Writing it would run off the end of "
+                    "the array and back over its own beginning.\n\n"
+                    "Nothing has been erased and nothing is lost. Check "
+                    "that the image is the right one for this model."
+                    % (tds_fw._size(len(image)), tds_fw._size(room)))
+            report["span"] = room
+            self._progress("Erasing the flash ...", None)
+            flash.erase(len(image), note=lambda t: self._progress(t, None),
+                        stop=stop)
+            # The helper is what makes this take minutes rather than
+            # hours, but it is code running on the instrument. Asking
+            # for the host's own page loop instead is how a first flash
+            # on an instrument nobody has tried this on tests one new
+            # thing at a time: that loop is the sequence the parts'
+            # datasheets describe, driven from here where it can be
+            # watched.
+            # Whether it was asked for matters as much as what happened:
+            # a run somebody chose to drive from here is not the same
+            # story as one where the helper would not go, and telling
+            # the second when the first is true reads as a failure.
+            report["asked_slow"] = bool(plan.get("slow"))
+            report["helper"] = (False if plan.get("slow")
+                                else flash.arm() is not None)
+            report["slow_pages"], report["blank_pages"] = flash.program(
+                image, stop=stop, note=self._progress)
+            self._progress("Checking what was written ...", 0.0)
+            report["faults"] = flash.verify(image, stop=stop,
+                                            note=self._progress)
+        finally:
+            try:
+                inst.close()
+            except Exception:
+                pass
+        return report
+
+
 # ---------------------------------------------------------------- previews
 
 def describe(name, data):
@@ -2662,7 +4282,6 @@ def describe(name, data):
 
 def describe_set(data):
     """Decode a setup file's mask geometry - doc/16 7a."""
-    import struct
     PT_BASE, STRIDE, CNT, CK, CKS = 0x0816, 200, 0x0E56, 0x1208, 0x1C
     if len(data) < CK + 2:
         return "not a recognisable .SET (too short: %d bytes)" % len(data)
@@ -2697,7 +4316,6 @@ def describe_set(data):
 def describe_bmp(data):
     if len(data) < 54 or data[:2] != b"BM":
         return "not a BMP (%d bytes)" % len(data)
-    import struct
     size, _, _, off = struct.unpack_from("<IHHI", data, 2)
     w, h, _planes, bpp = struct.unpack_from("<iihh", data, 18)
     return ("BMP %d x %d, %d bpp, %d bytes (header says %d), pixels at %d\n"
@@ -3108,7 +4726,11 @@ def run_gui():
     # reading it gives the same samples every time until somebody
     # replaces them. One list of eleven names hid that distinction
     # completely.
-    wleftf = ttk.Frame(wpanes)
+    wleftf = ttk.Frame(wpanes, width=LEFT_PANE)
+    # The one width for all three left panes - see LEFT_PANE. The frame
+    # is told not to shrink to its lists, or its own request would win
+    # and the three would go back to disagreeing.
+    wleftf.pack_propagate(False)
     # Under the two lists, because the two lists are what it refreshes.
     # Up among the save buttons it read as another way of saying Get
     # waveform, which it is not: this asks the instrument which sources
@@ -3167,10 +4789,12 @@ def run_gui():
     lbl_wsrc.pack(anchor="w")
     lbl_wlive = ttk.Label(wlivef, foreground="#555", wraplength=190,
                           justify="left")
-    says(lbl_wlive, "A snapshot of what the instrument is acquiring now. "
-                    "A greyed name is switched off there; choosing it "
-                    "switches it on. Double-click a name to switch it off "
-                    "again.")
+    # Broken by hand, a line to a fact. fit_notes wraps whatever is left
+    # over to the pane, so these three stay three however narrow it gets.
+    says(lbl_wlive, "A snapshot of what the instrument is currently "
+                    "acquiring.\n"
+                    "A greyed name is switched off on the instrument.\n"
+                    "Double click the name to turn a channel on and off.")
     lbl_wlive.pack(anchor="w", pady=(0, 2))
     # Several at once, so more than one trace can be put on the
     # graticule together, the way they sit on the instrument's screen.
@@ -3184,8 +4808,8 @@ def run_gui():
     lbl_wref.pack(anchor="w", pady=(6, 0))
     lbl_wrnote = ttk.Label(wreff, foreground="#555", wraplength=190,
                            justify="left")
-    says(lbl_wrnote, "Held in the instrument's memory. Pick one or more, "
-                     "then load a file into them.")
+    says(lbl_wrnote, "Held in the instrument's memory.\n"
+                     "Pick one or more, then load a file into them.")
     lbl_wrnote.pack(anchor="w", pady=(0, 2))
     # Several at once, so one file can be loaded into more than one
     # reference and all of them sent in a single go.
@@ -3196,7 +4820,7 @@ def run_gui():
     # construction, and a callback that names a widget not yet made
     # raises from inside Tk's own event loop.
     wleftf.bind("<Configure>", fit_notes)
-    wpanes.add(wleftf, weight=1)
+    wpanes.add(wleftf, weight=0)
 
     wrightf = ttk.Frame(wpanes)
     # A strip above the plot showing the whole record with the part on
@@ -3674,7 +5298,9 @@ def run_gui():
             view.first = over_time(evt.x) - view.span / 2.0
             view.clamp()
         else:
-            # The end that was not taken hold of stays where it is.
+            # The end that was not taken hold of stays where it is -
+            # stretch_to keeps it there rather than this reading it
+            # back, which is why it can be read back at all.
             other = view.first + view.span if edge == "first" else view.first
             view.stretch_to(over_time(evt.x), other,
                             "last" if edge == "first" else "first")
@@ -3964,7 +5590,8 @@ def run_gui():
     # generation has no mask file format, so a mask left there was a
     # file the instrument itself could not read, and the library on
     # this computer had already done the job.
-    mleftf = ttk.Frame(mpanes)
+    mleftf = ttk.Frame(mpanes, width=LEFT_PANE)
+    mleftf.pack_propagate(False)          # the one width - see LEFT_PANE
     msplit = ttk.PanedWindow(mleftf, orient="vertical")
     msplit.pack(fill="both", expand=True)
 
@@ -4066,8 +5693,13 @@ def run_gui():
     # No scrollbar: there are eight segments and the list is eight rows
     # tall, so there is never anything to scroll to.
     mlive.pack(side="left", fill="both", expand=True)
-    msplit.add(mlivef, weight=1)
-    mpanes.add(mleftf, weight=1)
+    # weight=0, because this pane is eight rows and always eight rows.
+    # Given a share of the spare height it drew those eight and left the
+    # rest of its allocation blank. The library above scrolls and has as
+    # many rows as there are masks, so the spare height belongs to it.
+    # The sash still moves if somebody wants it elsewhere.
+    msplit.add(mlivef, weight=0)
+    mpanes.add(mleftf, weight=0)
 
     mrightf = ttk.Frame(mpanes)
     # What can be done to a mask, above the drawing: undoing comes
@@ -4120,8 +5752,10 @@ def run_gui():
     ttk.Separator(mtools, orient="horizontal").pack(fill="x", pady=5)
     for key, english in (
             ("union", "Union: join the two selected shapes into one"),
-            ("intersect", "Intersect: keep only where the two selected shapes overlap"),
-            ("subtract", "Subtract: take the second selected shape out of the first")):
+            ("intersect", "Intersect: keep only where the two selected "
+                          "shapes overlap"),
+            ("subtract", "Subtract: take the second selected shape out "
+                         "of the first")):
         bb = ttk.Button(mtools, style="Toolbutton", padding=3,
                         command=lambda k=key: do_msk_boolean(k))
         bb.pack(pady=(0, 2))
@@ -4280,7 +5914,27 @@ def run_gui():
 
     def edit_redraw():
         edit_tidy()
-        (draw_limits if edit_here() == "lim" else draw_mask)()
+        # Buttons follow the drawing, not just the file library: drawing
+        # the first shape on a fresh pane has to enable Save template
+        # as... there and then, and every draw action passes through
+        # here. The button refreshers only set widget states - neither
+        # redraws - so this does not loop.
+        if edit_here() == "lim":
+            draw_limits()
+            lim_buttons()
+        else:
+            draw_mask()
+            msk_buttons()
+
+    def edit_draw(which):
+        """Redraw one named canvas, whichever tab is in front.
+
+        `which` is the "m" or "l" that prefixes that drawing's state
+        keys. Named rather than inferred, because what puts a trace or
+        a screen behind a drawing can finish while the other tab is
+        being looked at.
+        """
+        (draw_limits if which == "l" else draw_mask)()
 
     def edit_soon():
         """Redraw once the pointer stops arriving, not once per event.
@@ -4312,9 +5966,10 @@ def run_gui():
     def edit_new():
         """Start a drawing of whichever kind is in front.
 
-        The masks tab has a New mask button and a library behind
-        it; the limits tab has neither, because a limits drawing
-        is one band for one signal and there is nothing to name.
+        What the pen does on an empty canvas, which is not what the
+        New button does: nothing is offered to be saved and nothing
+        already on the graticule is taken off. Somebody who has put the
+        pen down on the glass has said what they want to happen.
         """
         if edit_here() == "lim":
             state["lmask"] = tds_msk.Mask(
@@ -4567,7 +6222,7 @@ def run_gui():
         # all: it is cropped to its graticule and scaled to this one, so
         # the editor's graticule lands on the instrument's own and the
         # two agreeing is the thing to be able to see.
-        shot = msk_shot_image()
+        shot = msk_shot_image("m", mask_frame())
         if shot is not None:
             mplot.create_image(left, top, image=shot, anchor="nw",
                                tags="shot")
@@ -5026,8 +6681,8 @@ def run_gui():
         say(_("%d shape(s) pasted") % len(held))
         return "break"
 
-    def do_msk_behind():
-        """Put whatever the instrument is showing behind the mask.
+    def do_msk_behind(which="m"):
+        """Put whatever the instrument is showing behind the drawing.
 
         One button and two answers, because the instrument has two
         states: a readable waveform, or DPO, where there is no record to
@@ -5038,6 +6693,11 @@ def run_gui():
         """
         if state["busy"] or state.get("cannot") is None:
             return
+        # Which drawing it goes behind, remembered now rather than
+        # worked out when the instrument answers: reading a screen
+        # takes a second or two and the other tab may be in front by
+        # then.
+        state["behindfor"] = which
         busy(True, "wait")
         say(_("Reading what the instrument is showing ..."))
         w.submit("msk_behind",
@@ -5124,15 +6784,15 @@ def run_gui():
                     return (_("FAIL"), "#e04a4a")
         return (_("PASS"), "#3fb950")
 
-    def msk_shot_behind():
+    def msk_shot_behind(which="m"):
         """The captured screen as plot_png wants it, or None.
 
-        The same pixels the canvas draws behind the mask, so the saved
-        picture is the picture on screen. In DPO it is the only thing
-        there is to show: a saved mask test with an empty graticule
-        behind it is a verdict nobody can check.
+        The same pixels the canvas draws behind the drawing, so the
+        saved picture is the picture on screen. In DPO it is the only
+        thing there is to show: a saved mask test with an empty
+        graticule behind it is a verdict nobody can check.
         """
-        shot = state.get("mshot")
+        shot = state.get(which + "shot")
         if not shot:
             return None
         return (shot["pixels"], shot["palette"],
@@ -5157,21 +6817,26 @@ def run_gui():
                    "which": ", ".join(str(n) for n in
                                       sorted(hits.get("each") or {}))})
 
-    def msk_shot_image():
-        """The captured screen, scaled to the graticule, as a PhotoImage.
+    def msk_shot_image(which, frame):
+        """The captured screen, scaled to `frame`, as a PhotoImage.
 
         Rescaled whenever the window changes size and kept until it
         does, because the scaling is the expensive part and a resize is
         the only thing that invalidates it.
+
+        The frame is passed rather than measured, and the drawing named
+        rather than inferred: this is called while one canvas is being
+        redrawn, and which canvas that is is not always the one the tab
+        strip is showing.
         """
-        shot = state.get("mshot")
+        shot = state.get(which + "shot")
         if not shot:
             return None
-        left, top, right, bottom = mask_frame()
+        left, top, right, bottom = frame
         wide, tall = int(right - left), int(bottom - top)
         if wide < 8 or tall < 8:
             return None
-        held = state.get("mshotimage")
+        held = state.get(which + "shotimage")
         if held and held[0] == (wide, tall):
             return held[1]
         try:
@@ -5181,9 +6846,9 @@ def run_gui():
             image = tk.PhotoImage(data=base64.b64encode(png))
         except Exception as exc:
             log_note("mask", "the captured screen would not scale: %s" % exc)
-            state.pop("mshot", None)
+            state.pop(which + "shot", None)
             return None
-        state["mshotimage"] = ((wide, tall), image)
+        state[which + "shotimage"] = ((wide, tall), image)
         return image
 
     def do_msk_view_save():
@@ -5194,7 +6859,12 @@ def run_gui():
         in the same scheme and at the size set in the colours dialog.
         """
         mask = state.get("mask")
-        if mask is None or not mask.filled():
+        # A mask with nothing in it is still worth saving when there is
+        # a trace or a captured screen behind it - that picture is the
+        # evidence. The button is greyed when there is none of the
+        # three, so this is the case where the drawing alone is empty.
+        if mask is None or not (mask.filled() or state.get("mwave")
+                                is not None or state.get("mshot")):
             messagebox.showinfo(_("Nothing to save"),
                                 _("This mask has no segments with points "
                                   "in them yet."))
@@ -5619,6 +7289,8 @@ def run_gui():
         ttk.Label(place, text=_("Shape centre")).pack(side="left")
         mid = ttk.Entry(place, textvariable=origin, width=16)
         mid.pack(side="left", padx=6)
+        hints(mid, "The shape's centre, as X,Y in percent of the "
+                   "graticule")
         ttk.Label(pad, text=_("Points")).pack(anchor="w", pady=(10, 2))
         rows = ttk.Treeview(pad, columns=("n", "x", "y"), show="headings",
                             height=8, selectmode="browse")
@@ -5834,7 +7506,7 @@ def run_gui():
         state[edit_key("dirty")] = True
         state.setdefault(edit_key("undo"), []).append(shapes)
         del state[edit_key("undo")][:-UNDO_DEEP]
-        state[edit_key("redo")] = []                  # a new edit forks the future
+        state[edit_key("redo")] = []         # a new edit forks the future
         state["mrun"] = None                 # and ends any run of nudges
         msk_undo_buttons()
 
@@ -5864,24 +7536,40 @@ def run_gui():
         msk_undo_buttons()
 
     def msk_may_discard():
-        """True if the mask on screen may be thrown away.
+        """True if the drawing on screen may be thrown away.
 
         Yes, No, Cancel, the way every other program asks: saving is
         offered rather than assumed, and Cancel means the drawing is
         left exactly as it was.
+
+        Whichever tab is in front, and it saves that tab's kind of
+        file: offering to save a limit template and writing a mask
+        would put it in the wrong library under the wrong meaning.
         """
         mask = edit_mask()
-        if not state.get(edit_key("dirty")) or mask is None or not mask.filled():
+        if (not state.get(edit_key("dirty")) or mask is None
+                or not mask.filled()):
             return True
-        answer = messagebox.askyesnocancel(
-            _("Save changes?"),
-            _("%s has been changed. Save it before starting a new mask?")
-            % (mask.name or _("This mask")), parent=root, default="yes")
+        if edit_here() == "lim":
+            answer = messagebox.askyesnocancel(
+                _("Save changes?"),
+                _("%s has been changed. Save it before starting a new "
+                  "limit template?")
+                % (mask.name or _("This limit template")),
+                parent=root, default="yes")
+        else:
+            answer = messagebox.askyesnocancel(
+                _("Save changes?"),
+                _("%s has been changed. Save it before starting a new "
+                  "mask?")
+                % (mask.name or _("This mask")), parent=root,
+                default="yes")
         if answer is None:
             return False
         if answer:
-            do_msk_save()
-            return not state.get(edit_key("dirty"))     # a cancelled save cancels
+            (do_lim_file_save if edit_here() == "lim" else do_msk_save)()
+            # a cancelled save cancels
+            return not state.get(edit_key("dirty"))
         return True
 
     def msk_restore(shapes):
@@ -6237,8 +7925,19 @@ def run_gui():
                          and state.get("mask") is not None else "disabled")
         btn_mload.config(state="normal" if joined else "disabled")
         btn_mclear.config(state="normal" if joined else "disabled")
-        btn_msave.config(state="normal" if state.get("mask") is not None
-                         else "disabled")
+        btn_mgrab.config(state="normal" if joined else "disabled")
+        # There has to be something to save. An empty mask is a name
+        # and no points, and a file of one is no use to anybody.
+        drawn = state.get("mask")
+        btn_msave.config(state="normal" if drawn is not None
+                         and drawn.points else "disabled")
+        # And something on the graticule to make a picture of - the
+        # mask, a trace behind it, or a captured screen. The same rule
+        # as the Limits tab's Save image.
+        btn_mview.config(state="normal" if (drawn is not None
+                                            and drawn.points)
+                         or state.get("mwave") is not None
+                         or state.get("mshot") else "disabled")
         # The setup comes off the instrument and is written beside the
         # mask's own file, so it needs both to exist.
         btn_msetup.config(state="normal" if joined and state.get("mask")
@@ -6506,12 +8205,18 @@ def run_gui():
                 break
         do_msk_scan()
 
-    def do_msk_trace():
-        """Put a trace behind the mask, to draw against or to check.
+    def do_msk_trace(which="m"):
+        """Put a trace behind the drawing, to draw against or to check.
 
         Any waveform this program can read: what was captured on the
         Waveforms tab, or a file from the PC in any of the formats it
         loads.
+
+        `which` is "m" or "l" - the mask or the limits envelope. Both
+        tabs put a trace behind what is drawn, and it is the same job;
+        only the drawing it lands under differs. The limits tab has no
+        view of its own to set, because it draws the record as the
+        instrument scaled it.
         """
         held = shown_waves()
         if held and messagebox.askyesno(
@@ -6519,9 +8224,17 @@ def run_gui():
                 _("Put %s from the Waveforms tab behind the mask?\n\n"
                   "No opens a file instead.") % wave_name(held[0]),
                 parent=root):
-            state["mwave"] = held[0]
-            state["mview"] = tds_wfm.PlotView([held[0]])
-            draw_mask()
+            state[which + "wave"] = held[0]
+            # Whose trace this is. Learn template builds from a trace
+            # that came from here rather than going to the instrument
+            # for another one, and only a trace this button put there
+            # counts - the one Refresh reads back is the instrument's
+            # own and learning from it would be learning from itself.
+            state[which + "wavefrom"] = "pc"
+            if which == "m":
+                state["mview"] = tds_wfm.PlotView([held[0]])
+            edit_draw(which)
+            lim_buttons()
             return
         path = filedialog.askopenfilename(
             parent=root, title=_("Load trace"),
@@ -6537,9 +8250,13 @@ def run_gui():
                                      % (_("Could not load that file"),
                                         exc))
             return
-        state["mwave"] = wave
-        state["mview"] = tds_wfm.PlotView([wave])
-        draw_mask()
+        state[which + "wave"] = wave
+        state[which + "wavefrom"] = "pc"
+        if which == "m":
+            state["mview"] = tds_wfm.PlotView([wave])
+        edit_draw(which)
+        msk_buttons()
+        lim_buttons()
         say(_("Loaded %s behind the mask") % os.path.basename(path))
 
     def msk_setup_path(mask=None):
@@ -6562,7 +8279,8 @@ def run_gui():
         setup = msk_setup_path(mask)
         if not setup:
             return None
-        found = re.search(r':REM\s+"UI\s+([0-9.eE+-]+)"', tds_set.contents(setup))
+        found = re.search(r':REM\s+"UI\s+([0-9.eE+-]+)"',
+                          tds_set.contents(setup))
         return float(found.group(1)) if found else None
 
     def msk_differential(mask=None):
@@ -6709,6 +8427,7 @@ def run_gui():
                                   state="readonly",
                                   values=inputs + [_("find it")])
         pick_clock.pack(side="left", padx=(6, 0))
+        hints(pick_clock, "Which input carries the clock, or find it")
         ttk.Radiobutton(box, variable=trig, value="data", text=_(
             "the data itself")).pack(anchor="w", pady=(4, 0))
         ttk.Label(box, wraplength=440, foreground="#555", text=_(
@@ -6757,22 +8476,34 @@ def run_gui():
                                  root.winfo_rooty() + 80))
         state["dialog"] = dlg
 
-    def do_msk_setup():
-        """Write the instrument's settings beside the open mask.
+    def setup_mask():
+        """The drawing whose setup is being written, mask or template."""
+        return state.get(state.get("setupfor") or "mask")
+
+    def do_msk_setup(which="mask"):
+        """Write the instrument's settings beside the open drawing.
 
         Read from the instrument rather than made up, because the point
-        of the file is to record what the mask was drawn against. The
-        mask has to have been saved first: the setup goes beside it, and
+        of the file is to record what the drawing was made against. It
+        has to have been saved first: the setup goes beside it, and
         beside nothing is nowhere.
+
+        `which` is the state key of the drawing this is for - "mask" or
+        "lmask". Both tabs want the same file beside their own, so this
+        is one function and one dialog, and which drawing is being
+        asked about is settled when the button is pressed rather than
+        by looking at which tab happens to be in front when the
+        instrument answers.
         """
-        mask = state.get("mask")
+        state["setupfor"] = which
+        mask = setup_mask()
         if mask is None or state["busy"]:
             return
         if not mask.origin:
             messagebox.showinfo(
-                _("Save the mask first"),
-                _("A setup is written beside the mask's own file, under "
-                  "the same name. Save the mask, then save its setup."))
+                _("Save it first"),
+                _("A setup is written beside the drawing's own file, "
+                  "under the same name. Save it, then save its setup."))
             return
         busy(True, "wait")
         say(_("Reading the instrument's settings ..."))
@@ -6808,7 +8539,7 @@ def run_gui():
         nowhere else: no instrument setting records either, and the eye
         setup cannot be done without the first of them.
         """
-        mask = state.get("mask")
+        mask = setup_mask()
         if mask is None or not mask.origin:
             return
         # What is already beside the mask wins over what the instrument
@@ -6850,6 +8581,7 @@ def run_gui():
         ui = ttk.Entry(rows, width=16)
         ui.insert(0, "" if was_ui is None else "%g" % was_ui)
         ui.grid(row=at, column=1, sticky="w", padx=8, pady=(8, 1))
+        hints(ui, "The bit period in seconds, for the eye diagram")
         diff = tk.BooleanVar(value=bool(was_diff))
         says(ttk.Checkbutton(rows, variable=diff),
              "The signal is differential").grid(row=at + 1, column=0,
@@ -6894,8 +8626,8 @@ def run_gui():
         state["dialog"] = dlg
 
     def msk_setup_write(fields):
-        """Put what the instrument said into a file beside the mask."""
-        mask = state.get("mask")
+        """Put what the instrument said into a file beside the drawing."""
+        mask = setup_mask()
         if mask is None or not mask.origin:
             return
         path = tds_set.beside(mask.origin)
@@ -6907,7 +8639,14 @@ def run_gui():
             say(_("The setup was left as it was"))
             return
         try:
-            with open(path, "w") as fh:
+            # Latin-1 with replacement, which is what tds_set.contents
+            # reads these back as. Left to the platform default this
+            # wrote cp1252 on Windows and was read as latin-1, so the
+            # two disagreed over 0x80-0x9F - the range a curly quote or
+            # an em dash in a mask's name lands in - and a name outside
+            # the code page raised UnicodeEncodeError past the OSError
+            # below and took the button down with it.
+            with open(path, "w", encoding="latin-1", errors="replace") as fh:
                 fh.write(tds_set.text(
                     fields, os.path.splitext(os.path.basename(path))[0],
                     said=(state.get("idn") or "").strip(),
@@ -6919,8 +8658,15 @@ def run_gui():
         say(_("Saved %(name)s - %(what)s")
             % {"name": os.path.basename(path),
                "what": tds_set.summary(fields)})
-        do_msk_scan()
-        say_mask()
+        # The library the file landed in, and the line under that tab's
+        # own canvas. A setup beside a template is listed by the limits
+        # library, not by the masks one.
+        if state.get("setupfor") == "lmask":
+            do_lim_scan()
+            say_limits()
+        else:
+            do_msk_scan()
+            say_mask()
 
     def msk_setup_landed(payload):
         """What the instrument did with a setup, against what was asked.
@@ -7053,7 +8799,8 @@ def run_gui():
                      "drawn against.")),
                 parent=root, default="yes"):
             asked = tds_set.parse(tds_set.contents(setup))
-            lines = [ln.lstrip(":") for ln in tds_set.contents(setup).splitlines()
+            lines = [ln.lstrip(":")
+                     for ln in tds_set.contents(setup).splitlines()
                      if ln.strip() and not ln.strip().lstrip(":").upper()
                      .startswith("REM")]
             # Kept so the answer can be compared with the question when
@@ -7077,7 +8824,6 @@ def run_gui():
             return
         live = [s for s in (state.get("wsources") or [])
                 if not s.startswith("REF")]
-        refs = list(state.get("wrefs") or tds_wfm.REFS)
         dlg = tk.Toplevel(root)
         dlg.title(_("Send as a mask"))
         dlg.transient(root)
@@ -7164,25 +8910,42 @@ def run_gui():
     lrow1 = ttk.Frame(ltop)
     lrow1.pack(fill="x")
     lrow2 = ttk.Frame(ltop)
-    btn_llearn = ttk.Button(ltop, text=_("Create template"),
+    # The same six verbs as the Masks tab's toolbar, in the same order:
+    # what a template is, then what it was drawn against, then the
+    # picture of it. Everything that reaches the instrument's
+    # references - sending an envelope, reading one back, starting and
+    # stopping a test, emptying a reference - sits beside the list of
+    # references instead, the way the Masks tab keeps its transfers
+    # beside the segments they move.
+    btn_lnew = ttk.Button(ltop, text=_("New template"), padding=(10, 2),
+                          command=lambda: do_lim_new())
+    btn_lsavefile = ttk.Button(ltop, text=_("Save template as..."),
+                               padding=(10, 2),
+                               command=lambda: do_lim_file_save())
+    btn_lsetup = ttk.Button(ltop, text=_("Save setup..."), padding=(10, 2),
+                            command=lambda: do_msk_setup("lmask"))
+    btn_ldelfile = ttk.Button(ltop, text=_("Delete template"),
+                              padding=(10, 2),
+                              command=lambda: do_lim_file_delete())
+    btn_llearn = ttk.Button(ltop, text=_("Learn template"),
                             padding=(10, 2),
                             command=lambda: do_lim_learn())
-    btn_lclear = ttk.Button(ltop, text=_("Clear the envelope"),
-                            padding=(10, 2),
-                            command=lambda: do_lim_clear())
-    btn_lsend = ttk.Button(ltop, text=_("Use this envelope"),
-                           padding=(10, 2),
-                           command=lambda: do_lim_send())
-    btn_lstart = ttk.Button(ltop, text=_("Start test"), padding=(10, 2),
-                            command=lambda: do_lim_start())
-    btn_lstop = ttk.Button(ltop, text=_("Stop test"), padding=(10, 2),
-                           command=lambda: do_lim_stop())
+    # The Masks tab's two, doing the same two things to this tab's
+    # drawing: a trace to draw against, and the instrument's own screen
+    # for when it is in DPO and there is no record to read.
+    btn_ltrace = ttk.Button(ltop, text=_("Load trace..."), padding=(10, 2),
+                            command=lambda: do_msk_trace("l"))
+    btn_lgrab = ttk.Button(ltop, text=_("Capture screen"), padding=(10, 2),
+                           command=lambda: do_msk_behind("l"))
     btn_lview = ttk.Button(ltop, text=_("Save image..."), padding=(10, 2),
                            command=lambda: do_lim_view_save())
     btn_lrefresh = ttk.Button(ltop, text=_("Refresh"), padding=(10, 2),
                               command=lambda: do_lim_refresh())
-    LIM_LEFT = (btn_llearn, btn_lsend, btn_lclear, btn_lstart,
-                btn_lstop, btn_lview)
+    # Load trace before Learn template, which is the order they are
+    # used in: a template is learnt from a trace, and the trace has to
+    # be there first.
+    LIM_LEFT = (btn_lnew, btn_lsavefile, btn_lsetup, btn_ldelfile,
+                btn_ltrace, btn_llearn, btn_lgrab, btn_lview)
     LIM_RIGHT = (btn_lrefresh,)
     lim_flow = flowing(ltop, lrow1, lrow2, LIM_LEFT, LIM_RIGHT, "lflow")
     ltop.bind("<Configure>", lim_flow)
@@ -7190,29 +8953,65 @@ def run_gui():
     lbody = ttk.Frame(limtab)
     lbody.pack(fill="both", expand=True, padx=2, pady=4)
 
-    lopts = ttk.Frame(lbody)
-    lopts.pack(side="left", fill="y", padx=(0, 8))
-    # Three numbered lines rather than a paragraph: this is the tab a
-    # person who does not know what an envelope is has to be able to
-    # work, and the whole of it really is three presses.
-    lbl_lsteps = ttk.Label(lopts, wraplength=210, justify="left")
-    says(lbl_lsteps,
-         "1. Put a signal you are happy with on the instrument.\n"
-         "2. Set the vertical and horizontal tolerances.\n"
-         "3. Create template, then Start test.")
-    lbl_lsteps.grid(row=0, column=0, sticky="w", pady=(0, 10))
+    # One column down the left, the way the Masks tab has one: the
+    # library at the top, what the instrument is holding at the bottom,
+    # and between them the controls a template is built from.
+    #
+    # The three groups are packed before they are filled, because the
+    # order is the design and it is worth being able to see it in one
+    # place. The two lower ones are packed first and take the height
+    # they ask for; the library gets what is left, which is what its
+    # scrollbar is for. Packed the other way round, a short window
+    # would take its bite out of the references instead - and those are
+    # the rows this tab is steered by.
+    llistf = ttk.Frame(lbody, width=LEFT_PANE)
+    llistf.pack_propagate(False)          # the one width - see LEFT_PANE
+    llistf.pack(side="left", fill="y", padx=(0, 8))
+    lpcg = ttk.Frame(llistf)
+    lopts = ttk.Frame(llistf)
+    lrefg = ttk.Frame(llistf)
+    lrefg.pack(side="bottom", fill="x")
+    lopts.pack(side="bottom", fill="x", pady=(10, 12))
+    lpcg.pack(side="top", fill="both", expand=True)
+
+    lbl_lpc = ttk.Label(lpcg)
+    says(lbl_lpc, "Saved on this computer")
+    lbl_lpc.pack(side="top", anchor="w")
+    # Saving, deleting and the setup beside a template are all in the
+    # toolbar now, where the Masks tab keeps the same three. What is
+    # left under the list is what the Masks tab has under its own: how
+    # to open one.
+    lbl_lpcnote = ttk.Label(lpcg, foreground="#555", wraplength=190,
+                            justify="left")
+    says(lbl_lpcnote, "Double click to edit.")
+    lbl_lpcnote.pack(side="top", anchor="w", pady=(0, 2))
+    lpcf = ttk.Frame(lpcg)
+    lpcf.pack(side="top", fill="both", expand=True, pady=(2, 0))
+    lpc = ttk.Treeview(lpcf, columns=("what",), show="tree headings",
+                       height=4, selectmode="browse")
+    lpc.column("#0", width=110, stretch=False, anchor="w")
+    lpc.column("what", width=110, stretch=True, anchor="w")
+    lpc_bar = ttk.Scrollbar(lpcf, orient="vertical", command=lpc.yview)
+    lpc.configure(yscrollcommand=lpc_bar.set)
+    lpc_bar.pack(side="right", fill="y")
+    lpc.pack(side="left", fill="both", expand=True)
 
     state["lsource"] = tk.StringVar(value="CH1")
     state["ldest"] = tk.StringVar(value="REF1")
     state["lvert"] = tk.StringVar(value="0.5")
     state["lhorz"] = tk.StringVar(value="0.2")
 
+    # Label beside the box rather than over it. Three stacked pairs
+    # cost sixty pixels of height that this column no longer has to
+    # spare, and none of the three labels is long enough to need the
+    # width - the German ones are the longest and still fit.
     lbl_lsource = ttk.Label(lopts, text=_("Signal"))
     says(lbl_lsource, "Signal")
-    lbl_lsource.grid(row=1, column=0, sticky="w")
+    lbl_lsource.grid(row=1, column=0, sticky="w", pady=(0, 4))
     cmb_lsource = ttk.Combobox(lopts, textvariable=state["lsource"],
-                               width=10, state="readonly")
-    cmb_lsource.grid(row=2, column=0, sticky="w", pady=(2, 10))
+                               width=8, state="readonly")
+    cmb_lsource.grid(row=1, column=1, sticky="w", padx=(8, 0),
+                     pady=(0, 4))
 
     # Divisions, because that is what the instrument's own command
     # takes and, as it happens, what a person can see: half a division
@@ -7220,21 +9019,24 @@ def run_gui():
     # 0 to 5 is the instrument's range and anything in it is allowed.
     lbl_lvert = ttk.Label(lopts, text=_("Vertical tolerance"))
     says(lbl_lvert, "Vertical tolerance")
-    lbl_lvert.grid(row=3, column=0, sticky="w")
-    cmb_lvert = ttk.Combobox(lopts, textvariable=state["lvert"], width=10,
+    lbl_lvert.grid(row=2, column=0, sticky="w", pady=(0, 4))
+    cmb_lvert = ttk.Combobox(lopts, textvariable=state["lvert"], width=8,
                              values=("0", "0.1", "0.2", "0.5", "1", "2"))
-    cmb_lvert.grid(row=4, column=0, sticky="w", pady=(2, 10))
+    cmb_lvert.grid(row=2, column=1, sticky="w", padx=(8, 0), pady=(0, 4))
 
     lbl_lhorz = ttk.Label(lopts, text=_("Horizontal tolerance"))
     says(lbl_lhorz, "Horizontal tolerance")
-    lbl_lhorz.grid(row=5, column=0, sticky="w")
-    cmb_lhorz = ttk.Combobox(lopts, textvariable=state["lhorz"], width=10,
+    lbl_lhorz.grid(row=3, column=0, sticky="w", pady=(0, 10))
+    cmb_lhorz = ttk.Combobox(lopts, textvariable=state["lhorz"], width=8,
                              values=("0", "0.1", "0.2", "0.5", "1", "2"))
-    cmb_lhorz.grid(row=6, column=0, sticky="w", pady=(2, 2))
-    lbl_ldivs = ttk.Label(lopts, wraplength=210, foreground="#555",
-                          justify="left")
-    says(lbl_ldivs, "Both in divisions of the graticule, 0 to 5.")
-    lbl_ldivs.grid(row=7, column=0, sticky="w", pady=(0, 10))
+    cmb_lhorz.grid(row=3, column=1, sticky="w", padx=(8, 0), pady=(0, 10))
+    # A tooltip rather than a line of grey under the boxes. The column
+    # is a column of controls now that the list and the references are
+    # in it as well, and three paragraphs of explanation in it were
+    # what pushed the references off the bottom of a short window.
+    # Section 5 of the manual is where this is written down.
+    for box in (cmb_lvert, cmb_lhorz):
+        hints(box, "Both in divisions of the graticule, 0 to 5.")
 
     # How closely the drawn envelope follows what the instrument
     # learnt. The band is 250 columns and nobody can drag 500 handles, so
@@ -7244,20 +9046,20 @@ def run_gui():
     # choice can be seen rather than guessed at.
     lbl_ldetail = ttk.Label(lopts)
     says(lbl_ldetail, "Detail")
-    lbl_ldetail.grid(row=8, column=0, sticky="w")
+    lbl_ldetail.grid(row=4, column=0, columnspan=2, sticky="w")
+    # The slider keeps the full width of the column: it is dragged, and
+    # a hundred pixels of travel for four hundred and eighty handles is
+    # not something anybody can place.
     ldetail = ttk.Frame(lopts)
-    ldetail.grid(row=9, column=0, sticky="we", pady=(2, 0))
+    ldetail.grid(row=5, column=0, columnspan=2, sticky="we", pady=(2, 0))
     state["ldetail"] = tk.IntVar(value=LEARN_HANDLES)
     lbl_ldnum = ttk.Label(ldetail, width=4, anchor="e", foreground="#555")
     lbl_ldnum.pack(side="right")
     scl_ldetail = ttk.Scale(ldetail, from_=LEARN_LEAST, to=LEARN_MOST,
                             orient="horizontal")
     scl_ldetail.pack(side="left", fill="x", expand=True)
-    lbl_ldsays = ttk.Label(lopts, wraplength=210, foreground="#555",
-                           justify="left")
-    says(lbl_ldsays, "Handles to spend on the envelope. More follows "
-                     "the signal more closely and is more to edit.")
-    lbl_ldsays.grid(row=10, column=0, sticky="w", pady=(2, 10))
+    hints(scl_ldetail, "Handles to spend on the envelope. More follows "
+                       "the signal more closely and is more to edit.")
 
     def lim_detail(value=None):
         """The slider moved: re-thin the drawn envelope from the band.
@@ -7294,28 +9096,320 @@ def run_gui():
     scl_ldetail.bind("<ButtonPress-1>", lambda e: msk_remember())
     lim_detail(LEARN_HANDLES)
 
-    lbl_ldest = ttk.Label(lopts, text=_("Destination"))
-    says(lbl_ldest, "Destination")
-    lbl_ldest.grid(row=11, column=0, sticky="w")
-    cmb_ldest = ttk.Combobox(lopts, textvariable=state["ldest"], width=10,
-                             state="readonly")
-    cmb_ldest.grid(row=12, column=0, sticky="w", pady=(2, 2))
-    lbl_lwarn = ttk.Label(lopts, wraplength=210, foreground="#555",
-                          justify="left")
-    says(lbl_lwarn, "Whatever that reference holds now is replaced.")
-    lbl_lwarn.grid(row=13, column=0, sticky="w", pady=(0, 12))
+    def lim_dest_changed(_evt=None):
+        """A different reference is a different question.
 
-    # The verdict, in the one place somebody will be looking. A limit
-    # test reports a failure by stopping the instrument, so this is the
-    # whole of it and it deserves the room.
-    limface = tkfont.nametofont("TkDefaultFont").copy()
-    limface.configure(size=max(11, abs(limface.cget("size")) + 3),
-                      weight="bold")
-    lbl_lverdict = ttk.Label(lopts, font=limface)
-    lbl_lverdict.grid(row=14, column=0, sticky="w")
-    lbl_lsays = ttk.Label(lopts, wraplength=210, foreground="#555",
-                          justify="left")
-    lbl_lsays.grid(row=15, column=0, sticky="w", pady=(2, 0))
+        What is known about REF1 says nothing about REF2, so the
+        knowledge goes back to "not read". Without this, clearing one
+        reference would leave Start greyed for every other one as well.
+
+        Selecting a row does not read it. A single click is how the
+        destination is chosen and people click through a list to look
+        at it; the read is on the double-click, where it was asked for.
+        """
+        found = {one["name"]: one for one in (state.get("lrefs") or [])}
+        one = found.get(state["ldest"].get())
+        state["lhas"] = None if one is None else bool(one["columns"])
+        lim_buttons()
+
+    # What each of the four references is holding, and everything that
+    # is done to one - the way the Masks tab lists the instrument's
+    # eight segments with its transfers above them.
+    #
+    # There is no Destination dropdown any more. The selected row is
+    # the destination: one list that says both what is there and which
+    # one is being worked on, rather than a list and a picker that can
+    # disagree about it.
+    larrows = ttk.Frame(lrefg)
+    larrows.pack(fill="x", pady=(0, 2))
+    # The two directions on the line they move an envelope across, the
+    # same glyphs and the same style as the Masks tab's pair. Down to
+    # the instrument, up from it.
+    lcentre = ttk.Frame(larrows)
+    lcentre.pack(side="top")
+    btn_lsend = ttk.Button(lcentre, text="↓", width=3,
+                           style="Arrow.TButton",
+                           command=lambda: do_lim_send())
+    btn_lload = ttk.Button(lcentre, text="↑", width=3,
+                           style="Arrow.TButton",
+                           command=lambda: do_lim_load())
+    btn_lsend.pack(side="left", padx=(0, 3))
+    btn_lload.pack(side="left", padx=(3, 0))
+    # The test itself, under the transfers: it is not a transfer, and
+    # the two halves of it are one decision, so they share a line.
+    lrunrow = ttk.Frame(larrows)
+    lrunrow.pack(side="top", pady=(6, 0))
+    btn_lstart = ttk.Button(lrunrow, text=_("Start test"), padding=(8, 0),
+                            command=lambda: do_lim_start())
+    btn_lstart.pack(side="left")
+    btn_lstop = ttk.Button(lrunrow, text=_("Stop test"), padding=(8, 0),
+                           command=lambda: do_lim_stop())
+    btn_lstop.pack(side="left", padx=(4, 0))
+    # Not New template: that one clears the graticule and leaves the
+    # instrument alone. This one deletes what the instrument is
+    # holding. Both are "clear" in English and only one can be undone,
+    # so this is the one that carries the word and asks first.
+    btn_ldestclear = ttk.Button(larrows, text=_("Clear"), padding=(6, 0),
+                                command=lambda: do_lim_dest_clear())
+    btn_ldestclear.pack(side="top", pady=(6, 0))
+    says(btn_ldestclear, "Clear")
+
+    lbl_lrefs = ttk.Label(lrefg)
+    says(lbl_lrefs, "On the instrument")
+    lbl_lrefs.pack(anchor="w", pady=(6, 0))
+    lrefsf = ttk.Frame(lrefg)
+    lrefsf.pack(fill="x", pady=(2, 0))
+    lrefs = ttk.Treeview(lrefsf, columns=("holds",), show="tree headings",
+                         height=4, selectmode="browse")
+    lrefs.column("#0", width=70, stretch=False, anchor="w")
+    lrefs.column("holds", width=130, stretch=True, anchor="w")
+    lrefs.pack(side="left", fill="x", expand=True)
+
+    def lim_refs_headings():
+        lrefs.heading("#0", text=_("Reference"))
+        lrefs.heading("holds", text=_("Holds"))
+
+    lim_refs_headings()
+    relabel.append(lim_refs_headings)
+
+    # Greyed until it has been read. Nothing is read when the tab opens
+    # - four references are four bus reads and, on a bench where three
+    # of them are empty, three refusals - so a row starts saying it does
+    # not know, and says so in grey. Double-clicking one reads that one.
+    lrefs.tag_configure("unread", foreground="#888")
+
+    def lim_refs_show(found=None):
+        """Fill the list. A name missing from `found` has not been read."""
+        known = {one["name"]: one for one in (found or [])}
+        for name in tds_wfm.REFS:
+            if not lrefs.exists(name):
+                lrefs.insert("", "end", iid=name, text=name)
+            one = known.get(name)
+            if one is None:
+                said = _("not read")
+            elif one["columns"]:
+                said = _("%d column(s)") % one["columns"]
+            else:
+                said = _("empty")
+            lrefs.set(name, "holds", said)
+            lrefs.item(name, tags=() if one is not None else ("unread",))
+        here = state["ldest"].get()
+        if here and lrefs.exists(here):
+            lrefs.selection_set(here)
+
+    lim_refs_show()
+
+    def lim_refs_note(name, columns):
+        """Record what one reference holds, without reading it again.
+
+        Clearing a reference and writing one both say exactly what that
+        reference now holds, so the list is corrected from what just
+        happened rather than by surveying all four again.
+
+        The list accumulates one row at a time, because that is how it
+        is filled: a reference nobody has double-clicked is not in it
+        and shows as not read.
+        """
+        found = state.get("lrefs")
+        if found is None:
+            found = state["lrefs"] = []
+        for one in found:
+            if one["name"] == name:
+                one["columns"] = columns
+                break
+        else:
+            found.append({"name": name, "columns": columns})
+        lim_refs_show(found)
+
+    def lim_refs_picked(_evt=None):
+        picked = (lrefs.selection() or [None])[0]
+        if picked and picked != state["ldest"].get():
+            state["ldest"].set(picked)
+            lim_dest_changed()
+
+    def lim_refs_open(_evt=None):
+        """Double-click: read that one reference, and only that one."""
+        picked = (lrefs.identify_row(_evt.y) if _evt is not None
+                  else (lrefs.selection() or [None])[0])
+        if picked and lrefs.exists(picked):
+            state["ldest"].set(picked)
+            do_lim_survey([picked])
+
+    lrefs.bind("<<TreeviewSelect>>", lim_refs_picked, add="+")
+    lrefs.bind("<Double-Button-1>", lim_refs_open, add="+")
+
+    # ------------------------------------------- saved limit templates
+    def lim_folder():
+        """Where limit templates are kept on this computer.
+
+        Beside the program and beside the masks folder, for the same
+        reason that one is there: a library is only a library if it is
+        always in the same place.
+        """
+        here = os.path.join(APPDIR, "limits")
+        try:
+            if not os.path.isdir(here):
+                os.makedirs(here)
+        except OSError as exc:
+            log_note("limits", "%s unusable (%s)" % (here, exc))
+            return None
+        return here
+
+    def lim_file_buttons():
+        """The four toolbar buttons that are about files rather than
+        the instrument. New is not among them: starting again is
+        always allowed, and there is nothing to be connected to."""
+        drawn = state.get("lmask")
+        btn_lsavefile.config(state="normal" if drawn is not None
+                             and drawn.points else "disabled")
+        # The setup is read off the instrument and written beside the
+        # template's own file, so it needs both to exist.
+        btn_lsetup.config(state="normal"
+                          if state.get("cannot") is not None
+                          and drawn is not None and (drawn.origin or "")
+                          else "disabled")
+        btn_ldelfile.config(state="normal" if lpc.selection()
+                            else "disabled")
+
+    def do_lim_scan():
+        """Re-read the library of saved templates."""
+        here = lim_folder()
+        lpc.delete(*lpc.get_children())
+        state["lpcfiles"] = {}
+        for name in sorted(os.listdir(here) if here else []):
+            if not name.upper().endswith(tds_msk.LIMIT_SUFFIXES):
+                continue
+            path = os.path.join(here, name)
+            try:
+                with open(path, "rb") as fh:
+                    raw = fh.read()
+                one = tds_msk.load_limit(raw,
+                                         name=os.path.splitext(name)[0])
+            except Exception as exc:
+                lpc.insert("", "end", iid=name, text=name,
+                           values=(_("will not read: %s") % exc,))
+                continue
+            state["lpcfiles"][name] = path
+            lpc.insert("", "end", iid=name, text=one.name or name,
+                       values=(msk_describe(one),))
+        lim_file_buttons()
+
+    def do_lim_file_open(_evt=None):
+        """Put a saved template on the canvas."""
+        chosen = list(lpc.selection())
+        if not chosen:
+            return
+        path = (state.get("lpcfiles") or {}).get(chosen[0])
+        if not path:
+            return
+        try:
+            with open(path, "rb") as fh:
+                raw = fh.read()
+            one = tds_msk.load_limit(raw,
+                                     name=os.path.splitext(chosen[0])[0])
+        except Exception as exc:
+            messagebox.showerror(_("Error"), "%s\n\n%s"
+                                 % (_("Could not open that template"),
+                                    exc))
+            return
+        # A mask that has been renamed rather than written here. It will
+        # load - it is the same format - but it means the opposite, so
+        # it is worth one question rather than a silent inversion.
+        # Tektronix's own .ENV is not that case: it IS a limit template,
+        # and asking about it would be asking about the right answer.
+        if not tds_msk.is_limit_file(raw) and not tds_msk.looks_like_env(raw):
+            if not messagebox.askyesno(
+                    _("Open this as a limit template?"),
+                    _("%s was not written as a limit template. A mask "
+                      "says where the signal may NOT go; a limit "
+                      "template says where it MAY.\n\nOpened here it "
+                      "will mean the opposite of what it meant where it "
+                      "was drawn.\n\nOpen it anyway?")
+                    % os.path.basename(path),
+                    icon="warning", default="no"):
+                return
+        one.origin = path
+        state["lmask"] = one
+        # The old drawing's history is not this one's. msk_forget works
+        # on whichever drawing is in front - see edit_key - so this is
+        # the limits history it clears, not the mask tab's.
+        msk_forget()
+        # "mpicks", not "lpicks": the selection is shared between the
+        # two drawings - see the note on edit_here - so a key of its
+        # own here cleared nothing, and the handles picked in the old
+        # template stayed picked in the new one.
+        state["mpicks"] = []
+        draw_limits()
+        lim_buttons()
+        lim_file_buttons()
+        say(_("Opened %s") % os.path.basename(path))
+
+    def do_lim_file_save():
+        """Write the drawing to the library."""
+        drawn = state.get("lmask")
+        if drawn is None or not drawn.points:
+            return
+        here = lim_folder()
+        if not here:
+            messagebox.showerror(_("Error"),
+                                 _("The limits folder could not be "
+                                   "made."))
+            return
+        path = filedialog.asksaveasfilename(
+            parent=root, title=_("Save the limit template"),
+            initialdir=here, defaultextension=tds_msk.LIMIT_SUFFIX,
+            initialfile=(drawn.name or "limit") + tds_msk.LIMIT_SUFFIX,
+            filetypes=[(_("Limit template"),
+                        "*" + tds_msk.LIMIT_SUFFIX)])
+        if not path:
+            return
+        try:
+            with open(path, "wb") as fh:
+                fh.write(tds_msk.save_limit_bytes(drawn))
+        except Exception as exc:
+            messagebox.showerror(_("Error"), "%s\n\n%s"
+                                 % (_("Could not save"), exc))
+            return
+        drawn.origin = path
+        drawn.name = os.path.splitext(os.path.basename(path))[0]
+        # Saved is not changed any more, and msk_may_discard reads this
+        # to tell a save that happened from one that was called off.
+        state["ldirty"] = False
+        do_lim_scan()
+        lim_buttons()
+        say(_("Saved %s") % os.path.basename(path))
+
+    def do_lim_file_delete():
+        """Remove a saved template from the library."""
+        chosen = list(lpc.selection())
+        if not chosen:
+            return
+        path = (state.get("lpcfiles") or {}).get(chosen[0])
+        if not path:
+            return
+        if not messagebox.askyesno(
+                _("Delete this template?"),
+                _("Delete %s from this computer?") % chosen[0],
+                default="no", parent=root):
+            return
+        try:
+            os.remove(path)
+        except Exception as exc:
+            messagebox.showerror(_("Error"), "%s\n\n%s"
+                                 % (_("Could not delete"), exc))
+            return
+        do_lim_scan()
+        say(_("Deleted %s") % chosen[0])
+
+    def lim_pc_headings():
+        lpc.heading("#0", text=_("Template"))
+        lpc.heading("what", text=_("Shape"))
+
+    lim_pc_headings()
+    relabel.append(lim_pc_headings)
+    lpc.bind("<Double-Button-1>", do_lim_file_open)
+    lpc.bind("<<TreeviewSelect>>", lambda e: lim_file_buttons())
+    do_lim_scan()
 
     # The same drawing tools as the masks tab, acting on this tab's own
     # drawing. One editor, two drawings - see edit_here. The tool in
@@ -7338,6 +9432,21 @@ def run_gui():
                                             "lredo": btn_lredo})
     hints(btn_lundo, "Undo")
     hints(btn_lredo, "Redo")
+    # The verdict at the right of the same row, directly over the corner
+    # of the graticule the badge is stamped in - so the word and the
+    # stamp are read as one thing rather than two that have to be
+    # reconciled. A limit test reports a failure by stopping the
+    # instrument, so this word is the whole of the result.
+    limface = tkfont.nametofont("TkDefaultFont").copy()
+    limface.configure(size=max(11, abs(limface.cget("size")) + 3),
+                      weight="bold")
+    lbl_lverdict = ttk.Label(ltoolbar, font=limface)
+    lbl_lverdict.pack(side="right")
+    # No wraplength: this is a row now, not a column, and a sentence
+    # given a wrap width in a row that has the height of one line is a
+    # sentence with its second half cut off.
+    lbl_lsays = ttk.Label(ltoolbar, foreground="#555", anchor="e")
+    lbl_lsays.pack(side="right", padx=(10, 8))
 
     lcanvasrow = ttk.Frame(lrightf)
     lcanvasrow.pack(fill="both", expand=True)
@@ -7365,8 +9474,10 @@ def run_gui():
     ttk.Separator(ltools, orient="horizontal").pack(fill="x", pady=5)
     for key, english in (
             ("union", "Union: join the two selected shapes into one"),
-            ("intersect", "Intersect: keep only where the two selected shapes overlap"),
-            ("subtract", "Subtract: take the second selected shape out of the first")):
+            ("intersect", "Intersect: keep only where the two selected "
+                          "shapes overlap"),
+            ("subtract", "Subtract: take the second selected shape out "
+                         "of the first")):
         bb = ttk.Button(ltools, style="Toolbutton", padding=3,
                         command=lambda k=key: do_msk_boolean(k))
         bb.pack(pady=(0, 2))
@@ -7396,6 +9507,7 @@ def run_gui():
     ent_lgrid.bind("<Return>", lambda e: edit_redraw())
     linfo = ttk.Label(lrightf, anchor="w", foreground="#555")
     linfo.pack(fill="x", pady=(2, 0))
+    lchecks = {}
     for key, english in (("mshowgrid", "Show grid"),
                          ("msnap", "Snap to grid"),
                          ("mgratic", "Graticule"),
@@ -7407,6 +9519,15 @@ def run_gui():
                              command=lambda: edit_redraw())
         says(cb, english)
         cb.pack(side="left", padx=(0, 10))
+        lchecks[key] = cb
+    # Explicit hints() calls so the translation audit sees each literal.
+    hints(lchecks["mshowgrid"], "Show or hide the drawing grid")
+    hints(lchecks["msnap"], "Snap points to the grid")
+    hints(lchecks["mgratic"], "Show or hide the graticule")
+    hints(lchecks["mcross"], "Show crosshairs at the pointer")
+    hints(lchecks["mfill"], "Fill the envelope rather than outline it")
+    hints(lchecks["mhide"], "Hide the envelope to see the trace behind it")
+    hints(lchecks["mnodots"], "Hide the draggable points")
 
     def lim_live():
         """The instrument's channels, which is all a template can learn
@@ -7420,9 +9541,11 @@ def run_gui():
         cmb_lsource.config(values=live)
         if state["lsource"].get() not in live:
             state["lsource"].set(live[0])
-        cmb_ldest.config(values=refs or ["REF1"])
         if state["ldest"].get() not in refs:
             state["ldest"].set(refs[0] if refs else "REF1")
+        # Which row is selected is what the destination is now, so the
+        # list is put straight rather than a dropdown's values.
+        lim_refs_show(state.get("lrefs"))
         lim_buttons()
 
     def lim_band():
@@ -7452,8 +9575,58 @@ def run_gui():
         return ([place(t, hi) for t, _lo, hi in band]
                 + [place(t, lo) for t, lo, _hi in reversed(band)])
 
+    def lim_badge():
+        """(words, colour) for the running test, or None if none is.
+
+        The same pair the Masks tab stamps on its own plot, and the
+        same two colours, because they mean the same thing and reading
+        one tab should teach you the other. Nothing is drawn when no
+        test is running: an empty graticule with PASS on it says the
+        signal was judged, and nothing has been.
+        """
+        held = state.get("lrun")
+        if not held:
+            return None
+        return ((_("PASS"), "#3fb950") if held.get("running")
+                else (_("FAIL"), "#e04a4a"))
+
+    def lim_stamp():
+        """Draw the PASS/FAIL badge on the plot, or clear it.
+
+        Its own function, and called from lim_verdict rather than from
+        draw_limits, because the verdict changes without the canvas
+        being redrawn: a test fails when the instrument stops, which
+        arrives at the pump, and nothing about that touches the
+        drawing. Stamped inside draw_limits it showed the verdict as of
+        the last thing that happened to redraw the canvas - which, in
+        practice, meant the last mouse click on it.
+
+        The frame is measured here rather than passed in, so the stamp
+        lands in the same corner whether it is drawn with the rest of
+        the plot or on its own.
+        """
+        lplot.delete("verdict")
+        badge = lim_badge()
+        if badge is None:
+            return
+        words, colour = badge
+        # The same stamp, in the same corner, at the same size as the
+        # one on the Masks tab. See draw_masks.
+        _l, top, right, _b = tds_wfm.plot_frame(
+            max(lplot.winfo_width(), 80), max(lplot.winfo_height(), 60),
+            20, room=8)
+        lplot.create_rectangle(right - 76, top + 6, right - 6, top + 32,
+                               fill=colour, outline="", tags="verdict")
+        lplot.create_text(right - 41, top + 19, text=words, fill="#000000",
+                          font=("TkDefaultFont", 12, "bold"),
+                          tags="verdict")
+
     def lim_verdict():
-        """What the test is saying, in one word and one colour."""
+        """What the test is saying, in one word and one colour.
+
+        The one place the verdict is put on screen, in both the words
+        below the plot and the stamp on it, so the two cannot disagree.
+        """
         held = state.get("lrun")
         if not held:
             lbl_lverdict.config(text=_("Not testing"), foreground="#555")
@@ -7469,6 +9642,7 @@ def run_gui():
             lbl_lsays.config(text=_("The instrument stopped, so "
                                     "%(source)s left the template.")
                              % {"source": held["source"]})
+        lim_stamp()
 
     def draw_limits(_evt=None):
         """The graticule, the template band, the trace, and the drawing.
@@ -7485,12 +9659,19 @@ def run_gui():
         lplot.configure(background=pick["background"])
         wide = max(lplot.winfo_width(), 80)
         tall = max(lplot.winfo_height(), 60)
+        frame = tds_wfm.plot_frame(wide, tall, 20, room=8)
+        # The instrument's own screen, if one was captured, furthest
+        # back of all - the same place and the same reason as on the
+        # Masks tab. See msk_shot_image.
+        shot = msk_shot_image("l", frame)
+        if shot is not None:
+            lplot.create_image(frame[0], frame[1], image=shot,
+                               anchor="nw", tags="shot")
         if state["mgratic"].get():
             for element, x0, y0, x1, y1, thick in tds_wfm.graticule(
                     wide, tall, 20, room=8):
                 lplot.create_line(x0, y0, x1, y1, fill=pick[element],
                                   width=thick)
-        frame = tds_wfm.plot_frame(wide, tall, 20, room=8)
         edit_grid(lplot, pick, frame)
         band = lim_band()
         if len(band) > 2:
@@ -7535,9 +9716,8 @@ def run_gui():
         mask = state.get("lmask")
         if mask is None or not mask.filled():
             linfo.config(text=_(
-                "Nothing drawn. Press Create template to have the "
-                "instrument draw the envelope for you, or use the "
-                "pen."))
+                "Nothing drawn. Load a trace and press Learn template "
+                "to draw the envelope round it, or use the pen."))
             return
         lower, _upper, gaps = tds_msk.to_band(mask)
         limited = sum(1 for v in lower if v is not None)
@@ -7622,24 +9802,53 @@ def run_gui():
         state["mpicks"] = []
         state.pop("mdrawing", None)
 
-    def do_lim_clear():
-        """Take the drawn envelope off the canvas.
+    def lim_may_draw(loading):
+        """May a template that has just been read go onto the canvas?
 
-        The drawing only, and one undo puts it back. What the
-        instrument holds is untouched - a reference is replaced by
-        sending another envelope to it, not by clearing this.
+        A read this tab asked for on its own account - opening the tab,
+        or looking to see whether Start is worth offering - may only
+        fill an empty canvas. Overwriting somebody's drawing with one
+        of those would be a poor way to repay opening the tab. "asked"
+        is the ↑ button, where replacing the drawing is the whole point
+        and has already been agreed to.
         """
         drawn = state.get("lmask")
-        if drawn is None or not drawn.points:
+        return bool(loading) and (loading == "asked" or drawn is None
+                                  or not drawn.points)
+
+    def do_lim_new():
+        """Start again on an empty graticule.
+
+        More than "Clear the envelope" was, which is why that button is
+        gone: that one took the drawing off and left the instrument's
+        own band and the live trace lying underneath it, which is most
+        of what is on the graticule. This clears all three, the way New
+        mask starts a blank mask on the other tab.
+
+        The instrument is not touched. What a reference holds is what
+        the arrows and Clear are for, and a test that is running goes
+        on running.
+        """
+        if not msk_may_discard():
             return
-        msk_remember()
-        drawn.segments = []
+        state["lmask"] = tds_msk.Mask(name=_("New template"),
+                                      source=state["lsource"].get())
+        msk_forget()
         state["mpicks"] = []
         state.pop("mdrawing", None)
         state.pop("mhover", None)
+        # The band read out of the reference, the trace read off the
+        # channel or loaded from a file, and any captured screen behind
+        # them. All three are pictures of a moment that has passed, and
+        # a new template is not drawn against any of them.
+        state["lband"] = []
+        state["lwave"] = None
+        state.pop("lwavefrom", None)
+        state.pop("lshot", None)
+        state.pop("lshotimage", None)
         lim_buttons()
         edit_redraw()
-        say(_("The envelope is cleared"))
+        say(_("A new template - the graticule is empty"))
 
     def lim_lines(mask, dest, source):
         """The SCPI for the drawn envelope, or None with the reason shown."""
@@ -7693,20 +9902,49 @@ def run_gui():
     def lim_buttons():
         joined = state.get("cannot") is not None
         running = bool(state.get("lrun"))
-        btn_llearn.config(state="normal" if joined and not running
+        # Learn builds from a loaded trace when there is one, which
+        # needs no instrument at all - so it stays live off the bus.
+        btn_llearn.config(state="normal" if not running
+                          and (joined or lim_loaded_trace() is not None)
                           else "disabled")
+        # Greyed when the destination is known to hold no template -
+        # there is nothing for the instrument to judge against, so the
+        # test cannot run. `lhas` is None until something has actually
+        # read or written that reference, and not knowing is not a
+        # reason to refuse: greying a Start that would have worked is a
+        # worse fault than offering one that reports why it did not.
+        # The certain case is the one just after Clear.
+        empty = state.get("lhas") is False
         btn_lstart.config(state="normal" if joined and not running
-                          else "disabled")
+                          and not empty else "disabled")
         btn_lstop.config(state="normal" if joined and running
                          else "disabled")
+        # Not while a test is running: the destination is what the
+        # instrument is judging against, and deleting it underneath a
+        # running test is not something to find out about afterwards.
+        btn_ldestclear.config(state="normal" if joined and not running
+                              else "disabled")
+        # Reading a reference back is harmless at any time, the way the
+        # Masks tab's ↑ is: it asks the instrument a question and
+        # replaces what is drawn here, and neither of those is
+        # something a running test minds.
+        btn_lload.config(state="normal" if joined else "disabled")
         btn_lrefresh.config(state="normal" if joined else "disabled")
-        btn_lview.config(state="normal" if state.get("lwave") is not None
-                         else "disabled")
+        btn_lgrab.config(state="normal" if joined else "disabled")
         drawn = state.get("lmask")
+        # Something on the graticule to make a picture of: the drawing,
+        # the band the reference holds, a trace, or a captured screen.
+        # The same rule as the Masks tab's Save image.
+        btn_lview.config(state="normal" if (drawn is not None
+                                            and drawn.points)
+                         or state.get("lband")
+                         or state.get("lwave") is not None
+                         or state.get("lshot") else "disabled")
         btn_lsend.config(state="normal" if joined and drawn is not None
                          and drawn.filled() else "disabled")
-        btn_lclear.config(state="normal" if drawn is not None
-                          and drawn.points else "disabled")
+        # Save follows the drawing too, so the two cannot disagree about
+        # whether there is anything to save.
+        lim_file_buttons()
 
     def lim_tolerances():
         """The two numbers, or None with the complaint already made."""
@@ -7724,14 +9962,94 @@ def run_gui():
             return None
         return vertical, horizontal
 
+    def lim_loaded_trace():
+        """The trace Load trace put on the graticule, if there is one.
+
+        Not the one Refresh reads off the channel: learning a template
+        from the instrument's own record by way of this program would
+        be the instrument's own Learn with a round trip added.
+        """
+        wave = state.get("lwave")
+        return wave if (wave is not None
+                        and state.get("lwavefrom") == "pc") else None
+
+    def lim_learn_here(wave, vertical, horizontal):
+        """The envelope a loaded trace and two tolerances make.
+
+        The same shape the instrument's own LIMIT:TEMPLATE STORE makes,
+        worked out here instead: every sample is allowed to arrive
+        `horizontal` divisions early or late and to sit `vertical`
+        divisions high or low, so the band at each column is the
+        highest and lowest the signal reaches anywhere in that window,
+        widened by the vertical tolerance.
+
+        Returns [(seconds, low volts, high volts)], which is what
+        lim_band and lim_lines already take.
+
+        ponytail: a plain window scan, O(points x window). 500 points
+        is nothing; if a 15,000-point record at five divisions ever
+        feels slow, a running min-max deque is the upgrade.
+        """
+        volts = [v for _t, v in wave.points()]
+        times = [t for t, _v in wave.points()]
+        if len(volts) < 2:
+            return []
+        xincr = abs(wave.number("XINCR", 1.0)) or 1.0
+        # A division of this graticule, which draws the whole record
+        # across ten of them, and of the instrument's screen too when
+        # the record is the 500 points it shows.
+        reach = int(round(horizontal * wave.seconds_per_div / xincr))
+        margin = vertical * (wave.volts_per_div or 1.0)
+        out = []
+        for i, t in enumerate(times):
+            lo = max(0, i - reach)
+            hi = min(len(volts), i + reach + 1)
+            window = volts[lo:hi]
+            out.append((t, min(window) - margin, max(window) + margin))
+        return out
+
     def do_lim_learn():
-        """Have the instrument write a template from what it sees now."""
-        if state["busy"] or state.get("cannot") is None:
+        """Build a template - from the loaded trace, or from the scope.
+
+        A trace that was loaded from this computer is what the person
+        chose to look at, so it is what a template is built from. With
+        nothing loaded there is still the instrument, which does the
+        job itself, and that is offered rather than done quietly: the
+        two produce different templates from different signals and
+        which one happened should not have to be guessed at afterwards.
+        """
+        if state["busy"]:
             return
         wander = lim_tolerances()
         if wander is None:
             return
         source, dest = state["lsource"].get(), state["ldest"].get()
+        wave = lim_loaded_trace()
+        if wave is not None:
+            state["lband"] = lim_learn_here(wave, wander[0], wander[1])
+            state["lhas"] = None       # nothing has been sent yet
+            lim_range()
+            lim_take_band()
+            lim_buttons()
+            draw_limits()
+            say(_("Template built from the loaded trace - send it to "
+                  "%s to test against it") % dest)
+            return
+        if state.get("cannot") is None:
+            messagebox.showinfo(
+                _("Load a trace first"),
+                _("Learn template builds an envelope round a trace. "
+                  "Load one with Load trace..., or connect to an "
+                  "instrument and it will build one from the signal it "
+                  "is showing."))
+            return
+        if not messagebox.askyesno(
+                _("Learn from the instrument?"),
+                _("No trace has been loaded, so there is nothing here "
+                  "to build from.\n\nHave %(source)s build a template "
+                  "from the signal it is showing now, into %(dest)s?")
+                % {"source": source, "dest": dest}, parent=root):
+            return
         busy(True, "wait")
         state["llearn"] = True
         say(_("Making a template of %(source)s in %(dest)s ...")
@@ -7748,6 +10066,33 @@ def run_gui():
         w.submit("lim_run", lambda k, s=state["lsource"].get(),
                  d=state["ldest"].get(): k.lim_run(s, d))
 
+    def do_lim_dest_clear():
+        """Delete the destination reference on the instrument.
+
+        Distinct from do_lim_new, which clears the graticule and
+        touches nothing on the instrument. This is the same
+        job the Waveforms tab's Delete uses, with the same warning,
+        because it is the same irreversible thing: the instrument has
+        no undo, and a template that has been deleted is gone unless it
+        was saved to a file first.
+        """
+        if state["busy"] or state.get("cannot") is None:
+            return
+        dest = (state["ldest"].get() or "").strip()
+        if not dest.upper().startswith("REF"):
+            return
+        if not messagebox.askyesno(
+                _("Clear %s") % dest,
+                _("Delete what %s holds on the instrument?\n\n"
+                  "This operation cannot be undone.\n"
+                  "Save the template to a file first if it is needed.")
+                % dest,
+                default="no", parent=root):
+            return
+        busy(True, "wait")
+        say(_("Clearing %s on the instrument ...") % dest)
+        w.submit("lim_clear", lambda k, n=dest: k.wfm_delete([n]))
+
     def do_lim_stop():
         """Switch the test off and give the instrument back."""
         if state["busy"] or state.get("cannot") is None:
@@ -7755,6 +10100,65 @@ def run_gui():
         state.pop("lrun", None)
         busy(True, "wait")
         w.submit("lim_stop", lambda k: k.limit_stop())
+
+    def lim_look():
+        """Find out what the destination holds, rather than assume.
+
+        Until something has read that reference the program does not
+        know whether it holds a template, and Start cannot honestly be
+        greyed on a guess - see lim_buttons. This is what turns the
+        guess into knowledge. `lload` marks the read as one the user did
+        not ask for, so its result can be put on the canvas when there
+        is nothing drawn there yet.
+        """
+        if state.get("cannot") is None or state["busy"]:
+            return
+        state["lload"] = True
+        do_lim_refresh()
+
+    def do_lim_load():
+        """Read the selected reference's template onto the canvas.
+
+        The other direction of the arrow beside it, and the thing the
+        tab could only do by accident before: a read it had not been
+        asked for would draw a template that was already there, but
+        only onto an empty canvas - see lim_may_draw. Asked for by
+        hand it may replace what is drawn, having said so first,
+        because that drawing is somebody's work. One undo puts it back
+        either way.
+        """
+        if state["busy"] or state.get("cannot") is None:
+            return
+        drawn = state.get("lmask")
+        if (drawn is not None and drawn.points
+                and not messagebox.askyesno(
+                    _("Replace the drawing?"),
+                    _("What is drawn here is replaced by the template "
+                      "the instrument is holding in %s.")
+                    % state["ldest"].get(),
+                    parent=root, default="no")):
+            return
+        state["lload"] = "asked"
+        do_lim_refresh()
+
+    # Opening this tab reads nothing. It used to survey all four
+    # references and then read the selected one's template and capture
+    # a trace, which is five bus operations for a tab somebody may have
+    # opened to look at a saved file - and on an instrument with three
+    # empty references, three refusals in the event log for it. The
+    # rows start greyed and saying they have not been read; a
+    # double-click reads the one that was double-clicked.
+
+    def do_lim_survey(names=None):
+        """Read what the named references hold. None means all four."""
+        if state.get("cannot") is None or state["busy"]:
+            return
+        busy(True, "wait")
+        if names:
+            say(_("Reading what %s holds ...") % ", ".join(names))
+        else:
+            say(_("Reading what the references hold ..."))
+        w.submit("lim_survey", lambda k, n=names: k.lim_survey(n))
 
     def do_lim_refresh():
         """Read the template and the live signal again, and redraw."""
@@ -7766,9 +10170,21 @@ def run_gui():
                  d=state["ldest"].get(): k.lim_picture(s, d))
 
     def do_lim_view_save():
-        """This graticule as a PNG, the way the other tabs save theirs."""
+        """This graticule as a PNG, the way the other tabs save theirs.
+
+        Everything that is on it: the band the reference holds, the
+        envelope drawn over it, the trace, the captured screen behind
+        them and the verdict stamp. The Masks tab saves its graticule
+        the same way, and for the same reason - the picture is the
+        evidence, and one missing half of it proves nothing.
+        """
         wave = state.get("lwave")
-        if wave is None:
+        drawn = state.get("lmask")
+        band = lim_band()
+        shapes = ([band] if len(band) > 2 else []) + (
+            [seg for _n, seg in drawn.filled()] if drawn is not None
+            else [])
+        if wave is None and not shapes and not state.get("lshot"):
             messagebox.showinfo(_("Nothing to save"),
                                 _("Press Refresh to read the template "
                                   "and the signal first."))
@@ -7779,15 +10195,17 @@ def run_gui():
             filetypes=[(_("PNG image (*.png)"), "*.png")])
         if not path:
             return
-        band = lim_band()
         try:
             with open(path, "wb") as fh:
                 fh.write(tds_wfm.plot_png(
-                    [wave], width=state["pngsize"][0],
+                    [wave] if wave is not None else [],
+                    width=state["pngsize"][0],
                     height=state["pngsize"][1],
                     colours=state.get("colours"),
-                    caption=wave_scales(wave),
-                    shapes=[band] if len(band) > 2 else []))
+                    caption=wave_scales(wave) if wave is not None else "",
+                    shapes=shapes,
+                    verdict=lim_badge(),
+                    behind=msk_shot_behind("l")))
         except Exception as exc:
             messagebox.showerror(_("Error"), "%s\n\n%s"
                                  % (_("Could not save"), exc))
@@ -7804,6 +10222,12 @@ def run_gui():
         root.after(2000, lim_watch)
 
     lim_verdict()
+    # And the buttons, once, now they all exist. Without this they keep
+    # whatever state they were created with until something calls
+    # lim_buttons - which left Clear looking live on a window with no
+    # instrument connected, because it is deliberately not in the busy
+    # set that gets disabled at startup.
+    lim_buttons()
 
 
     # There is no "give me the display" command on these instruments.
@@ -8041,6 +10465,44 @@ def run_gui():
                                     ("Left", "Right", "Up", "Down", "Home",
                                      "End", "Prior", "Next") else "break"))
 
+    def text_copy(widget):
+        """What is highlighted in a read-only pane, onto the clipboard."""
+        try:
+            picked = widget.get("sel.first", "sel.last")
+        except tk.TclError:
+            return
+        root.clipboard_clear()
+        root.clipboard_append(picked)
+
+    def text_menu(widget, evt):
+        """Right-click over a read-only pane. Built each time rather
+        than once, so it is in whatever language is current - the same
+        way the file pane's menus are.
+
+        Ctrl-C copies too - the key filter lets anything with Control
+        through - but somebody reading a log with a mouse in their hand
+        does not go looking for that.
+
+        Two panes use this: the error log, and the self test results on
+        the System tab. Both hold a line somebody wants to paste
+        somewhere else, and neither can be typed into.
+        """
+        menu = tk.Menu(root, tearoff=0)
+        menu.add_command(label=_("Copy"),
+                         command=lambda: text_copy(widget),
+                         state="normal" if widget.tag_ranges("sel")
+                         else "disabled")
+        try:
+            menu.tk_popup(evt.x_root, evt.y_root)
+        finally:
+            menu.grab_release()
+
+    def copyable(widget):
+        """Give a read-only pane its right-click Copy."""
+        widget.bind("<Button-3>", lambda e, w=widget: text_menu(w, e))
+
+    copyable(errtxt)
+
     def show_errors(lines, count=None):
         """Put text in the pane. `lines` is already the finished text."""
         state["errlines"] = list(lines)
@@ -8192,13 +10654,9 @@ def run_gui():
     state["sysport"] = tk.StringVar()
     state["sysformat"] = tk.StringVar()
     state["syslayout"] = tk.StringVar()
-    for label, key, values in (
-            ("Port", "sysport", ("GPIB", "RS232", "CENTRONICS", "FILE")),
-            ("Format", "sysformat", ("BMP", "BMPCOLOR", "TIFF", "PCX",
-                                     "PCXCOLOR", "EPSIMAGE", "INTERLEAF",
-                                     "THINKJET", "DESKJET", "LASERJET",
-                                     "EPSON")),
-            ("Layout", "syslayout", ("LANDSCAPE", "PORTRAIT"))):
+    for label, key in (("Port", "sysport"), ("Format", "sysformat"),
+                       ("Layout", "syslayout")):
+        values = SYS_CHOICES[key]
         line = ttk.Frame(sysbox3)
         line.pack(fill="x", pady=1)
         one = ttk.Label(line, text=_(label), width=8)
@@ -8215,11 +10673,9 @@ def run_gui():
     state["sysbaud"] = tk.StringVar()
     state["sysparity"] = tk.StringVar()
     state["sysstop"] = tk.StringVar()
-    for label, key, values in (
-            ("Baud", "sysbaud", ("300", "600", "1200", "2400", "4800",
-                                 "9600", "19200")),
-            ("Parity", "sysparity", ("NONE", "EVEN", "ODD")),
-            ("Stop bits", "sysstop", ("1", "2"))):
+    for label, key in (("Baud", "sysbaud"), ("Parity", "sysparity"),
+                       ("Stop bits", "sysstop")):
+        values = SYS_CHOICES[key]
         line = ttk.Frame(sysbox3)
         line.pack(fill="x", pady=1)
         one = ttk.Label(line, text=_(label), width=8)
@@ -8254,19 +10710,62 @@ def run_gui():
     lbl_sysdiag = ttk.Label(sysrow4, text=_("Self test"))
     lbl_sysdiag.pack(side="left", padx=(0, 6))
     says(lbl_sysdiag, "Self test")
+    # Tektronix's own words, in the order somebody looking for a memory
+    # fault wants them: everything, then the two areas that carry a
+    # memory array, then the rest. The keywords are what the manual and
+    # the instrument's own Utility menu say, so they are not
+    # translated; the line underneath says what each one covers and is.
     ttk.Combobox(sysrow4, textvariable=state["sysdiag"], width=14,
                  state="readonly",
-                 values=("ALL", "ACQUISITION", "CPU", "DISPLAY",
-                         "FPANEL")).pack(side="left")
+                 values=list(DIAG_AREAS)).pack(side="left")
     btn_sysdiag = ttk.Button(sysrow4, text=_("Run"), padding=(10, 2),
                              command=lambda: do_sys_diag())
     btn_sysdiag.pack(side="left", padx=4)
     says(btn_sysdiag, "Run")
+    lbl_sysdiagwhat = ttk.Label(sysbox4, foreground="#555", wraplength=300,
+                                justify="left")
+    lbl_sysdiagwhat.pack(anchor="w", pady=(4, 0))
+
+    def sys_diag_what(*_a):
+        """What the selected area covers.
+
+        Written out with the sentences here rather than beside
+        DIAG_AREAS so each one is a plain literal inside `_()`, which
+        is what puts it in the nine catalogues. Read at every call, so
+        it follows the language.
+
+        The sub-tests named are the instrument's own, out of the
+        firmware symbol table: digAcqMemAddrDiag, digAcqMemDataDiag,
+        digAcqMemPatDiag and digAtSpeedAcqMemDiag with one lettered
+        variant per channel; dsyRastModeV0Walk and V1Walk,
+        dsyDiagRasRegMem and dsyDiagPPRegMem.
+        """
+        said = {
+            "ALL": _("Every area below, one after another."),
+            "ACQUISITION": _(
+                "The acquisition system and its RAM: address, data, "
+                "pattern and at-speed memory tests, one set per "
+                "channel."),
+            "DISPLAY": _(
+                "The display system and the video RAM: walking-bit, "
+                "register and pattern tests over the raster."),
+            "CPU": _("The processor board: registers, interrupts and "
+                     "FIFO."),
+            "FPANEL": _("The front panel's own self tests."),
+        }
+        lbl_sysdiagwhat.config(text=said.get(state["sysdiag"].get(), ""))
+
+    sys_diag_what()
+    relabel.append(sys_diag_what)
+    state["sysdiag"].trace_add("write", sys_diag_what)
     lbl_sysdiagsay = ttk.Label(sysbox4, foreground="#555", wraplength=300,
                                justify="left")
     says(lbl_sysdiagsay, "Extended diagnostics performs a warm-boot and "
                          "takes a few minutes. All on screen data will be "
-                         "lost.")
+                         "lost. Each area runs functional, memory and "
+                         "register tests. Anything that fails is listed "
+                         "below, with what the error log added about "
+                         "it.")
     lbl_sysdiagsay.pack(anchor="w", pady=(6, 0))
     # Sized in characters rather than filling the box, and sized for the
     # longest line the instrument actually produces: a 784D answers
@@ -8274,13 +10773,81 @@ def run_gui():
     # characters, so 46 leaves a little room without stretching the pane
     # across the whole tab. Nine rows for eight results and somewhere
     # for a ninth to appear rather than scroll out of sight.
-    txt_sysdiag = tk.Text(sysbox4, height=9, width=46, wrap="none",
+    #
+    # Wrapped rather than clipped, and with a scrollbar, because the
+    # module list is no longer all that goes in here: the error log
+    # lines that say what failed inside a module run to ninety
+    # characters, and one of those cut off at the box edge is the half
+    # of the sentence without the address in it.
+    sysdiagf = ttk.Frame(sysbox4)
+    sysdiagf.pack(anchor="w", pady=(6, 0))
+    txt_sysdiag = tk.Text(sysdiagf, height=9, width=46, wrap="word",
                           undo=False, font="TkFixedFont",
                           background="#ffffff", highlightthickness=1,
                           highlightbackground=EDGE)
-    txt_sysdiag.pack(anchor="w", pady=(6, 0))
+    sysdiagbar = ttk.Scrollbar(sysdiagf, orient="vertical",
+                               command=txt_sysdiag.yview)
+    txt_sysdiag.configure(yscrollcommand=sysdiagbar.set)
+    txt_sysdiag.pack(side="left")
+    sysdiagbar.pack(side="left", fill="y")
     txt_sysdiag.bind("<Key>", lambda e: (None if (e.state & 4) else
                                          "break"))
+    copyable(txt_sysdiag)
+    # The one red on this tab. A failing module is what somebody is
+    # looking for, and the instrument marks it itself: "++" where a
+    # pass is "--".
+    txt_sysdiag.tag_configure("bad", foreground="#a00")
+
+    def sys_diag_show(got):
+        """The instrument's module list, and what its error log said.
+
+        Two different things, one after the other. The module list is
+        the instrument's summary and stops at "pass" or "fail" per
+        module; the lines under it are the detail behind whichever
+        module failed, and that is where a memory fault names its own
+        sub-test, where in the array it was and which bits were wrong.
+        A module that fails reads "(see error log)", so this is that
+        sentence answered rather than left to the reader.
+        """
+        lines = [ln.rstrip() for ln in (got.get("log") or "").splitlines()
+                 if ln.strip()]
+        if not lines and got.get("flag"):
+            lines = [got["flag"]]
+        found = got.get("found") or []
+        if found:
+            lines += ["", _("From the error log:")] + list(found)
+        # The diag executive stops an area at its first failure: a test
+        # returning 0x00 passes and carries on, 0x44 and 0xA4 carry on
+        # too, and anything else - 0xA3 is the usual one - jumps to the
+        # next area. So the tests after the first failure never ran and
+        # their absence from the list is not a pass. There is no
+        # per-test selection over GPIB, so this cannot be worked around
+        # from here: a second fault in the same area only shows up once
+        # the first is fixed and it is run again.
+        if lines and got.get("back") and not got.get("passed"):
+            lines += ["", _("An area stops at its first failure, so the "
+                            "tests after it in that area did not run. "
+                            "What they would have found is not in this "
+                            "list. Fix this one and run it again.")]
+            # Said here as well as in the dialog three minutes ago,
+            # because this is the moment it matters: the result is on
+            # screen, the instrument looks dead, and the reason it looks
+            # dead is that it is waiting at a prompt. Measured on a 754D
+            # - a failing instrument stops at the log and stays there,
+            # while answering the bus perfectly well.
+            lines += ["", _("The instrument is left at its own diagnostic "
+                            "log, waiting for CLEAR MENU on its front "
+                            "panel. It answers this program either way, "
+                            "but it will not return to a live trace until "
+                            "that is pressed.")]
+        txt_sysdiag.delete("1.0", "end")
+        txt_sysdiag.insert("1.0", "\n".join(lines))
+        txt_sysdiag.tag_remove("bad", "1.0", "end")
+        for n, text in enumerate(lines, 1):
+            if "++" in text or text.startswith("ERROR"):
+                txt_sysdiag.tag_add("bad", "%d.0" % n, "%d.end" % n)
+        txt_sysdiag.see("1.0")
+        state["sysdiaglines"] = lines
 
     # ---- memory
     sys_rule(sysright)
@@ -8319,6 +10886,10 @@ def run_gui():
     btn_sysopts.pack(anchor="w", pady=(6, 0))
     says(btn_sysopts, "Options...")
 
+    # The calibration constants used to be a box here. They are on the
+    # Backup tab now, beside everything else that is copied off the
+    # instrument and put back.
+
     def sys_show(now, clock=True):
         """Put what the instrument said into the tab's fields.
 
@@ -8334,13 +10905,19 @@ def run_gui():
             sys_clock_show(now.get("time"), SYS_TIME, ":")
         state["sysclock"].set(str(now.get("clock") or "0").strip()
                               in ("1", "ON", "on"))
+        # Expanded, not taken as read: an instrument answering in the
+        # short form gives PORTR for PORTRAIT and NON for NONE, and a
+        # readonly combobox showing a value that is not one of its
+        # choices reads as a truncation.
         for key, field in (("sysport", "port"), ("sysformat", "format"),
                            ("syslayout", "layout")):
-            state[key].set(now.get(field) or "")
+            state[key].set(tds_wfm.expand_keyword(now.get(field),
+                                                  SYS_CHOICES[key]))
         rs = now.get("rs232") or {}
         for key, field in (("sysbaud", "baud"), ("sysparity", "parity"),
                            ("sysstop", "stopbits")):
-            state[key].set(rs.get(field) or "")
+            state[key].set(tds_wfm.expand_keyword(rs.get(field),
+                                                  SYS_CHOICES[key]))
 
     def do_sys_read():
         busy(True, "wait")
@@ -8411,8 +10988,11 @@ def run_gui():
     def do_sys_spc():
         if not messagebox.askyesno(
                 _("Signal Path Compensation"),
-                _("SPC takes several minutes to complete, and nothing "
-                  "else can use the bus until it finishes.\n"
+                _("SPC can take anything from a few minutes to a "
+                  "quarter of an hour depending on the model, and "
+                  "nothing else can use the bus until it finishes. It "
+                  "carries on by itself if this program stops "
+                  "waiting.\n"
                   "Ensure the instrument is warmed up and all input "
                   "signals are disconnected.") + "\n\n" + _("Proceed?")):
             return
@@ -8424,9 +11004,14 @@ def run_gui():
         area = state["sysdiag"].get() or "ALL"
         if not messagebox.askyesno(
                 _("Run the self test?"),
-                _("Extended diagnostics warm-boot the instrument. It "
-                  "takes half a minute or more, and whatever is on the "
-                  "screen is lost.") + "\n\n" + _("Proceed?")):
+                _("Extended diagnostics warm-boot the instrument and "
+                  "whatever is on its screen is lost. It restarts "
+                  "undisturbed for two and a half minutes before this "
+                  "program says anything to it again, so allow about "
+                  "three minutes in all.\n\nAn instrument that fails "
+                  "stops at its diagnostic log and needs CLEAR MENU "
+                  "pressed on its front panel before it is usable "
+                  "again.") + "\n\n" + _("Proceed?")):
             return
         busy(True, "wait")
         txt_sysdiag.delete("1.0", "end")
@@ -8453,12 +11038,28 @@ def run_gui():
         w.submit("sys_factory", lambda k: k.sys_factory())
 
     def do_sys_options():
+        """Read the option words, then show the dialog.
+
+        Read first rather than as the dialog builds: it is ten queries
+        over the bus, and the worker is where bus work belongs. The
+        dialog opens from the pump when the answer arrives.
+        """
+        if dialog_open():
+            return
+        busy(True, "wait")
+        say(_("Reading the option words ..."))
+        w.submit("sys_option_read", lambda k: k.options_read())
+
+    def sys_options_dialog(read):
         """The option words, with the switch that has to be moved first.
 
         A dialog rather than a panel on the tab. It is the one thing
         here that writes to non-volatile memory, it needs the cabinet
         opened first, and it is easier to explain in one place than in
         a box three inches wide.
+
+        `read` is {code: bool} from the instrument's own words, or None
+        if they could not be read.
         """
         if dialog_open():
             return
@@ -8513,18 +11114,64 @@ def run_gui():
             "display which options are enabled."
         )).pack(anchor="w", pady=(8, 0))
 
-        # Nothing is ticked to begin with, and the reason is said out
-        # loud. The instrument does not report its options over the
-        # bus: measured on a 784D carrying Option 2C, ID? answers
-        # "ID TEK/TDS 784D,CF:91.1CT,FV:v7.4e" and nothing else. Ticking
-        # boxes from that would show every option as absent on an
-        # instrument that has them, and a box unticked here switches an
-        # option *off*.
-        ttk.Label(right, wraplength=330, justify="left", text=_(
-            "This instrument does not report which options are enabled "
-            "via GPIB. Please ensure to tick all desired options "
-            "INCLUDING currently enabled options. Any unticked options "
-            "will be disabled.")).pack(anchor="w")
+        # Some instruments say what they are carrying and some do not,
+        # so the boxes are ticked from the instrument where that is
+        # possible and left alone where it is not.
+        #
+        # *OPT? is the one that answers: a TDS 680B on v4.4.1e lists
+        # "13:Rs232/cent,1M:extended record length,0,2F:math pack,0,
+        # FD:1.44MB floppy drive,0,0,0,0,0,0". A 784D carrying Option 2C
+        # says nothing useful to ID?, which is what this dialog was
+        # written against and why it used to tick nothing at all.
+        #
+        # A box left unticked switches an option OFF, so nothing is
+        # ticked on a guess: an instrument that did not answer gets the
+        # warning it always got, and the reply is shown verbatim so what
+        # was ticked can be checked against what the instrument said
+        # rather than taken on trust.
+        told = Worker.options_fitted(state.get("options"))
+        if read is not None and told is not None:
+            # Two readings of the same ten facts. They agreed on every
+            # one on the instrument this was measured on, so a
+            # disagreement means one of them is being read wrongly on
+            # this model - and there is no way to tell which from here.
+            # Nothing is ticked in that case: a wrong tick is a silent
+            # option lost, and an empty dialog is only an inconvenience.
+            clash = sorted(code for code, _w, _o, _d in Worker.OPTION_WORDS
+                           if read.get(code) != (code in told))
+            if clash:
+                read = None
+                log_note("options", "words and *OPT? disagree about %s"
+                         % ", ".join(clash))
+                ttk.Label(right, wraplength=330, justify="left", text=_(
+                    "This instrument's option words and its *OPT? reply "
+                    "disagree about %s, so nothing has been ticked for "
+                    "you. Tick every option you want to keep, including "
+                    "the ones already enabled.") % ", ".join(clash)).pack(
+                        anchor="w")
+        if read is not None:
+            ttk.Label(right, wraplength=330, justify="left", text=_(
+                "The ticks below were read from this instrument's own "
+                "option words. Check them against its boot screen "
+                "before writing: any option left unticked will be "
+                "disabled.")).pack(anchor="w")
+        elif told is not None:
+            ttk.Label(right, wraplength=330, justify="left", text=_(
+                "The ticks below are what this instrument reported when "
+                "it was connected. Check them against its own boot "
+                "screen before writing: any option left unticked will "
+                "be disabled.")).pack(anchor="w")
+        else:
+            ttk.Label(right, wraplength=330, justify="left", text=_(
+                "This instrument does not report which options are "
+                "enabled via GPIB. Please ensure to tick all desired "
+                "options INCLUDING currently enabled options. Any "
+                "unticked options will be disabled.")).pack(anchor="w")
+        if told is not None:
+            ttk.Label(right, wraplength=330, justify="left",
+                      foreground="#555", text=_("It answered *OPT? with:")
+                      + "\n" + (state.get("options") or "")).pack(
+                          anchor="w", pady=(4, 0))
         ttk.Label(right, wraplength=330, justify="left", text=_(
             "Options 1M, 2F, 2C and 1G are software only and can be "
             "enabled on any instrument. The other options require "
@@ -8549,8 +11196,12 @@ def run_gui():
         # 540B is the one it has been traced on, so the rest are greyed
         # until somebody has tried it on them.
         able = firmware_options(state.get("idn"))
-        told = [p.strip() for p in (state.get("idn") or "").split(",")]
-        model = told[1].upper().replace(" ", "") if len(told) > 1 else ""
+        # Spelled the way the catalogue spells it, not the way the
+        # instrument says it. *IDN? answers "TDS 540B" with a space and
+        # this compares against a bare model name, so without the strip
+        # the test below is False on the one instrument it is meant to
+        # be True on - which is what it silently was.
+        model = model_of(state.get("idn")).replace(" ", "").upper()
 
         def offered(code):
             if code == "1G":
@@ -8568,7 +11219,9 @@ def run_gui():
         table = ttk.Frame(right)
         table.pack(fill="x", pady=(8, 0))
         for code, word, on, what in Worker.OPTION_WORDS:
-            boxes[word] = (tk.BooleanVar(value=False), on)
+            boxes[word] = (tk.BooleanVar(
+                value=(read[code] if read is not None
+                       else bool(told) and code in told)), on)
             ttk.Checkbutton(
                 table, variable=boxes[word][0],
                 style=("TCheckbutton" if offered(code)
@@ -8612,21 +11265,1223 @@ def run_gui():
         state["dialog"] = dlg
 
     def sys_first_look(_evt=None):
-        """Read the instrument once, when this tab is first looked at.
+        """Read the instrument when this tab is looked at.
 
-        Not on connect: a dozen queries every time somebody opens the
-        program is a second nobody asked for, and most sessions never
-        come to this tab at all.
+        Everything once, on the first look. Not on connect: a dozen
+        queries every time somebody opens the program is a second
+        nobody asked for, and most sessions never come to this tab at
+        all.
+
+        The clock every time after that. It is the one field here that
+        is stale the moment it is read, and showing yesterday's time
+        beside a Synchronise button invites somebody to correct a clock
+        that was never wrong. Two queries, and only while nothing else
+        is using the bus.
         """
         try:
             if tabs.select() != str(systab):
                 return
         except tk.TclError:                  # before the notebook is up
             return
-        if state.get("sysnow") is None and state.get("idn"):
+        if not state.get("idn"):
+            return
+        if state.get("sysnow") is None:
             do_sys_read()
+        elif not state.get("busy"):
+            w.submit("sys_clock_read", lambda k: k.sys_clock_read())
 
     tabs.bind("<<NotebookTabChanged>>", sys_first_look, add="+")
+
+    # ------------------------------------------------- the firmware tab
+    # Everything on this tab happens with the instrument in the ROM
+    # monitor it enters when it is switched on with its NVRAM protection
+    # switch unprotected. In that state it answers no *IDN?, shows
+    # nothing at all on screen and lights every front-panel LED - so what
+    # it is has to be remembered from before the switch was moved, and
+    # the only thing on the bus that says anything about it is the flash.
+    #
+    # The monitor lives in mask ROM, which is why this is a reasonable
+    # thing to offer at all: a write that goes wrong is put right by
+    # writing the original image back, not by opening the cabinet.
+    fwtab = ttk.Frame(tabs)
+    tabs.add(fwtab, text=_("Firmware"))
+    named(fwtab, "Firmware")
+
+    fwleft = ttk.Frame(fwtab)
+    fwleft.pack(side="left", fill="y", padx=(4, 3), pady=6)
+    fwright = ttk.Frame(fwtab)
+    fwright.pack(side="left", fill="both", expand=True, padx=(3, 4), pady=6)
+
+    # ---- what the person at the bench has to do first
+    fwbox0 = ttk.LabelFrame(fwleft, padding=8)
+    says(fwbox0, "Preparing the instrument")
+    fwbox0.pack(fill="both", expand=True)
+    lbl_fwstep1 = ttk.Label(fwbox0, wraplength=310, justify="left")
+    says(lbl_fwstep1,
+         "1. Switch the instrument off at its front-panel power button.\n"
+         "2. Move the NVRAM protection switch to unprotected, as in the "
+         "picture below.\n"
+         "3. Switch it on. The screen stays dark and every front-panel "
+         "light stays on. That is the monitor, not a fault.")
+    lbl_fwstep1.pack(anchor="w")
+    # The same figure as the factory options dialog, and the same reason:
+    # "the two small access holes on the right side near the front" is a
+    # sentence somebody reads three times with a torch in their hand.
+    try:
+        fwshot = tk.PhotoImage(file=resource("memprotect.png"))
+        state["fwfigure"] = fwshot           # or Tk collects it
+        ttk.Label(fwbox0, image=fwshot).pack(anchor="w", pady=(6, 2))
+        says(ttk.Label(fwbox0, foreground="#555",
+                       wraplength=fwshot.width(), justify="left"),
+             "TDS 500D/600C/700D service manual "
+             "071-0627-02, figure 5-1").pack(anchor="w")
+    except Exception as exc:
+        log_note("ui", "no memory protection figure: %s" % exc)
+    lbl_fwstep2 = ttk.Label(fwbox0, wraplength=310, justify="left")
+    says(lbl_fwstep2,
+         "4. Connect, choose an image and press Write.\n"
+         "5. When it finishes, switch off at the front panel, put the "
+         "switch back to protected and switch on again.")
+    lbl_fwstep2.pack(anchor="w", pady=(8, 0))
+
+    def fw_told():
+        """Model and firmware version, from before the switch was moved."""
+        got = re.search(r"FV:\s*v?([0-9][0-9.]*[a-z]?)",
+                        state.get("idn") or "")
+        return model_of(state.get("idn")), (got.group(1) if got else "")
+
+    def fw_model():
+        """The model this is all aimed at - told, or chosen by hand."""
+        return (state["fwmodel"].get() or "").upper().replace(" ", "")
+
+    # ---- 1: which instrument
+    fwbox1 = ttk.LabelFrame(fwright, padding=8)
+    says(fwbox1, "1. Select instrument")
+    fwbox1.pack(fill="x")
+    fwrow1 = ttk.Frame(fwbox1)
+    fwrow1.pack(fill="x")
+    lbl_fwmodel = ttk.Label(fwrow1, text=_("Model"), width=8)
+    lbl_fwmodel.pack(side="left")
+    says(lbl_fwmodel, "Model")
+    state["fwmodel"] = tk.StringVar()
+    cbo_fwmodel = ttk.Combobox(fwrow1, textvariable=state["fwmodel"],
+                               width=12, state="normal")
+    cbo_fwmodel.pack(side="left")
+    # What the instrument said it was running, before its switch was
+    # moved. Beside the model because the two together are the whole of
+    # "what is on the bench", and choosing an image without knowing the
+    # second one is how a scope gets an image from the wrong generation.
+    lbl_fwfv = ttk.Label(fwrow1, foreground="#555", text="-")
+    lbl_fwfv.pack(side="left", padx=(8, 0))
+    btn_fwprobe = ttk.Button(fwrow1, text=_("Connect"), padding=(10, 2),
+                             command=lambda: do_fw_probe())
+    btn_fwprobe.pack(side="right")
+    says(btn_fwprobe, "Connect")
+    lbl_fwstate = ttk.Label(fwbox1, wraplength=430, justify="left", text="-")
+    lbl_fwstate.pack(anchor="w", pady=(8, 0))
+
+    # ---- 2: which image
+    ttk.Separator(fwright, orient="horizontal").pack(fill="x", pady=(10, 8))
+    fwbox2 = ttk.LabelFrame(fwright, padding=8)
+    says(fwbox2, "2. Select firmware")
+    fwbox2.pack(fill="both", expand=True)
+    fwrow2 = ttk.Frame(fwbox2)
+    fwrow2.pack(fill="x")
+    lbl_fwfolder = ttk.Label(fwrow2, text="-", foreground="#555",
+                             anchor="w")
+    lbl_fwfolder.pack(side="left", fill="x", expand=True)
+    btn_fwfolder = ttk.Button(fwrow2, text=_("Folder..."), padding=(10, 2),
+                              command=lambda: do_fw_folder())
+    btn_fwfolder.pack(side="right")
+    says(btn_fwfolder, "Folder...")
+    # One image from anywhere, for the copy that is not in the folder.
+    btn_fwfile = ttk.Button(fwrow2, text=_("File..."), padding=(10, 2),
+                            command=lambda: do_fw_file())
+    btn_fwfile.pack(side="right", padx=(0, 6))
+    says(btn_fwfile, "File...")
+    state["fwall"] = tk.BooleanVar(value=False)
+    chk_fwall = ttk.Checkbutton(fwbox2, variable=state["fwall"],
+                                text=_("Show all available firmware"),
+                                command=lambda: fw_fill())
+    chk_fwall.pack(anchor="w", pady=(6, 4))
+    says(chk_fwall, "Show all available firmware")
+    lbl_fwmajor = ttk.Label(fwbox2, foreground="#555", wraplength=430,
+                            justify="left")
+    says(lbl_fwmajor,
+         "Stay within the major version the instrument is already "
+         "running - v5.x to v5.x. The first number changes with the "
+         "hardware, and an image from a different one will not run on "
+         "this scope.")
+    lbl_fwmajor.pack(anchor="w", pady=(0, 4))
+
+    fwlist = ttk.Frame(fwbox2)
+    fwlist.pack(fill="both", expand=True)
+    tree_fw = ttk.Treeview(fwlist, columns=("size", "also"), height=8,
+                           selectmode="browse")
+    tree_fw.column("#0", width=110, stretch=False)
+    tree_fw.column("size", width=80, stretch=False, anchor="e")
+    tree_fw.column("also", width=240)
+    fwbar = ttk.Scrollbar(fwlist, orient="vertical", command=tree_fw.yview)
+    tree_fw.configure(yscrollcommand=fwbar.set)
+    tree_fw.pack(side="left", fill="both", expand=True)
+    fwbar.pack(side="left", fill="y")
+    lbl_fwpick = ttk.Label(fwbox2, wraplength=430, justify="left", text="-")
+    lbl_fwpick.pack(anchor="w", pady=(6, 0))
+
+    def fw_headings():
+        tree_fw.heading("#0", text=_("Version"))
+        tree_fw.heading("size", text=_("Size"))
+        tree_fw.heading("also", text=_("Compatible scopes"))
+    fw_headings()
+    relabel.append(fw_headings)
+
+    # ---- 3: the backup, and 4: writing
+    ttk.Separator(fwright, orient="horizontal").pack(fill="x", pady=(10, 8))
+    fwbox3 = ttk.LabelFrame(fwright, padding=8)
+    says(fwbox3, "3. Back up, then write")
+    fwbox3.pack(fill="x")
+    fwrow3 = ttk.Frame(fwbox3)
+    fwrow3.pack(fill="x")
+    lbl_fwback = ttk.Label(fwrow3, text="-", foreground="#555", anchor="w")
+    lbl_fwback.pack(side="left", fill="x", expand=True)
+    btn_fwback = ttk.Button(fwrow3, text=_("Save backups to..."),
+                            padding=(10, 2),
+                            command=lambda: do_fw_backup_dir())
+    btn_fwback.pack(side="right")
+    says(btn_fwback, "Save backups to...")
+
+    state["fwcheck"] = tk.BooleanVar(value=True)
+    chk_fwcheck = ttk.Checkbutton(
+        fwbox3, variable=state["fwcheck"],
+        text=_("Read each backup a second time and compare"))
+    chk_fwcheck.pack(anchor="w", pady=(6, 0))
+    says(chk_fwcheck, "Read each backup a second time and compare")
+
+    state["fwslow"] = tk.BooleanVar(value=False)
+    chk_fwslow = ttk.Checkbutton(
+        fwbox3, variable=state["fwslow"],
+        text=_("Slow write (page buffer bypassed)"))
+    chk_fwslow.pack(anchor="w", pady=(4, 0))
+    says(chk_fwslow, "Slow write (page buffer bypassed)")
+
+    # How much to back up is not a question worth asking. Erase is
+    # chip-wide, so the answer is always all of it, and the size is
+    # measured at Connect rather than guessed from the catalogue. An
+    # answer somebody can get wrong, on the one operation where getting
+    # it wrong costs them the instrument's own firmware, is not a
+    # setting - it is a trap with a label on it.
+    lbl_fwlen = ttk.Label(fwbox3, foreground="#555", text="-")
+    lbl_fwlen.pack(anchor="w", pady=(6, 0))
+
+    btn_fwstart = ttk.Button(fwbox3, text=_("Write firmware"),
+                             padding=(10, 3),
+                             command=lambda: do_fw_start())
+    btn_fwstart.pack(anchor="w", pady=(10, 0))
+    says(btn_fwstart, "Write firmware")
+
+    # ------------------------------------------------ the tab's own logic
+    def fw_backup_len():
+        """All of the flash that is really there, measured at Connect."""
+        got = state.get("fwmonitor") or {}
+        return got.get("span") or 0x400000
+
+    def fw_fill():
+        """Redraw the image list for the model in the box."""
+        tree_fw.delete(*tree_fw.get_children())
+        model = fw_model()
+        wanted = [im for im in state.get("fwimages") or []
+                  if state["fwall"].get() or im.suits(model)]
+        # An image chosen by hand is always shown, at the top, whatever
+        # model it was shipped for - it was named rather than found, so
+        # filtering it back out again would be answering a question
+        # nobody asked. The folder's copy of the same bytes gives way.
+        one = state.get("fwchosen")
+        if one is not None:
+            wanted = [one] + [im for im in wanted if im.sha != one.sha]
+        for i, im in enumerate(wanted):
+            # Every model the image is for, this one included. It used
+            # to be every model *except* this one, under "Also shipped
+            # as" - which read, on the row you were about to write, as
+            # a list of the scopes it was not for. With the list shown
+            # whole, the selected model appearing in a row is the
+            # answer to "will this image run on the scope in front of
+            # me", which is the question the column is there for.
+            tree_fw.insert("", "end", iid=str(i), text="v" + im.version,
+                           values=(tds_fw._size(im.size),
+                                   ", ".join(im.models)))
+        state["fwshown"] = wanted
+        fw_picked()
+
+    def fw_current():
+        picked = tree_fw.selection()
+        shown = state.get("fwshown") or []
+        if not picked or int(picked[0]) >= len(shown):
+            return None
+        return shown[int(picked[0])]
+
+    def fw_picked(*_a):
+        """Say what is known about the highlighted image."""
+        one = fw_current()
+        if one is None:
+            lbl_fwpick.config(text=_("No image chosen."), foreground="#555")
+        else:
+            lines = [_("%(name)s, %(size)s")
+                     % {"name": os.path.basename(one.path),
+                        "size": tds_fw._size(one.size)}]
+            if one.mislabelled:
+                # Three of the sixty-seven images to hand carry a version
+                # inside them that is not the one in the filename. Which is
+                # right is not knowable from here, so it is said rather
+                # than quietly resolved one way.
+                lines.append(_(
+                    "The filename says v%(name)s but the image says "
+                    "v%(inside)s.") % {"name": one.version,
+                                       "inside": one.mislabelled})
+            lbl_fwpick.config(text="\n".join(lines), foreground="")
+        fw_buttons()
+
+    def fw_buttons():
+        # Backing up is not optional, so neither is saying where the
+        # backups go: Write stays greyed until there is somewhere to put
+        # them, rather than being offered and then refusing.
+        where = state.get("fwbackups") or ""
+        ready = (bool(state.get("fwmonitor")) and fw_current() is not None
+                 and bool(where) and os.path.isdir(where))
+        btn_fwstart.config(state="normal" if ready and not state.get("busy")
+                           else "disabled")
+
+    def fw_say_told():
+        """The version the instrument reported, beside the model box."""
+        _model, version = fw_told()
+        lbl_fwfv.config(text=(_("Firmware v%s") % version) if version
+                        else _("firmware not read"))
+
+    def fw_said_len():
+        """What the backup will cover, now that nobody chooses it."""
+        got = state.get("fwmonitor")
+        if not got:
+            lbl_fwlen.config(text=_("The firmware and the NVRAM are each "
+                                    "backed up whole. Connect to measure "
+                                    "how large they are."))
+            return
+        said = _("Backs up all %(flash)s of firmware and %(nvram)s of "
+                 "NVRAM, to two files.") % {
+            "flash": tds_fw._size(fw_backup_len()),
+            "nvram": tds_fw._size(tds_fw.NVRAM_LEN)}
+        # The measurement and the part's datasheet should agree. Where
+        # they do not, this instrument is not built like the ones this
+        # was written against, and that is worth a line rather than a
+        # silent decision about whose answer to take.
+        fitted = got.get("fitted")
+        if fitted and fitted != got.get("span"):
+            said += "\n" + _("A %(flash)s is fitted in %(fitted)s "
+                             "elsewhere, but this array measures "
+                             "%(span)s.") % {
+                "flash": got.get("flash"), "fitted": tds_fw._size(fitted),
+                "span": tds_fw._size(got.get("span") or 0)}
+        lbl_fwlen.config(text=said)
+
+    def fw_relabel():
+        """The lines this tab writes for itself, said again in the new
+        language. `labelled` covers text a widget was built with; these
+        are rewritten as the tab is used, so they need re-running
+        rather than re-setting."""
+        lbl_fwfolder.config(text=state.get("fwfolder") or _("no folder "
+                                                            "chosen"))
+        lbl_fwback.config(text=state.get("fwbackups") or _("not chosen"))
+        fw_say_state()
+        fw_say_told()
+        fw_said_len()
+        fw_picked()
+
+    relabel.append(fw_relabel)
+    tree_fw.bind("<<TreeviewSelect>>", fw_picked)
+    cbo_fwmodel.bind("<<ComboboxSelected>>", lambda e: fw_fill())
+    state["fwmodel"].trace_add("write", lambda *a: fw_fill())
+
+    def do_fw_folder():
+        settings = load_settings()
+        folder = filedialog.askdirectory(
+            parent=root, title=_("Where the firmware images are"),
+            initialdir=settings.get("firmware_folder") or APPDIR)
+        if not folder:
+            return
+        settings["firmware_folder"] = folder
+        save_settings(settings)
+        fw_load_folder(folder)
+
+    def do_fw_file():
+        """One image named by hand, from wherever it happens to be.
+
+        The folder is how the images are normally found; this is for the
+        copy that is not in it - a download, a memory stick, an image
+        somebody was sent.
+        """
+        settings = load_settings()
+        path = filedialog.askopenfilename(
+            parent=root, title=_("Choose a firmware image"),
+            initialdir=state.get("fwfolder")
+            or settings.get("firmware_folder") or APPDIR,
+            filetypes=[(_("Firmware images"), "*.bin"),
+                       (_("All files"), "*.*")])
+        if not path:
+            return
+        try:
+            blob = tds_fw.read_image(path)
+        except OSError as exc:
+            messagebox.showerror(_("Error"), "%s" % exc)
+            return
+        # Every image in the family starts the same four bytes. One that
+        # does not is not refused - the folder scan already skips those
+        # silently, and a file named on purpose deserves an answer
+        # rather than nothing happening - but it is said plainly first.
+        if not blob.startswith(tds_fw.IMAGE_HEAD):
+            if not messagebox.askyesno(_("Use this file?"), _(
+                    "%s does not begin like TDS firmware. Writing it "
+                    "would leave the instrument with no working firmware "
+                    "until a real image is written again.\n\nUse it "
+                    "anyway?") % os.path.basename(path),
+                    icon="warning", default="no"):
+                return
+        one = tds_fw.Image(path, blob)
+        # A file that is a copy of a known image keeps that image's model
+        # list, which the filename on its own may not carry.
+        one.models = tds_fw.index_models(os.path.dirname(path)).get(
+            os.path.basename(path).lower(), one.models)
+        state["fwchosen"] = one
+        fw_fill()
+        tree_fw.selection_set("0")
+        tree_fw.focus("0")
+
+    def fw_load_folder(folder):
+        state["fwfolder"] = folder
+        lbl_fwfolder.config(text=folder)
+        busy(True, "steps")
+        say(_("Reading the firmware folder ..."))
+        w.submit("fw_catalogue", lambda k: k.fw_catalogue(folder),
+                 needs_fs=False)
+
+    def do_fw_backup_dir():
+        settings = load_settings()
+        folder = filedialog.askdirectory(
+            parent=root, title=_("Where to put the backups"),
+            initialdir=settings.get("firmware_backups") or APPDIR)
+        if not folder:
+            return
+        settings["firmware_backups"] = folder
+        save_settings(settings)
+        state["fwbackups"] = folder
+        lbl_fwback.config(text=folder)
+        fw_buttons()
+
+    def do_fw_probe():
+        """Find the monitor and ask the flash what it is."""
+        where = tds_fw.bootloader_resource(state.get("addr") or DEFAULT_ADDR)
+        normal = state.get("addr") or DEFAULT_ADDR
+        busy(True, "wait")
+        say(_("Looking for the monitor at %s ...") % where)
+        w.submit("fw_probe", lambda k: k.fw_probe(where, normal),
+                 needs_fs=False)
+
+    def fw_say_state():
+        got = state.get("fwmonitor")
+        if not got:
+            lbl_fwstate.config(text=_(
+                "Not connected. Switch the instrument on with its NVRAM "
+                "protection switch unprotected, then press Connect."),
+                foreground="#555")
+            return
+        head = " ".join("%02X" % b for b in bytearray(got["head"]))
+        said = _("The monitor answered at %(where)s. Flash: %(flash)s. The "
+                 "first four bytes of the fitted firmware read %(head)s.") % {
+            "where": got["resource"], "flash": got["flash"], "head": head}
+        # A part with no page buffer cannot be driven from here at all -
+        # a longword at a time is days - so the option to do it is not
+        # offered on one, rather than left to refuse the write after it
+        # has been chosen. Same rule as the greying everywhere else: a
+        # control that can only produce an apology is not a control.
+        paged = bool(got.get("paged"))
+        fw_said_len()
+        chk_fwslow.config(state="normal" if paged else "disabled")
+        if not paged:
+            state["fwslow"].set(False)
+            said += "\n" + _("This part has no page buffer, so only the "
+                             "instrument itself can write it.")
+        lbl_fwstate.config(foreground="", text=said)
+
+    def do_fw_start():
+        one = fw_current()
+        got = state.get("fwmonitor")
+        if one is None or not got:
+            return
+        # The same folder the label names and the button gates on. Read
+        # again here only in case it has gone since it was chosen.
+        where = state.get("fwbackups") or APPDIR
+        if not os.path.isdir(where):
+            messagebox.showerror(_("Error"), _(
+                "Choose a folder for the backups first."))
+            return
+        model = fw_model() or "TDS"
+        if not one.suits(model):
+            # Nothing stops it - a family image is often right for a model
+            # its filename does not carry - but it is not passed over.
+            if not messagebox.askyesno(_("Write this image?"), _(
+                    "%(file)s was not shipped for a %(model)s. It was "
+                    "shipped for %(for)s.\n\nWrite it anyway?")
+                    % {"file": os.path.basename(one.path), "model": model,
+                       "for": ", ".join(one.models)},
+                    icon="warning", default="no"):
+                return
+        if not messagebox.askyesno(_("Write firmware?"), _(
+                "This will:\n\n"
+                "  read the instrument's NVRAM and firmware into "
+                "%(where)s\n"
+                "  erase the firmware flash completely\n"
+                "  write %(file)s\n"
+                "  read it back and compare\n\n"
+                "It takes several minutes and must not be interrupted at "
+                "the instrument. If it does go wrong, the monitor is in "
+                "ROM: switch on the same way and write an image again.\n\n"
+                "Proceed?")
+                % {"where": where, "file": os.path.basename(one.path)},
+                icon="warning", default="no"):
+            return
+        plan = {"resource": got["resource"], "image": one.path,
+                "archive": one.archive,
+                "normal": state.get("addr") or DEFAULT_ADDR,
+                "slow": bool(state["fwslow"].get()),
+                "backup_dir": where, "backup_len": fw_backup_len(),
+                "check_backup": bool(state["fwcheck"].get()),
+                "model": model,
+                "stamp": time.strftime("%Y%m%d-%H%M%S")}
+        busy(True, "steps")
+        say(_("Backing up before anything is written ..."))
+        w.submit("fw_run", lambda k: k.fw_run(plan), needs_fs=False)
+
+    def fw_first_look(_event=None):
+        """Fill the tab in the first time it is looked at."""
+        try:
+            if tabs.tab(tabs.select(), "text") != _("Firmware"):
+                return
+        except tk.TclError:
+            return
+        # Before the once-only guard: the instrument may have been
+        # connected since the last look, and this line is where the
+        # answer to that shows.
+        fw_say_told()
+        if state.get("fwlooked"):
+            return
+        state["fwlooked"] = True
+        settings = load_settings()
+        model, _version = fw_told()
+        if model and not state["fwmodel"].get():
+            state["fwmodel"].set(model)
+        state["fwbackups"] = settings.get("firmware_backups") or ""
+        lbl_fwback.config(text=state["fwbackups"] or _("not chosen"))
+        fw_say_state()
+        fw_said_len()
+        folder = settings.get("firmware_folder")
+        if folder and os.path.isdir(folder):
+            fw_load_folder(folder)
+        else:
+            lbl_fwfolder.config(text=_("no folder chosen"))
+            fw_picked()
+
+    tabs.bind("<<NotebookTabChanged>>", fw_first_look, add="+")
+
+    def fw_report(got):
+        """Say what happened, once. It is a long operation and the status
+        line will have moved on by the time anyone reads it."""
+        lines = []
+        for one in got["backups"]:
+            lines.append(_("%(what)s backed up: %(path)s")
+                         % {"what": one["what"],
+                            "path": os.path.basename(one["path"])})
+        lines.append("")
+        if got.get("helper"):
+            lines.append(_("Written a page at a time by the instrument "
+                           "itself."))
+        elif got.get("asked_slow"):
+            lines.append(_("Written from here, page by page, as asked."))
+        else:
+            lines.append(_("Written from here, page by page - the "
+                           "on-instrument helper did not run."))
+        # Pages that fell back are worth counting; pages written from
+        # here because that is what was asked for are not news.
+        if got.get("slow_pages") and not got.get("asked_slow"):
+            lines.append(_("%d pages had to be written the slow way.")
+                         % got["slow_pages"])
+        if got["faults"]:
+            lines.append("")
+            lines.append(_("The flash does NOT match the image. The first "
+                           "difference is at 0x%06X.") % got["faults"][0])
+            lines.append(_("Nothing is lost: switch off, leave the switch "
+                           "unprotected, switch on and write it again."))
+            say(_("Firmware written but it does not verify"))
+            messagebox.showerror(_("Error"), "\n".join(lines))
+            return
+        lines.append(_("The flash matches the image, all %s of it.")
+                     % tds_fw._size(got["wrote"]))
+        lines.append("")
+        lines.append(_("Switch off at the front panel, put the NVRAM "
+                       "protection switch back to protected, and switch "
+                       "on again."))
+        say(_("Firmware written and verified"))
+        messagebox.showinfo(_("Firmware written"), "\n".join(lines))
+    # --------------------------------------------------- the backup tab
+    # Everything that can be copied off this instrument and put back, in
+    # one file. A zip and not a disk image: no command in this firmware
+    # reads a sector, so files are the only thing there is to copy - and
+    # a zip is a file anybody can open in ten years without this
+    # program.
+    #
+    # Formatting a volume is deliberately not offered. The instrument
+    # has its own way of doing that, on its own front panel, where it
+    # cannot be reached by a mis-click three feet away.
+    baktab = ttk.Frame(tabs)
+    tabs.add(baktab, text=_("Backup"))
+    named(baktab, "Backup")
+
+    bakleft = ttk.Frame(baktab, width=LEFT_PANE)
+    bakleft.pack(side="left", fill="y", padx=(4, 3), pady=6)
+    bakleft.pack_propagate(False)
+    bakright = ttk.Frame(baktab)
+    bakright.pack(side="left", fill="both", expand=True, padx=(3, 4), pady=6)
+
+    # Part name, and what the checkbox beside it says. The floppy starts
+    # off because most instruments have nothing in the drive, and a
+    # backup that fails one part every time teaches people to ignore the
+    # report.
+    #
+    # No error log. It has a tab of its own that reads it, saves it and
+    # clears it, and a second way to save it here would be a second
+    # thing to keep in step.
+    #: The jobs whose steps and failures belong in the report on the
+    #: right. Membership decides it, so verifying a backup - which
+    #: writes to the report but submits no job - cannot leave the
+    #: next tab's work being narrated into it.
+    BAK_JOBS = ("bak_make", "bak_put", "cal_read", "cal_write",
+                "bak_nvram", "bak_nvram_put")
+
+    BAK_PARTS = (("disk", "Hard disk (hd0:)"),
+                 ("floppy", "Floppy disk (fd0:)"),
+                 ("setup", "Instrument settings"),
+                 ("refs", "Reference waveforms"),
+                 ("cal", "Calibration constants"))
+
+    bakbox1 = ttk.LabelFrame(bakleft, padding=8)
+    says(bakbox1, "What to include")
+    bakbox1.pack(fill="x")
+    bakchecks = {}
+    for _key, _english in BAK_PARTS:
+        # Volumes start unticked: nothing knows a disk or floppy is
+        # even there until Refresh has asked. Settings, references and
+        # calibration are always readable, so they stay on.
+        state["bak" + _key] = tk.BooleanVar(
+            value=_key not in ("disk", "floppy"))
+        _box = ttk.Checkbutton(bakbox1, variable=state["bak" + _key],
+                               command=lambda: bak_buttons())
+        says(_box, _english)
+        _box.pack(anchor="w")
+        bakchecks[_key] = _box
+    # Explicit calls, not a dict indexed in the loop: the translation
+    # audit reads the literal handed to hints(), and only sees it here.
+    hints(bakchecks["disk"], "Include the hard disk (hd0:) in the backup")
+    hints(bakchecks["floppy"],
+          "Include the floppy disk (fd0:) in the backup")
+    hints(bakchecks["setup"], "Include the instrument's current settings")
+    hints(bakchecks["refs"], "Include the stored reference waveforms")
+    hints(bakchecks["cal"], "Include the calibration constants")
+    lbl_bakfound = ttk.Label(bakbox1, foreground="#555", justify="left",
+                             wraplength=LEFT_PANE - 40)
+    says(lbl_bakfound, "Refresh to see what this instrument has.")
+    lbl_bakfound.pack(anchor="w", pady=(6, 0))
+
+    ttk.Separator(bakleft, orient="horizontal").pack(fill="x", pady=(10, 8))
+    # No Folder button. All three of these open a file dialog anyway,
+    # and the folder each one starts in is the folder the last one
+    # ended in - which is the whole of what choosing one up front was
+    # for.
+    bakbox2 = ttk.LabelFrame(bakleft, padding=8)
+    says(bakbox2, "Backup file")
+    bakbox2.pack(fill="x")
+    bakrow3 = ttk.Frame(bakbox2)
+    bakrow3.pack(fill="x")
+    btn_bakmake = ttk.Button(bakrow3, text=_("Back up..."), padding=(10, 2),
+                             command=lambda: do_bak_make())
+    btn_bakmake.pack(side="left")
+    says(btn_bakmake, "Back up...")
+    btn_bakput = ttk.Button(bakrow3, text=_("Restore..."), padding=(10, 2),
+                            command=lambda: do_bak_put())
+    btn_bakput.pack(side="left", padx=4)
+    says(btn_bakput, "Restore...")
+    btn_bakcheck = ttk.Button(bakrow3, text=_("Verify..."), padding=(10, 2),
+                              command=lambda: do_bak_check())
+    btn_bakcheck.pack(side="left")
+    says(btn_bakcheck, "Verify...")
+    btn_bakscan = ttk.Button(bakbox2, text=_("Refresh"), padding=(10, 2),
+                             command=lambda: do_bak_refresh())
+    btn_bakscan.pack(anchor="w", pady=(8, 0))
+    says(btn_bakscan, "Refresh")
+
+    # ---- calibration constants
+    # Here rather than on the System tab, where these two used to be:
+    # this is the tab about copying things off the instrument and
+    # putting them back, and that is what they do. Kept as their own
+    # pair of buttons rather than folded into the backup above, because
+    # restoring them needs the NVRAM protection switch moved and a
+    # confirmation of its own - and something that needs the cabinet
+    # opened should not be reachable by a tick in a list.
+    ttk.Separator(bakleft, orient="horizontal").pack(fill="x", pady=(10, 8))
+    bakbox3 = ttk.LabelFrame(bakleft, padding=8)
+    says(bakbox3, "Calibration constants")
+    bakbox3.pack(fill="x")
+    lbl_bakcal = ttk.Label(bakbox3, foreground="#555", justify="left",
+                           wraplength=LEFT_PANE - 40)
+    says(lbl_bakcal,
+         "The acquisition board's calibration EEPROMs, read over the bus "
+         "while the instrument runs normally. Back these up before any "
+         "service work. Restoring needs the NVRAM protection switch set "
+         "to unprotected, without rebooting the scope.")
+    lbl_bakcal.pack(anchor="w")
+    bakrow4 = ttk.Frame(bakbox3)
+    bakrow4.pack(fill="x", pady=(6, 0))
+    btn_bakcalget = ttk.Button(bakrow4, text=_("Back up..."),
+                               padding=(10, 2),
+                               command=lambda: do_bak_cal_get())
+    btn_bakcalget.pack(side="left")
+    says(btn_bakcalget, "Back up...")
+    btn_bakcalput = ttk.Button(bakrow4, text=_("Restore..."),
+                               padding=(10, 2),
+                               command=lambda: do_bak_cal_put())
+    btn_bakcalput.pack(side="left", padx=4)
+    says(btn_bakcalput, "Restore...")
+    # No status line under these two either, for the reason the NVRAM
+    # box below has none: this column is narrow and everything worth
+    # saying goes to "What happened" on the right, where it is one
+    # running account rather than two that have to be read together.
+
+    # ---- NVRAM
+    # Not a tick in the list above, because the instrument cannot be in
+    # two states at once. Everything in that list is read from an
+    # instrument running its firmware; NVRAM can only be read through
+    # the bootloader monitor, which means the protection switch moved
+    # and the instrument restarted into something that answers at 29 and
+    # has no filesystem, no settings and no librarian. A tick that can
+    # never be combined with any other tick is not a tick.
+    #
+    # Restoring is a write with no way back - static RAM with a battery
+    # behind it, so nothing is erased and nothing can be un-written -
+    # which is why what is there now is read and saved before a byte
+    # goes in, why the file's own checksums are added up first, and why
+    # the confirmation says out loud what a dump from a different
+    # instrument does to this one's calibration.
+    ttk.Separator(bakleft, orient="horizontal").pack(fill="x", pady=(10, 8))
+    bakbox4 = ttk.LabelFrame(bakleft, padding=8)
+    says(bakbox4, "NVRAM")
+    bakbox4.pack(fill="x")
+    lbl_baknv = ttk.Label(bakbox4, foreground="#555", justify="left",
+                          wraplength=LEFT_PANE - 40)
+    says(lbl_baknv,
+         "User settings, saved waveforms, limits and masks, and on the "
+         "earlier instruments the calibration constants too. Reading it "
+         "needs the NVRAM protection switch set to unprotected and the "
+         "instrument restarted into its bootloader - it is not read "
+         "over the ordinary bus and nothing else here is read at the "
+         "same time. Takes a few minutes.")
+    lbl_baknv.pack(anchor="w")
+    bakrow5 = ttk.Frame(bakbox4)
+    bakrow5.pack(fill="x", pady=(6, 0))
+    btn_baknv = ttk.Button(bakrow5, text=_("Back up..."), padding=(10, 2),
+                           command=lambda: do_bak_nvram())
+    btn_baknv.pack(side="left")
+    says(btn_baknv, "Back up...")
+    btn_baknvput = ttk.Button(bakrow5, text=_("Restore..."), padding=(10, 2),
+                              command=lambda: do_bak_nvram_put())
+    btn_baknvput.pack(side="left", padx=4)
+    says(btn_baknvput, "Restore...")
+    # No status line under these two buttons. Everything it said - the
+    # checksum report and the result - is written to "What happened" on
+    # the right as well, and the left column is narrow enough that the
+    # duplicate was being cut off. The calibration box above keeps its
+    # own line, because what that one says goes nowhere else.
+
+    # ---- what happened
+    bakbox5 = ttk.LabelFrame(bakright, padding=8)
+    says(bakbox5, "What happened")
+    bakbox5.pack(fill="both", expand=True)
+    bakview = ttk.Frame(bakbox5)
+    bakview.pack(fill="both", expand=True)
+    # Wrapped on words, not scrolled sideways. What goes in here is
+    # sentences rather than columns - a filename, a step, a checksum
+    # read out in full - and a horizontal scrollbar hides the end of a
+    # sentence behind a gesture nobody makes while watching an
+    # operation run.
+    baktxt = tk.Text(bakview, wrap="word", height=10, undo=False,
+                     font="TkFixedFont", background="#ffffff",
+                     highlightthickness=1, highlightbackground=EDGE)
+    bakvsb = ttk.Scrollbar(bakview, orient="vertical", command=baktxt.yview)
+    baktxt.configure(yscrollcommand=bakvsb.set)
+    bakvsb.pack(side="right", fill="y")
+    baktxt.pack(side="left", fill="both", expand=True)
+    # Read-only the same way the error log is: selectable and copyable,
+    # which a disabled Text is not.
+    baktxt.bind("<Key>", lambda e: (None if (e.state & 4) or e.keysym in
+                                    ("Left", "Right", "Up", "Down", "Home",
+                                     "End", "Prior", "Next") else "break"))
+
+    # ------------------------------------------------ the tab's own logic
+    def bak_note(*lines):
+        """Add to the report, and leave it looking at the newest line."""
+        baktxt.insert("end", "\n".join(lines) + "\n")
+        baktxt.see("end")
+
+    def bak_begin():
+        """Separate this run's account from the one before it.
+
+        One run's steps run into the next otherwise, and the report is
+        read after the fact as much as during. The separator goes in at
+        the start rather than at the end because a run has one
+        beginning and several ways of finishing.
+        """
+        if baktxt.get("1.0", "end").strip():
+            baktxt.insert("end", "\n")
+        state["bakstep"] = None
+
+    def bak_available():
+        """Which parts this instrument was found to have.
+
+        Everything, until a refresh says otherwise: a tab that greys
+        every choice before it has asked reads as broken rather than as
+        cautious.
+        """
+        return state.get("bakhas") or dict((k, True) for k, _s in BAK_PARTS)
+
+    def bak_wants():
+        """The ticked parts that this instrument actually has."""
+        have = bak_available()
+        return dict((k, bool(state["bak" + k].get()) and bool(have.get(k)))
+                    for k, _s in BAK_PARTS)
+
+    def bak_buttons():
+        have = bak_available()
+        for key, _english in BAK_PARTS:
+            bakchecks[key].config(state="normal" if have.get(key)
+                                  else "disabled")
+        ready = any(bak_wants().values()) and not state.get("busy")
+        btn_bakmake.config(state="normal" if ready else "disabled")
+
+    def bak_remember(path):
+        """Start the next dialog where this one finished."""
+        settings = load_settings()
+        settings["backups"] = os.path.dirname(path)
+        save_settings(settings)
+        state["bakfolder"] = os.path.dirname(path)
+
+    def do_bak_refresh():
+        busy(True, "wait")
+        say(_("Asking the instrument what it has ..."))
+        w.submit("bak_survey", lambda k: k.bak_survey())
+
+    def bak_show_survey(got):
+        """What the instrument answered, as ticks that mean something."""
+        volumes = [v.lower() for v in got.get("volumes") or []]
+        # Not "bakrefs": that is the tick box's own variable, one of
+        # those named after a part. The names of the references that
+        # hold something are a different thing and need a different key.
+        state["bakreflist"] = got.get("refs") or []
+        state["bakhas"] = {
+            "disk": "hd0:" in volumes, "floppy": "fd0:" in volumes,
+            "setup": True, "refs": bool(state["bakreflist"]),
+            "cal": True}
+        for key, has in state["bakhas"].items():
+            if key in ("disk", "floppy"):
+                # A volume follows what the refresh found: ticked when it
+                # is there, cleared when it is not.
+                state["bak" + key].set(bool(has))
+            elif not has:
+                state["bak" + key].set(False)
+        lbl_bakfound.config(text=_(
+            "%(volumes)s. %(refs)d reference(s) hold a waveform.")
+            % {"volumes": ", ".join(got.get("volumes") or [])
+               or _("no volumes"), "refs": len(state["bakreflist"])})
+        # The same sentence into the report, with what answered it. The
+        # report is the record of the session, and what the instrument
+        # was when it was asked is the first line of it.
+        bak_note(*[t for t in (got.get("idn"), lbl_bakfound.cget("text"))
+                   if t])
+        bak_buttons()
+
+    def do_bak_make():
+        want = bak_wants()
+        name = stamped((model_of(state.get("idn")) or "TDS").replace(" ", ""),
+                       ".zip")
+        path = filedialog.asksaveasfilename(
+            parent=root, title=_("Where to save the backup"),
+            initialdir=state.get("bakfolder") or APPDIR, initialfile=name,
+            defaultextension=".zip",
+            filetypes=[(_("Backup file"), "*.zip")])
+        if not path:
+            return
+        bak_remember(path)
+        baktxt.delete("1.0", "end")
+        bak_begin()
+        bak_note(_("Backing up to %s") % os.path.basename(path))
+        busy(True, "steps")
+        say(_("Backing up the instrument ..."))
+        w.submit("bak_make", lambda k: k.bak_make(
+            {"path": path, "parts": want,
+             "refs": state.get("bakreflist") or []}))
+
+    def bak_pick_file(title):
+        """Choose a backup and check it before anything is done with it."""
+        path = filedialog.askopenfilename(
+            parent=root, title=title,
+            initialdir=state.get("bakfolder") or APPDIR,
+            filetypes=[(_("Backup file"), "*.zip"), (_("All files"), "*.*")])
+        if not path:
+            return None, None
+        bak_remember(path)
+        try:
+            checked = tds_bak.verify(path)
+        except Exception as exc:
+            messagebox.showerror(_("Error"), str(exc))
+            return None, None
+        return path, checked
+
+    def bak_report(path, checked):
+        """Say what a backup holds and whether it still reads correctly."""
+        manifest = checked["manifest"]
+        bak_begin()
+        bak_note(os.path.basename(path),
+                 _("Made %(when)s from %(idn)s")
+                 % {"when": manifest.get("made") or "?",
+                    "idn": manifest.get("idn") or "?"},
+                 _("%(files)d file(s) checked, %(bad)d wrong, %(gone)d "
+                   "missing") % {"files": checked["checked"],
+                                 "bad": len(checked["bad"]),
+                                 "gone": len(checked["missing"])})
+        for arc in (checked["bad"] + checked["missing"])[:20]:
+            bak_note("    " + arc)
+        holds = tds_bak.holds(manifest)
+        bak_note("    " + ", ".join("%s (%d)" % (k, n)
+                                    for k, n in sorted(holds.items())))
+        return holds
+
+    def do_bak_check():
+        path, checked = bak_pick_file(_("Which backup to verify"))
+        if not path:
+            return
+        bak_report(path, checked)
+        say(_("The backup is complete and every file matches")
+            if checked["ok"] else _("The backup does not match itself"))
+
+    def do_bak_put():
+        """Put parts of a backup back, after saying exactly which."""
+        path, checked = bak_pick_file(_("Which backup to restore"))
+        if not path:
+            return
+        holds = bak_report(path, checked)
+        if not checked["ok"] and not messagebox.askyesno(
+                _("Restore anyway?"),
+                _("This backup does not match its own checksums. Whatever "
+                  "is wrong with it would be written to the instrument. "
+                  "Proceed?"), icon="warning", default="no"):
+            return
+        # Calibration is never part of this. It has its own button, its
+        # own warning and its own switch to move first.
+        want = dict((k, bool(state["bak" + k].get()) and k in holds)
+                    for k, _s in BAK_PARTS if k != "cal")
+        picked = [k for k, on in want.items() if on]
+        if not picked:
+            messagebox.showinfo(
+                _("Nothing to restore"),
+                _("Tick what to restore on the left. This backup holds "
+                  "%s.") % ", ".join(sorted(holds)))
+            return
+        if not messagebox.askyesno(_("Restore to the instrument?"), _(
+                "This writes %(parts)s from\n\n%(file)s\n\nto the "
+                "instrument, replacing what is there now. Files of the "
+                "same name are overwritten and there is no undo.\n\n"
+                "Proceed?") % {"parts": ", ".join(sorted(picked)),
+                               "file": os.path.basename(path)},
+                icon="warning", default="no"):
+            return
+        busy(True, "steps")
+        say(_("Restoring to the instrument ..."))
+        w.submit("bak_put", lambda k: k.bak_put({"path": path,
+                                                 "parts": want}))
+
+    def cal_running():
+        """Is the instrument in the state the constants can be reached in?
+
+        Both calibration buttons need the firmware running: the words go
+        through WORDCONSTANT, which the firmware implements and the
+        bootloader does not. That is the opposite of the NVRAM beside
+        them, and it is the one thing about this box worth being told
+        rather than left to infer from "not connected".
+        """
+        if w.fs is not None:
+            return True
+        messagebox.showinfo(_("The instrument is not answering"), _(
+            "The calibration constants are read and written while the "
+            "instrument runs normally, so it has to be connected.\n\n"
+            "Unlike the NVRAM, this is not done from the bootloader: "
+            "set the NVRAM protection switch to unprotected with the "
+            "instrument switched on, without rebooting it, and connect "
+            "as usual."))
+        return False
+
+    def do_bak_cal_get():
+        """Ask where they go, then read them.
+
+        Asked first, not last. The read is 504 queries and takes the
+        better part of a minute; a save dialog that appears at the end
+        of it is one nobody is still sitting in front of, and a read
+        nobody answers for is a read thrown away.
+        """
+        if not cal_running():
+            return
+        settings = load_settings()
+        name = tds_cal.names((model_of(state.get("idn")) or "TDS")
+                             .replace(" ", ""),
+                             time.strftime("%Y%m%d-%H%M%S"))[2]
+        path = filedialog.asksaveasfilename(
+            parent=root, initialfile=name,
+            title=_("Where to save the calibration constants"),
+            initialdir=settings.get("cal_backups") or APPDIR,
+            defaultextension=".bin",
+            filetypes=[(_("Calibration backup"), "*.bin")])
+        if not path:
+            return
+        settings["cal_backups"] = os.path.dirname(path)
+        save_settings(settings)
+        state["calpath"] = path
+        busy(True, "steps")
+        say(_("Reading the calibration constants ..."))
+        bak_begin()
+        bak_note(_("Reading the calibration constants ..."))
+        w.submit("cal_read", lambda k: k.cal_read())
+
+    def do_bak_nvram():
+        """Read the NVRAM through the bootloader monitor and save it."""
+        settings = load_settings()
+        # A save dialog with the name already in it, the way the
+        # calibration backup asks. Choosing a folder and being told
+        # nothing about what would land in it left the person to guess
+        # both the name and whether anything had happened.
+        where = filedialog.asksaveasfilename(
+            parent=root, title=_("Where to put the NVRAM backup"),
+            initialfile="%s_NVRAM_%s.bin"
+            % ((fw_model() or model_of(state.get("idn")) or "TDS")
+               .replace(" ", ""),
+               time.strftime("%Y%m%d-%H%M%S")),
+            initialdir=state.get("bakfolder") or settings.get("backups")
+            or APPDIR,
+            defaultextension=".bin",
+            filetypes=[(_("NVRAM backup"), "*.bin")])
+        if not where:
+            return
+        if not messagebox.askyesno(_("Back up the NVRAM?"), _(
+                "This reads the NVRAM through the bootloader and writes "
+                "it into\n\n%(where)s\n\nThe instrument has to be in its "
+                "bootloader for this: NVRAM protection switch set to "
+                "unprotected, then switched off and on again. Nothing is "
+                "written to the instrument and it takes a few minutes."
+                "\n\nProceed?") % {"where": where},
+                default="yes"):
+            return
+        folder = os.path.dirname(where)
+        state["bakfolder"] = folder
+        settings["backups"] = folder
+        save_settings(settings)
+        busy(True, "steps")
+        say(_("Reading the NVRAM ..."))
+        bak_begin()
+        bak_note(_("Reading the NVRAM through the bootloader ..."))
+        w.submit("bak_nvram", lambda k: k.fw_nvram({
+            "resource": tds_fw.bootloader_resource(state.get("addr")
+                                                   or DEFAULT_ADDR),
+            "normal": state.get("addr") or DEFAULT_ADDR,
+            "backup_dir": folder, "check_backup": True,
+            # The name the person just typed, rather than one built from
+            # a model the program may not know - it cannot connect to an
+            # instrument that is in its bootloader, so fw_model() is
+            # often empty exactly when this runs.
+            "names": {"NVRAM": os.path.basename(where)},
+            "model": fw_model() or "TDS",
+            "stamp": time.strftime("%Y%m%d-%H%M%S")}), needs_fs=False)
+
+    def do_bak_nvram_put():
+        """Write a saved NVRAM back, after adding up what is in it."""
+        settings = load_settings()
+        path = filedialog.askopenfilename(
+            parent=root, title=_("Which NVRAM backup to restore"),
+            initialdir=state.get("bakfolder") or settings.get("backups")
+            or APPDIR,
+            filetypes=[(_("NVRAM backup"), "*.bin"), (_("All files"), "*.*")])
+        if not path:
+            return
+        try:
+            with open(path, "rb") as fh:
+                data = fh.read()
+        except OSError as exc:
+            messagebox.showerror(_("Error"), str(exc))
+            return
+        # A file the window cannot hold is not an NVRAM dump, whatever
+        # it is called. Shorter is allowed and normal: the tools that
+        # came before this one read 0xA0000, which is what is really
+        # fitted, and an A-series carries only 0x80000.
+        if not data or len(data) > tds_fw.NVRAM_LEN or len(data) % 2:
+            messagebox.showerror(_("Error"), _(
+                "%(file)s is %(size)s. An NVRAM backup is a whole number "
+                "of words and no more than %(most)s, which is all the "
+                "bootloader answers for.")
+                % {"file": os.path.basename(path),
+                   "size": human_bytes(len(data)),
+                   "most": human_bytes(tds_fw.NVRAM_LEN)})
+            return
+        # What the instrument's own firmware checksums, added up here
+        # before any of it is written. This is the one check that can
+        # tell a good dump from a damaged one, and the tools this came
+        # from say to always run it.
+        told = tds_fw.nvram_check(data)
+        lines = []
+        if told["proto"]:
+            lines.append(_("%(file)s: %(proto)s, all %(n)d section "
+                           "checksums valid")
+                         % {"file": os.path.basename(path),
+                            "proto": told["proto"], "n": told["of"]})
+        elif told.get("nearest"):
+            lines.append(_("%(file)s: nearest is %(proto)s, %(ok)d of "
+                           "%(n)d section checksums valid")
+                         % {"file": os.path.basename(path),
+                            "proto": told["nearest"],
+                            "ok": told["matched"], "n": told["of"]})
+        else:
+            lines.append(_("%s: too short to hold any known section")
+                         % os.path.basename(path))
+        for what, at, want, got in told["bad"]:
+            lines.append(_("    %(what)s at 0x%(at)X: holds 0x%(want)04X, "
+                           "adds up to 0x%(got)04X")
+                         % {"what": what, "at": at, "want": want, "got": got})
+        if told["zero"]:
+            lines.append(_("    %d section(s) check as zero, which is also "
+                           "what an empty one looks like")
+                         % len(told["zero"]))
+        bak_begin()
+        bak_note(*lines)
+        if not told["proto"] and not messagebox.askyesno(
+                _("This backup does not add up"), _(
+                    "%(file)s does not match any firmware this program "
+                    "knows the checksums for.\n\nThat can mean the file is "
+                    "damaged. It can also mean the instrument it came from "
+                    "is one nobody has recorded the sections for - a "
+                    "TDS640A is such a one, and its dumps are perfectly "
+                    "good.\n\nWhat the check found is in the report on the "
+                    "right.\n\nRestore it anyway?")
+                % {"file": os.path.basename(path)},
+                icon="warning", default="no"):
+            return
+        if not messagebox.askyesno(_("Restore the NVRAM?"), _(
+                "This writes %(size)s from\n\n%(file)s\n\ninto the "
+                "instrument's NVRAM.\n\nNothing is kept first: if you "
+                "have not already taken a backup with the button beside "
+                "this one, there is no way back.\n\n"
+                "If this backup came from a different instrument, that "
+                "instrument's settings, saved waveforms, limits and "
+                "masks go in with it. The clock is not written.\n\nThe "
+                "NVRAM protection switch has to be set "
+                "to unprotected and the instrument restarted into its "
+                "bootloader.\n\nProceed?")
+                % {"size": human_bytes(len(data)),
+                   "file": os.path.basename(path)},
+                icon="warning", default="no"):
+            return
+        state["bakfolder"] = os.path.dirname(path)
+        busy(True, "steps")
+        say(_("Restoring the NVRAM ..."))
+        w.submit("bak_nvram_put", lambda k: k.fw_nvram_put({
+            "path": path,
+            "resource": tds_fw.bootloader_resource(state.get("addr")
+                                                   or DEFAULT_ADDR),
+            "normal": state.get("addr") or DEFAULT_ADDR,
+            "backup_dir": os.path.dirname(path),
+            "model": fw_model() or "TDS",
+            "stamp": time.strftime("%Y%m%d-%H%M%S")}), needs_fs=False)
+
+    def do_bak_cal_put():
+        """Put a saved set back, after reading what is there now.
+
+        Refused up front unless the instrument is answering normally.
+        The constants are read and written with WORDCONSTANT, which the
+        firmware implements - so unlike the NVRAM, this one cannot be
+        done from the bootloader at all, and an instrument sitting in
+        its bootloader answers nothing here. Saying "not connected"
+        sends somebody to look at the cable.
+        """
+        if not cal_running():
+            return
+        settings = load_settings()
+        path = filedialog.askopenfilename(
+            parent=root, title=_("Which calibration backup to restore"),
+            initialdir=settings.get("cal_backups") or APPDIR,
+            filetypes=[(_("Calibration backup"), "*.bin"),
+                       (_("All files"), "*.*")])
+        if not path:
+            return
+        try:
+            with open(path, "rb") as fh:
+                data = fh.read()
+            tds_cal.words(data)             # raises if it is not one
+        except Exception as exc:
+            messagebox.showerror(_("Error"), str(exc))
+            return
+        # Word 0 is the sum of the 251 words after it. A file that
+        # disagrees with its own checksum is damaged, and writing it
+        # onto a working acquisition board is the one mistake here with
+        # no way back - so it is asked about on its own, before the
+        # ordinary confirmation, rather than as a line inside it.
+        if not tds_cal.sound(data) and not messagebox.askyesno(
+                _("This file is damaged"),
+                _("%(file)s does not agree with its own checksum. Word "
+                  "0 should be the sum of the 251 words after it and it "
+                  "is not, so some of what is in the file is not what "
+                  "was read off the instrument.\n\nWriting it would "
+                  "leave the acquisition board holding that damage.\n\n"
+                  "Restore it anyway?") % {"file": os.path.basename(path)},
+                icon="warning", default="no"):
+            return
+        if not messagebox.askyesno(_("Restore calibration constants?"), _(
+                "This writes the calibration constants in\n\n%(file)s"
+                "\n\nto the instrument's acquisition board.\n\nNothing "
+                "is kept first: if you have not already taken a backup "
+                "with the button beside this one, there is no way "
+                "back.\n\n"
+                "The NVRAM protection switch has to be set to "
+                "unprotected, or the words are taken into a "
+                "working copy and never stored - which reads back "
+                "as a success until the instrument is switched "
+                "off.\n\nThe instrument's calibration is "
+                "what this changes. Proceed?")
+                % {"file": os.path.basename(path)},
+                icon="warning", default="no"):
+            return
+        busy(True, "steps")
+        say(_("Restoring the calibration constants ..."))
+        bak_begin()
+        w.submit("cal_write", lambda k: k.cal_write(
+            {"data": data, "from": path}))
+
+    def bak_relabel():
+        """The line this tab writes for itself, said again."""
+        if state.get("bakhas") is None:
+            lbl_bakfound.config(
+                text=_("Refresh to see what this instrument has."))
+
+    relabel.append(bak_relabel)
+    state["bakfolder"] = load_settings().get("backups") or ""
+    bak_buttons()
 
     # ------------------------------------------------- the settings tab
     # This program's own settings, as against the instrument's, which
@@ -8699,6 +12554,7 @@ def run_gui():
         swatch.grid(row=row % 6, column=1 if row < 6 else 3, sticky="w",
                     pady=2, padx=(0, 16))
         set_swatches[key] = swatch
+        hints(swatch, "Click to choose this colour")
 
         def choose(k=key, name=label):
             working = set_working()
@@ -8910,6 +12766,16 @@ def run_gui():
                              justify="left")
     lbl_setwhere.pack(anchor="w")
 
+    def set_fit_where(evt):
+        """Wrap these lines to the box, not to a guess.
+
+        The settings path is the longest line in this panel, and a fixed
+        wraplength broke it in half in a window with room to spare.
+        """
+        lbl_setwhere.config(wraplength=max(200, evt.width - 20))
+
+    setbox4.bind("<Configure>", set_fit_where)
+
     def set_about():
         """Who wrote it, under what, and where it keeps its things.
 
@@ -8946,7 +12812,7 @@ def run_gui():
     # for first, with the two that are about this program rather than
     # about the instrument at the end.
     for at, page in enumerate((filetab, scrtab, wavetab, limtab, masktab,
-                               errtab, systab, settab)):
+                               errtab, systab, baktab, fwtab, settab)):
         tabs.insert(at, page)
 
     # One status bar along the bottom: the message on the left and the
@@ -8957,7 +12823,15 @@ def run_gui():
     bar = ttk.Frame(root)
     # Inset to match the content panes above. Flush against the frame the
     # sunken edges get clipped by the window's rounded corners.
-    bar.pack(fill="x", side="bottom", padx=6, pady=(2, 6))
+    #
+    # `before=tabs` is what keeps it on screen. The notebook is packed
+    # thousands of lines earlier with expand=True, and the packer works
+    # in packing order: whatever is packed first claims the cavity, so a
+    # bar added afterwards is squeezed to nothing as soon as a tab's
+    # content asks for more height than the window has. Putting it ahead
+    # of the notebook in the order reserves its height first and lets the
+    # notebook expand into what is left.
+    bar.pack(fill="x", side="bottom", padx=6, pady=(2, 6), before=tabs)
     status = ttk.Label(bar, text=_("Connecting..."), relief="sunken",
                        anchor="w")
     status.pack(fill="x", side="left", expand=True, padx=(0, 4))
@@ -8979,7 +12853,7 @@ def run_gui():
         did not identify itself simply contributes nothing.
         """
         model = "".join(c for c in model_of(state.get("idn"))
-                        if c.isalnum() or c in " -_").strip()
+                        if c.isalnum() or c in "-_").strip()
         return "%s %s" % (model, what) if model else what
 
     def say(msg):
@@ -9085,9 +12959,6 @@ def run_gui():
     # exist. busy() runs before then during start-up and has to be able
     # to call it, and a closure reads the name when it is called rather
     # than when it is written - so the stub is replaced, not shadowed.
-    def wfm_buttons(_evt=None):
-        pass
-
     def busy(on, working=None):
         """`working` is None for no bar, 'wait' for marquee, 'steps' for one
         that fills. Anything that clears busy also clears the bar, so it
@@ -9108,6 +12979,8 @@ def run_gui():
         if not on:
             wfm_buttons()
             lim_buttons()
+            fw_buttons()
+            bak_buttons()
         root.config(cursor="watch" if on else "")
         if not on:
             progress_off()
@@ -9230,6 +13103,28 @@ def run_gui():
             % (len(failed), verb,
                "\n".join("    %s\n        %s" % (p.rsplit("/", 1)[-1], e)
                          for p, e in failed[:6])))
+
+    def report_losses(payload):
+        """Say so when the instrument took more than it was asked to.
+
+        Twice on a TDS 784D a directory has come back empty of things
+        nobody deleted. It has not been reproduced and the mechanism is
+        unknown, so this does not prevent it - it makes it visible.
+        Silence is what makes that kind of loss dangerous: without this
+        the user finds out weeks later, from the gap.
+        """
+        lost = payload.get("lost") or []
+        if not lost:
+            return
+        messagebox.showwarning(
+            _("Files disappeared"),
+            _("%(count)d item(s) vanished from %(folder)s that were not "
+              "part of what you deleted:\n\n%(names)s\n\nThis instrument "
+              "has been seen to empty a directory on its own. The cause "
+              "is not known. Check the folder before writing anything "
+              "else to it.")
+            % {"count": len(lost), "folder": payload.get("folder") or "",
+               "names": name_list(lost)})
 
     def name_list(names, limit=10):
         """Names for a dialog: readable, and never a wall of text."""
@@ -9493,8 +13388,6 @@ def run_gui():
         state["scanning"] = on
         btn_scan.config(text=_("Cancel") if on else _("Scan"),
                         state="normal")
-        if on:
-            w.cancelled.clear()
 
     def do_rescan():
         """Re-scan the bus and refresh the dropdown, staying connected.
@@ -9503,7 +13396,12 @@ def run_gui():
         """
         if state.get("scanning"):
             w.cancelled.set()
-            say(_("Stopping the scan ..."))
+            # Named for what actually happens. The scan looks at the
+            # flag between addresses, so the one being asked now runs to
+            # its own timeout first - up to two seconds. "Stopping the
+            # scan" promised something instant that a blocking VISA call
+            # cannot give.
+            say(_("Stopping after this address ..."))
             return
         if state["busy"]:
             return
@@ -9516,8 +13414,45 @@ def run_gui():
                   "oscilloscope")
                 % {"all": len(payload["found"]),
                    "scopes": len([i for i in payload["found"]
-                                  if i["scope"]])}))
+                                  if i["scope"]])}),
+            scan_connect())
         w.submit("scan", lambda k: k.scan(), needs_fs=False)
+
+    def scan_target():
+        """Which address a finished scan should connect to, or None.
+
+        None when something is already connected - a scan is also how
+        the dropdown is refreshed mid-session, and that must not throw
+        away the connection it was run from. None when the scan found
+        no oscilloscope, and none while the bus is busy.
+
+        Otherwise the one it was looking for, if the scan found it, and
+        failing that the first oscilloscope on the bus.
+        """
+        scopes = state.get("scopes") or []
+        if state.get("cannot") is not None or not scopes or state["busy"]:
+            return None
+        return ([s for s in scopes if s["addr"] == state["addr"]]
+                or scopes)[0]["addr"]
+
+    def scan_connect():
+        """Connect to what the scan found, if nothing is connected yet.
+
+        Starting the program with the scope switched off, switching it
+        on and pressing Scan is the ordinary way round at a bench, and
+        it used to end with the scope listed in the dropdown and the
+        program still not talking to it.
+
+        The address is remembered, exactly as picking that entry from
+        the dropdown by hand would have remembered it.
+        """
+        addr = scan_target()
+        if not addr:
+            return
+        settings = load_settings()
+        settings["address"] = addr
+        save_settings(settings)
+        reconnect(addr)
 
     cmb_inst.bind("<<ComboboxSelected>>", on_instrument_pick)
 
@@ -9567,11 +13502,18 @@ def run_gui():
         addr_var = tk.StringVar(value=state["addr"] or "")
         ent = ttk.Entry(row, textvariable=addr_var)
         ent.pack(side="left", fill="x", expand=True, padx=6)
+        hints(ent, "A VISA address, e.g. GPIB0::1::INSTR")
         remember = tk.BooleanVar(value=True)
         ttk.Checkbutton(pad, text=_("Remember this address"),
                         variable=remember).pack(anchor="w", pady=(6, 0))
-        note = ttk.Label(pad, text="", wraplength=560)
-        note.pack(fill="x", pady=(6, 0))
+        # The status line is two labels side by side: the word that
+        # blinks while a scan runs, and the sentence that does not.
+        saying = ttk.Frame(pad)
+        saying.pack(fill="x", pady=(6, 0))
+        scanword = ttk.Label(saying, text="")
+        scanword.pack(side="left")
+        note = ttk.Label(saying, text="", wraplength=520)
+        note.pack(side="left", fill="x", expand=True, padx=(4, 0))
 
         def on_pick(_e=None):
             sel = found.selection()
@@ -9581,21 +13523,53 @@ def run_gui():
         found.bind("<<TreeviewSelect>>", on_pick)
         found.bind("<Double-1>", lambda e: (on_pick(), do_connect()))
 
+        #: The blinking word and the rest of the sentence, kept apart so
+        #: only the word blinks. Two labels rather than one, because
+        #: retyping a whole sentence twice a second is how a status line
+        #: becomes hard to read.
+        blink = {"on": True, "due": None}
+
+        def blink_scanning():
+            """Flash the word while a scan runs, and clear it when done.
+
+            Stopped by `alive()` going false as much as by the scan
+            finishing: the dialog can be closed mid-scan, and an after()
+            that outlives its label raises out of the event loop.
+            """
+            if not alive() or not state.get("scanning"):
+                blink["due"] = None
+                scanword.config(text="", foreground="")
+                return
+            # The word stays put and changes colour. Blanking the text
+            # made the label shrink to nothing and the sentence beside
+            # it slide left and back twice a second, which is harder to
+            # read than no blink at all.
+            blink["on"] = not blink["on"]
+            scanword.config(text=_("Scanning."),
+                            foreground="" if blink["on"] else "#b0b0b0")
+            blink["due"] = dlg.after(500, blink_scanning)
+
         def do_scan():
             if state["busy"]:
                 return
             found.delete(*found.get_children())
-            note.config(text=_("Scanning. Every address is asked to "
-                               "identify itself, which changes nothing "
-                               "on it."))
+            note.config(text=_("Searching for connected devices."))
             busy(True, "steps")
             scanning(True)
+            if blink["due"] is None:
+                blink_scanning()
             state["scan_into"] = fill_found
             state["scan_failed"] = lambda text: (
                 note.config(text="%s\n\n%s"
                             % (text, _("Type an address above if you know "
                                        "it."))) if alive() else None)
             w.submit("scan", lambda k: k.scan(), needs_fs=False)
+
+        #: What the Scan button does, reachable from outside the
+        #: dialog. The button carries a translated label and sits
+        #: several frames down, so finding it by walking the tree
+        #: means matching text that changes with the language.
+        state["pickerscan"] = do_scan
 
         def alive():
             """Is the dialog still on screen?
@@ -9630,8 +13604,9 @@ def run_gui():
                 found.selection_set("R%d" % scopes[0])
                 found.focus("R%d" % scopes[0])
                 on_pick()
-                note.config(text=_("%d instrument(s) found, %d of them a TDS "
-                                   "oscilloscope.") % (len(items), len(scopes)))
+                note.config(
+                    text=_("%d instrument(s) found, %d of them a TDS "
+                           "oscilloscope.") % (len(items), len(scopes)))
                 say(_("Found %d TDS oscilloscope(s)") % len(scopes))
             elif items:
                 note.config(text=_(
@@ -9686,6 +13661,13 @@ def run_gui():
             """
             if event.widget is not dlg:
                 return
+            state.pop("pickerscan", None)
+            if state.get("scanning"):
+                # Dismissing the picker is a decision to stop looking.
+                # The scan belongs to this dialog, so letting it run
+                # on afterwards is what made Cancel look as though it
+                # had set another one going.
+                w.cancelled.set()
             if state.get("scan_into") is fill_found:
                 # Replaced with something harmless rather than removed.
                 # The pump treats a missing scan_failed as "nobody is
@@ -9701,7 +13683,9 @@ def run_gui():
                              % text))
 
         dlg.bind("<Destroy>", gone)
-        do_scan()
+        note.config(text=_("Press Scan to ask every address on the "
+                           "bus to identify itself, or type an "
+                           "address above."))
 
     def reconnect(addr):
         """Point everything at a different instrument and start again."""
@@ -9811,7 +13795,8 @@ def run_gui():
             title="Save %d files to folder" % len(names), mustexist=True)
         if not destdir:
             return
-        clashes = [n for n in names if os.path.exists(os.path.join(destdir, n))]
+        clashes = [n for n in names
+                   if os.path.exists(os.path.join(destdir, n))]
         if clashes and not messagebox.askyesno(
                 _("Replace files?"),
                 "%d of these already exist in that folder and will be "
@@ -9870,7 +13855,8 @@ def run_gui():
         src = filedialog.askopenfilename()
         if not src:
             return
-        data = open(src, "rb").read()
+        with open(src, "rb") as fh:
+            data = fh.read()
         # The PC name is very unlikely to be 8.3-clean, so it is offered as
         # a starting point and corrected here rather than silently chopped
         # to twelve characters on the way out, which is what used to happen.
@@ -9903,27 +13889,102 @@ def run_gui():
         """A rough figure for how long an upload will take, in words.
 
         Throughput depends on the medium, not the instrument: a hard disk
-        runs at about 33 KB/s, a floppy at about 4 KB/s - measured at 3.9
+        reads at about 33 KB/s, a floppy at about 4 KB/s - measured at 3.9
         on a TDS 784C reading 789,504 bytes and 3.2 on a TDS 640A. Quoting
         the hard disk figure for a floppy underestimates by eight times,
         which turns "about a minute" into ten and looks like a hang.
 
         Every file is written and then read back to verify, so the payload
-        crosses the bus twice.
+        crosses the bus twice - but not at the same speed in each
+        direction, and that is the difference between a useful estimate
+        and a useless one. Writing is eleven times slower than reading:
+        measured on a TDS 784D at 2842 to 2992 B/s for payloads from 4 kB
+        to 256 kB, against 32.5 KB/s reading the same files back. Counting
+        both crossings at the read rate said seven minutes for a 7 MB
+        folder that really takes three quarters of an hour.
+
+        A floppy write has now been measured, and the assumption it
+        replaces - no faster than a floppy read - was wrong in the
+        optimistic direction. A TDS 754D with a real 1.44 MB drive
+        writes at 1,672 B/s and reads at 4,215, so writing is the slow
+        half on a floppy as it is on a hard disk. The old 4,000 made a
+        floppy upload look two and a half times quicker than it is.
         """
-        rate = 4000.0 if (state["cwd"] or "").lower().startswith("fd") \
-            else 33000.0
-        secs = nfiles * 1.6 + 2.0 * nbytes / rate
+        floppy = (state["cwd"] or "").lower().startswith("fd")
+        read_rate = 4000.0 if floppy else 33000.0
+        write_rate = 1600.0 if floppy else 2900.0
+        secs = nfiles * 1.6 + nbytes / write_rate + nbytes / read_rate
         if secs < 90:
             return _("about %d seconds") % max(2, int(round(secs)))
         return _("about %d minutes") % int(round(secs / 60.0))
 
-    def do_drop(paths, dest_folder):
-        """Upload files dropped from Explorer, after showing the plan.
+    def drop_plan(paths, dest_folder):
+        """What a drop would do: folders to make, files to write.
 
-        Nothing is sent until the user has seen the destination, what each
-        file will be called once it is subject to 8.3, which existing files
-        will be replaced, and roughly how long it will take.
+        Returns (made, items, renamed). `made` is remote folder paths,
+        parents before children, because a folder cannot be made inside
+        one that is not there yet. `items` is (local path, remote path).
+
+        Every segment goes through the 8.3 rule, folder names included -
+        the instrument holds a directory name to the same eight and
+        three as a file's. Names are kept unique per remote folder
+        rather than across the whole drop: two files called the same
+        thing in two different folders are not a clash, and treating
+        them as one would rename a file for no reason.
+
+        A name already on the instrument is NOT stepped around. Dropping
+        a folder onto a folder of the same name merges into it and
+        replaces the files that clash, which is what dragging a folder
+        onto a folder does everywhere else. The earlier version seeded
+        this with the destination's own listing, so a copy of APP landed
+        beside the instrument's as APP~1 and nothing was ever updated -
+        which is not a rename anyone asked for.
+        """
+        made, items, renamed = [], [], []
+        taken = {}
+
+        def slot(where, leaf):
+            """A free 8.3 name for `leaf` inside remote folder `where`."""
+            names = taken.setdefault(where, [])
+            name = to_83(leaf, names)
+            names.append(name)
+            if name != leaf.upper():
+                renamed.append((leaf, name))
+            return name
+
+        for src in paths:
+            if os.path.isfile(src):
+                items.append((src, join(dest_folder,
+                                        slot(dest_folder,
+                                             os.path.basename(src)))))
+                continue
+            if not os.path.isdir(src):
+                continue
+            # The dropped folder itself, then everything under it. Each
+            # directory's remote path is worked out as it is reached and
+            # kept, so its children can be hung off it - os.walk visits
+            # a parent before its children, so it is always there.
+            top = os.path.basename(src.rstrip("\\/")) or src
+            where = {src: join(dest_folder, slot(dest_folder, top))}
+            made.append(where[src])
+            for here, dirs, names in os.walk(src):
+                dirs.sort()
+                remote = where[here]
+                for one in dirs:
+                    where[os.path.join(here, one)] = join(
+                        remote, slot(remote, one))
+                    made.append(where[os.path.join(here, one)])
+                for name in sorted(names):
+                    items.append((os.path.join(here, name),
+                                  join(remote, slot(remote, name))))
+        return made, items, renamed
+
+    def do_drop(paths, dest_folder):
+        """Upload what was dropped from Explorer, after showing the plan.
+
+        Files and whole folders both. Nothing is sent until the user has
+        seen the destination, what each file will be called once it is
+        subject to 8.3, and roughly how long it will take.
         """
         if state["busy"]:
             return
@@ -9931,36 +13992,42 @@ def run_gui():
             return
         if not upload_possible():
             return
-        folders = [p for p in paths if os.path.isdir(p)]
-        files = [p for p in paths if os.path.isfile(p)]
-        if folders and not files:
-            messagebox.showinfo(
-                "Folders cannot be dropped",
-                "Only files can be dropped here. Create the folder with "
-                "New Folder, open it, and drop the files into it.")
+        made, plan, renamed = drop_plan(paths, dest_folder)
+        if not plan and not made:
             return
-
+        # What is already there, so the confirmation can say what will be
+        # replaced. Only the destination folder itself is known - the
+        # listing is what the pane is showing - so a file going into a
+        # subfolder of the drop is not counted. Saying "at least" would
+        # be honest and is not worth the words; the folders being merged
+        # into are named on the line above it.
         cached = state["cache"].get(dest_folder)
-        present = ((cached["dirs"] + cached["files"]) if cached else [])
-        taken = list(present)
-        plan, renamed = [], []
-        for src in files:
-            leaf = os.path.basename(src)
-            name = to_83(leaf, taken)
-            taken.append(name)
-            plan.append((src, name))
-            if name != leaf.upper():
-                renamed.append((leaf, name))
+        here = set(n.upper()
+                   for n in ((cached["dirs"] + cached["files"])
+                             if cached else []))
+        over = sorted(d.rsplit("/", 1)[-1] for _s, d in plan
+                      if d.rsplit("/", 1)[0] == dest_folder.rstrip("/")
+                      and d.rsplit("/", 1)[-1] in here)
+        into = sorted(d.rsplit("/", 1)[-1] for d in made
+                      if d.rsplit("/", 1)[0] == dest_folder.rstrip("/")
+                      and d.rsplit("/", 1)[-1] in here)
 
         total = sum(os.path.getsize(s) for s, _ in plan)
-        clashes = [n for _, n in plan if n.upper() in
-                   [x.upper() for x in present]]
-
-        lines = [_("Upload %(count)d file(s) to %(where)s ?")
-                 % {"count": len(plan), "where": dest_folder}, ""]
+        if made:
+            lines = [_("Upload %(count)d file(s) in %(folders)d folder(s) "
+                       "to %(where)s ?")
+                     % {"count": len(plan), "folders": len(made),
+                        "where": dest_folder}, ""]
+        else:
+            lines = [_("Upload %(count)d file(s) to %(where)s ?")
+                     % {"count": len(plan), "where": dest_folder}, ""]
+        # The remote path relative to where it is going, so a tree reads
+        # as a tree rather than as a list of full paths repeating the
+        # destination on every line.
+        cut = len(dest_folder.rstrip("/")) + 1
         lines.append("\n".join(
-            "    %s  ->  %s" % (os.path.basename(s), n)
-            for s, n in plan[:12]))
+            "    %s  ->  %s" % (os.path.basename(s), d[cut:])
+            for s, d in plan[:12]))
         if len(plan) > 12:
             lines.append(_("    ...and %d more") % (len(plan) - 12))
         lines += ["", _("%(bytes)s bytes, %(time)s.")
@@ -9969,25 +14036,31 @@ def run_gui():
         if renamed:
             lines.append(_("%d name(s) were shortened to fit the "
                            "instrument's 8.3 limit.") % len(renamed))
-        if clashes:
+        if into:
+            lines.append(_("%(count)d folder(s) already there will be "
+                           "merged into: %(names)s")
+                         % {"count": len(into), "names": ", ".join(into)})
+        if over:
             lines.append(_("%(count)d file(s) already there will be "
                            "replaced: %(names)s")
-                         % {"count": len(clashes),
-                            "names": ", ".join(clashes[:6])})
-        if folders:
-            lines.append(_("%d dropped folder(s) will be skipped.")
-                         % len(folders))
+                         % {"count": len(over), "names": ", ".join(over)})
         lines.append("")
         lines.append(_("Each file is read back and compared after "
                        "writing."))
 
         if not messagebox.askyesno(_("Upload"), "\n".join(lines)):
             return
-        items = [(s, join(dest_folder, n)) for s, n in plan]
         busy(True, "steps")
-        say(_("Uploading %(count)d file(s) to %(where)s ...")
-            % {"count": len(items), "where": dest_folder})
-        w.submit("uploads", lambda k, it=items: k.upload_many(it))
+        if made:
+            say(_("Uploading %(count)d file(s) and %(folders)d folder(s) "
+                  "to %(where)s ...")
+                % {"count": len(plan), "folders": len(made),
+                   "where": dest_folder})
+        else:
+            say(_("Uploading %(count)d file(s) to %(where)s ...")
+                % {"count": len(plan), "where": dest_folder})
+        w.submit("uploads",
+                 lambda k, m=made, it=plan: k.upload_plan(m, it))
 
     def on_drop_list(evt):
         """Dropped on the file pane: into the folder currently shown."""
@@ -10432,16 +14505,28 @@ def run_gui():
         # first twenty of forty, which is the failure worth catching.
         state["wanted_entries"] = len(found)
         head = ["%s" % (state.get("idn") or ""),
-                _("Error log read %s") % time.strftime("%Y-%m-%d %H:%M"),
-                ""]
+                _("Error log read %s") % time.strftime("%Y-%m-%d %H:%M")]
         if not found:
             # Jared's wording, and the right wording: an empty log is
             # the instrument saying nothing is wrong, not a failure.
-            show_errors(head + [_("No errors")], 0)
+            show_errors(head + ["", _("No errors")], 0)
             say(_("No errors in the instrument's log"))
             return
+        # Counted at the top rather than left for the reader to spot.
+        # A memory fault is the one thing in here somebody is usually
+        # looking for, and it is a line among thirty that reads much
+        # like the rest of them.
+        #
+        # Said even when it is none. The count is made from a list of
+        # sub-test names, so a firmware that spells one differently
+        # would count zero - and a line that is only there when the
+        # answer is non-zero makes "none" and "this did not run" look
+        # exactly alike.
+        head.append(_("%d entry(s) name a memory test failing")
+                    % len(tds_err.memory_faults(found)))
         body = ["%4d  %s" % (i, text) for i, text in enumerate(found, 1)]
-        show_errors(head + body + ["", _("End of errors")], len(found))
+        show_errors(head + [""] + body + ["", _("End of errors")],
+                    len(found))
         say(_("%d entries read in %.1f s") % (len(found), payload["secs"]))
 
     def do_err_save():
@@ -10451,7 +14536,9 @@ def run_gui():
             return
         path = filedialog.asksaveasfilename(
             parent=root, title=_("Save error log"), defaultextension=".txt",
-            initialfile=stamped(instrument_name("errorlog"), ".txt"),
+            initialfile="%s_errorlog_%s.txt" % (
+                (model_of(state.get("idn")) or "TDS").replace(" ", ""),
+                time.strftime("%Y%m%d-%H%M%S")),
             filetypes=[(_("Text file"), "*.txt"),
                        (_("All files"), "*.*")])
         if not path:
@@ -10603,7 +14690,7 @@ def run_gui():
         progress(None)
         say(_("Taking a screenshot in %s ...") % (keyword or "?"))
         w.submit("scr_get",
-                 lambda k, f=keyword, l=layout, p=palette: k.scr_get(f, l, p))
+                 lambda k, f=keyword, y=layout, p=palette: k.scr_get(f, y, p))
 
     def do_scr_save():
         """Save the shot, as the pane is showing it.
@@ -10667,6 +14754,39 @@ def run_gui():
                     out[name] = tds_wfm.scheme(cols)
         return out
 
+    def wfm_bytes(wave, ext):
+        """The file this waveform makes, chosen by its extension."""
+        if ext == ".isf":
+            return wave.to_isf()
+        if ext in (".tdw", ".wfm"):
+            # The instrument's own layout either way: .tdw is this
+            # program's extension for it and .wfm is the instrument's,
+            # and a file written under either can be copied to a
+            # scope's disk and recalled. Eight-bit captures are widened
+            # on the way out, because the format holds two bytes a
+            # sample.
+            return wave.to_wfm()
+        if ext == ".png":
+            # What the graticule is showing now, zoom and all, with the
+            # record strip above it - the same picture the window has,
+            # which is what somebody who has just spent a minute
+            # setting up a view means by saving it.
+            return wave.to_png(width=state["pngsize"][0],
+                               height=state["pngsize"][1],
+                               colours=plot_colours(wave),
+                               caption=wave_scales(wave),
+                               view=state.get("view"), strip=True)
+        if ext == ".svg":
+            # The same picture as the PNG, drawn as vector so it stays
+            # crisp at any size. The size still sets the aspect and the
+            # line spacing; SVG then scales it without pixelating.
+            return wave.to_svg(width=state["pngsize"][0],
+                               height=state["pngsize"][1],
+                               colours=plot_colours(wave),
+                               caption=wave_scales(wave),
+                               view=state.get("view"), strip=True)
+        return wave.to_csv()
+
     def do_wfm_save():
         """Save the held trace, in whichever format is asked for.
 
@@ -10687,7 +14807,9 @@ def run_gui():
         kinds = [(_("Spreadsheet, scaled values (*.csv)"), "*.csv"),
                  (_("Instrument format, exact (*.isf)"), "*.isf"),
                  (_("Waveform file (*.tdw)"), "*.tdw"),
-                 (_("Picture of the trace (*.png)"), "*.png")]
+                 (_("Instrument waveform (*.wfm)"), "*.wfm"),
+                 (_("Picture of the trace (*.png)"), "*.png"),
+                 (_("Scalable picture (*.svg)"), "*.svg")]
         dest = filedialog.asksaveasfilename(
             title=_("Save waveform"), defaultextension=".csv",
             initialfile=stamped(wave.source or "waveform", ".csv"),
@@ -10696,28 +14818,7 @@ def run_gui():
             return
         ext = os.path.splitext(dest)[1].lower()
         try:
-            if ext == ".isf":
-                data = wave.to_isf()
-            elif ext in (".tdw", ".wfm"):
-                # The instrument's own layout, under this program's own
-                # extension: a .WFM is a file some instrument wrote, and
-                # this is not one. Send to instrument... is what puts a
-                # real .WFM on the scope's disk. Eight-bit captures are
-                # widened on the way out, because the format holds two
-                # bytes a sample.
-                data = wave.to_wfm()
-            elif ext == ".png":
-                # What the graticule is showing now, zoom and all, with
-                # the record strip above it - the same picture the
-                # window has, which is what somebody who has just spent
-                # a minute setting up a view means by saving it.
-                data = wave.to_png(width=state["pngsize"][0],
-                                   height=state["pngsize"][1],
-                                   colours=plot_colours(wave),
-                                   caption=wave_scales(wave),
-                                   view=state.get("view"), strip=True)
-            else:
-                data = wave.to_csv()
+            data = wfm_bytes(wave, ext)
             with open(dest, "wb") as fh:
                 fh.write(data)
         except Exception as exc:
@@ -10848,6 +14949,15 @@ def run_gui():
         say(_("Deleting %s on the instrument ...") % ", ".join(gone))
         w.submit("wfm_delete", lambda k, ns=list(gone): k.wfm_delete(ns))
 
+    def wfm_disk_folder():
+        """Where a waveform sent to the disk goes, or "" if nowhere.
+
+        The drive the Files tab is on, not the folder: see
+        Worker.WFM_DIR.
+        """
+        drive = (state.get("cwd") or "").split("/")[0]
+        return "%s/%s" % (drive, Worker.WFM_DIR) if drive else ""
+
     def wfm_destinations():
         """Where this instrument will accept a waveform.
 
@@ -10865,9 +14975,13 @@ def run_gui():
         if (state.get("cannot") is not None
                 and by_name["Upload"] not in state["cannot"]
                 and state.get("cwd")):
+            # The folder is named, because nothing else in this dialog
+            # says where the file lands. A file written somewhere the
+            # user was not thinking of is a file they report as never
+            # written.
             out.append(("FILE",
-                        _("A .WFM on the instrument's disk, which the "
-                          "instrument can recall")))
+                        _("A .WFM in %s, which the instrument can recall")
+                        % wfm_disk_folder()))
         return out
 
     def staged_picked():
@@ -10911,6 +15025,34 @@ def run_gui():
         w.submit("wfm_send_many",
                  lambda k, it=items, a=(live[0] if live else None):
                  k.wfm_send_many(it, a))
+
+    def wfm_send_file(wave):
+        """Write the held trace to the instrument's disk as a .WFM.
+
+        Into WAVEFORM at the root of the drive, made if it is not
+        there, under a serialised name - the worker picks the name,
+        since only it can see what the folder already holds. The
+        folder is said here: this reports through the Files tab, and
+        whoever pressed Send is looking at the Waveforms tab, so
+        without it a write that worked looks like nothing happening.
+        """
+        folder = wfm_disk_folder()
+        if not folder:
+            messagebox.showinfo(
+                _("Nowhere to put it"),
+                _("Open the Files tab and let it list a drive first."))
+            return None
+        try:
+            data = wave.to_wfm()
+        except Exception as exc:
+            messagebox.showerror(_("Error"), "%s\n\n%s"
+                                     % (_("Could not send"), exc))
+            return None
+        busy(True, "steps")
+        say(_("Sending a waveform to %s ...") % folder)
+        w.submit("upload", lambda k, d=data, v=folder.split("/")[0],
+                 s=wave.source: k.wfm_to_disk(d, v, s))
+        return folder
 
     def do_wfm_send():
         """Put the held trace back into the instrument.
@@ -10959,26 +15101,15 @@ def run_gui():
             key = pick.get()
             dlg.destroy()
             if key == "FILE":
-                name = to_83("%s.WFM" % wave.source)
-                if not state["cwd"]:
-                    return
-                try:
-                    data = wave.to_wfm()
-                except Exception as exc:
-                    messagebox.showerror(_("Error"), "%s\n\n%s"
-                                             % (_("Could not send"), exc))
-                    return
-                busy(True, "steps")
-                say(_("Sending %s ...") % name)
-                w.submit("upload", lambda k, d=data, n=name:
-                         k.write_verified(join(state["cwd"], n), d))
+                wfm_send_file(wave)
                 return
             live = [s for s in state.get("wsources") or []
                     if not s.startswith("REF")]
             busy(True, "wait")
             say(_("Sending to %s ...") % key)
-            w.submit("wfm_send", lambda k, d=key, a=(live[0] if live else None):
-                     k.wfm_send(wave, d, a))
+            first = live[0] if live else None
+            w.submit("wfm_send",
+                     lambda k, d=key, a=first: k.wfm_send(wave, d, a))
 
         row = ttk.Frame(pad)
         row.pack(fill="x", pady=(12, 0))
@@ -10990,6 +15121,38 @@ def run_gui():
         dlg.geometry("+%d+%d" % (root.winfo_rootx() + 80,
                                  root.winfo_rooty() + 80))
         state["dialog"] = dlg
+
+    def allow_system(paths):
+        """Ask before deleting anything that is the instrument's own.
+
+        Asked before the ordinary delete confirmation rather than instead
+        of it, so a system file takes two answers where an ordinary one
+        takes the one it always took. These used to be refused outright,
+        on the belief that putting one back meant reimaging the card. It
+        does not - they load back over GPIB - so the choice belongs to
+        whoever owns the instrument, and this is where it is put to them.
+        """
+        system = [(p.rstrip("/").rsplit("/", 1)[-1], Worker.system_reason(p))
+                  for p in paths]
+        system = [(n, why) for n, why in system if why]
+        if not system:
+            return True
+        if len(system) == 1:
+            body = _("'%(name)s' is part of the instrument's own "
+                     "software.\n\n%(why)s") % {"name": system[0][0],
+                                                "why": system[0][1]}
+        else:
+            body = _("%(count)d of these are part of the instrument's own "
+                     "software:\n\n%(items)s") % {
+                         "count": len(system),
+                         "items": name_list([n for n, _w in system])}
+        return messagebox.askyesno(
+            _("Part of the instrument's software"),
+            "%s\n\n%s" % (body, _(
+                "Every system file can be loaded back over GPIB, so this "
+                "can be undone - but the instrument will not run its "
+                "applications until it is. Delete it anyway?")),
+            icon="warning", default="no", parent=root)
 
     def do_delete(_evt=None):
         """Delete whatever is selected - Windows has one Delete, so do we.
@@ -11025,9 +15188,11 @@ def run_gui():
                     "you first.")
                 return
             node = join(state["cwd"], sel_folders()[0])
-            why = Worker.protected_reason(node)
+            why = Worker.refuse_reason(node)
             if why:
                 messagebox.showwarning(_("Cannot delete"), why)
+                return
+            if not allow_system([node]):
                 return
             busy(True)
             say(_("Checking the contents of %s ...") % node)
@@ -11038,23 +15203,25 @@ def run_gui():
         if names:
             paths = [join(state["cwd"], n) for n in names]
             # Every name is checked before any of them is deleted. Removing
-            # half a selection and then stopping at a protected file would
+            # half a selection and then stopping at a refused file would
             # be the worst of both outcomes.
-            refused = [(n, Worker.protected_reason(p))
+            refused = [(n, Worker.refuse_reason(p))
                        for n, p in zip(names, paths)
-                       if Worker.protected_reason(p)]
+                       if Worker.refuse_reason(p)]
             if refused:
                 messagebox.showwarning(
                     "Cannot delete",
                     refused[0][1] if len(refused) == 1 else
                     "%d of the %d selected items cannot be deleted, so "
-                    "nothing was deleted:\n\n%s\n\n%s"
+                    "nothing was deleted:\n\n%s"
                     % (len(refused), len(names),
-                       name_list([n for n, _ in refused]),
-                       Worker.RUNTIME_MSG))
+                       name_list([n for n, _ in refused])))
+                return
+            if not allow_system(paths):
                 return
             if len(names) == 1:
-                msg = (_("Are you sure you want to permanently delete '%s'?\n\n"
+                msg = (_("Are you sure you want to permanently delete "
+                         "'%s'?\n\n"
                          "There is no Recycle Bin on the instrument.")
                        % names[0])
             else:
@@ -11077,9 +15244,11 @@ def run_gui():
         node = tree.focus()
         if not node:
             return
-        why = Worker.protected_reason(node)
+        why = Worker.refuse_reason(node)
         if why:
             messagebox.showwarning(_("Cannot delete"), why)
+            return
+        if not allow_system([node]):
             return
         busy(True)
         say(_("Checking the contents of %s ...") % node)
@@ -11104,9 +15273,119 @@ def run_gui():
                                    icon="warning", default="no"):
             say(_("Delete cancelled"))
             return
-        busy(True)
+        # A determinate bar: removing a folder is now a walk of the tree
+        # inside it, one folder at a time, and on a big one that is
+        # minutes. It used to be a single command and a spinner.
+        busy(True, "steps")
         say(_("Deleting %s ...") % path)
         w.submit("rmdir", lambda k, p=path: k.rmdir(p))
+
+    def do_duplicate():
+        """Copy the selected file or folder, on the instrument.
+
+        The bytes never cross GPIB: 387 kB/s against the 3.0 kB/s an upload
+        of the same file would run at. Anything already on the instrument
+        should be duplicated this way rather than downloaded and sent back.
+
+        One item at a time, and it only ever copies within the folder on
+        screen. Copying somewhere else wants a destination picker, which is
+        a bigger thing than this is worth until someone asks for it.
+        """
+        if state["busy"] or not state["cwd"]:
+            return
+        folders, files = sel_folders(), sel_files()
+        if len(folders) + len(files) != 1:
+            messagebox.showwarning(
+                _("One at a time"),
+                "Select a single file or folder to duplicate.")
+            return
+        is_dir = bool(folders)
+        name = (folders or files)[0]
+        taken = set()
+        cached = state["cache"].get(state["cwd"])
+        if cached:
+            taken = {n.upper() for n in cached["dirs"] + cached["files"]}
+
+        suggestion = suggest_copy_name(name, taken)
+        while True:
+            new = simpledialog.askstring(
+                _("Duplicate"),
+                _("Name for the copy of '%s':") % name,
+                initialvalue=suggestion)
+            if new is None:
+                return
+            new = new.strip().upper()
+            why = check_83(new)
+            if why is not None:
+                messagebox.showwarning(_("Cannot use that name"), why)
+                suggestion = new
+                continue
+            if new in taken:
+                messagebox.showwarning(
+                    _("Name already in use"),
+                    "'%s' already exists in %s. Choose another name."
+                    % (new, state["cwd"]))
+                suggestion = new
+                continue
+            break
+
+        source = join(state["cwd"], name)
+        dest = join(state["cwd"], new)
+        # A folder copy is a walk, so it gets the determinate bar for the
+        # same reason removing one does.
+        busy(True, "steps" if is_dir else None)
+        say(_("Copying %s ...") % name)
+        w.submit("copy",
+                 lambda k, s=source, d=dest, f=is_dir: k.copy(s, d, f))
+
+    def do_format():
+        """Format the volume being browsed, after asking twice.
+
+        Twice, and not because two boxes are twice as safe. The first
+        says which volume and what is on it; the second is a plain
+        statement of what will not be there afterwards, worded for the
+        volume in hand, because formatting the hard disk and formatting
+        a floppy are not the same act at all. A floppy holds whatever
+        somebody put there. The hard disk holds the Java runtime, and
+        an instrument without it runs no applications until it is loaded
+        back.
+
+        The instrument has this on its own front panel too. It is here
+        because a card that is being reloaded over GPIB wants emptying
+        over GPIB, and walking to the front panel between steps is not
+        an improvement.
+        """
+        if state["busy"] or not state["cwd"]:
+            return
+        drive = state["cwd"].split("/")[0]
+        hard = not drive.upper().startswith("FD")
+        held = state["cache"].get(drive) or {}
+        count = len(held.get("dirs") or []) + len(held.get("files") or [])
+        if not messagebox.askyesno(
+                _("Format %s?") % drive,
+                _("This erases everything on %(drive)s. There is no "
+                  "Recycle Bin on the instrument and no undo.")
+                % {"drive": drive}
+                + ("\n\n" + _("%d item(s) are in its root.") % count
+                   if count else "")
+                + "\n\n" + _("Continue?"),
+                icon="warning", default="no", parent=root):
+            return
+        second = (_("The hard disk holds the Java runtime and every "
+                    "shipped application. After this the instrument will "
+                    "not run any of them until they are loaded back over "
+                    "GPIB.")
+                  if hard else
+                  _("Everything on the floppy will be gone."))
+        if not messagebox.askyesno(
+                _("Last chance"),
+                "%s\n\n%s" % (second,
+                              _("Format %s now?") % drive),
+                icon="warning", default="no", parent=root):
+            return
+        busy(True, "wait")
+        say(_("Formatting %s ...") % drive)
+        w.submit("format", lambda k, d=drive: k.format_volume({"drive": d}))
 
     def do_mkdir():
         """Ask for a folder name, and keep asking until it is a legal one.
@@ -11248,9 +15527,25 @@ def run_gui():
         buttons.append(b)
         labelled.append((b, text))
         by_name[text] = b
+    # Explicit hints() calls so the translation audit sees each literal.
+    hints(by_name["Refresh"], "Read the current folder again")
+    hints(by_name["Download"], "Copy the selected file(s) to this computer")
+    hints(by_name["Upload"], "Send a file from this computer to this folder")
+    hints(by_name["New folder"], "Make a new folder here")
+    hints(by_name["Delete"], "Delete the selected file(s) or folder(s)")
     # The globe goes hard right, at the far end of the row - packed before
     # the left-hand widgets claim the space, which is how pack works.
     btn_lang.pack(side="right", padx=(8, 0))
+    # And Format at the right-hand end of the buttons themselves, as far
+    # from Delete as the row allows. It is the one thing here that takes
+    # a whole volume rather than a file, and it does not want to be next
+    # to the button somebody presses without looking.
+    btn_format = ttk.Button(tb, text=_("Format..."), padding=(10, 2),
+                            command=lambda: do_format())
+    btn_format.pack(side="right", padx=(8, 0))
+    buttons.append(btn_format)
+    labelled.append((btn_format, "Format..."))
+    by_name["Format..."] = btn_format
     lbl_inst.pack(side="left", padx=(0, 4))
     cmb_inst.pack(side="left")
     btn_scan.pack(side="left", padx=4)
@@ -11296,12 +15591,18 @@ def run_gui():
             (btn_wvin, "Zoom in on amplitude"),
             (btn_wwhole, "Put the whole record back on the graticule"),
             (btn_mnew, "Start an empty mask"),
-            (btn_msave, "Save this mask on this computer, under a name you choose"),
+            (btn_msave, "Save this mask on this computer, under a name "
+                        "you choose"),
             (btn_msetup, "Read the instrument's settings and save them "
                          "beside this mask, the way Tektronix shipped a "
                          "setup with every mask"),
             (btn_mdel, "Delete the selected mask file"),
-            (btn_mtrace, "Draw a captured trace under the mask"),
+            # Not just a captured one: the button offers the Waveforms
+            # tab's capture and then a file, which is most of what it
+            # is for - a mask is often drawn against a record somebody
+            # saved rather than one on the bench now.
+            (btn_mtrace, "Draw a captured trace or a saved waveform "
+                         "under the mask"),
             (btn_mgrab, "Take what the instrument is showing and draw it "
                         "behind the mask"),
             (btn_mdrop, "Take the captured screen or trace back off the "
@@ -11317,16 +15618,29 @@ def run_gui():
             (btn_mload, "Read the instrument's eight segments back into "
                         "the editor"),
             (btn_mclear, "Empty the instrument's eight mask segments"),
-            (btn_llearn, "Have the instrument make a template from the "
-                         "signal it is showing now, to judge later ones "
-                         "against"),
+            # In the Masks tab's words wherever it has the same button,
+            # with the mask read as the template or the envelope. One
+            # line each: a tooltip that takes reading is one nobody
+            # reads.
+            (btn_lnew, "Start an empty template"),
+            (btn_lsavefile, "Save this template on this computer, under "
+                            "a name you choose"),
+            (btn_lsetup, "Read the instrument's settings and save them "
+                         "beside this template"),
+            (btn_ldelfile, "Delete the selected template file"),
+            (btn_llearn, "Have the instrument build a template from the "
+                         "signal it is showing"),
+            (btn_ltrace, "Draw a captured trace under the envelope"),
+            (btn_lgrab, "Take what the instrument is showing and draw it "
+                        "behind the envelope"),
             (btn_lsend, "Write the envelope drawn here into the "
-                        "reference, so the test judges the signal "
-                        "against it"),
-            (btn_lclear, "Take the envelope off the canvas - what the "
-                         "instrument is holding is left alone"),
+                        "reference"),
+            (btn_lload, "Read the template the selected reference holds "
+                        "back into the editor"),
+            (btn_ldestclear, "Empty the selected reference on the "
+                             "instrument"),
             (btn_lstart, "Judge the signal against the template from now "
-                         "on - the instrument stops the moment it leaves"),
+                         "on"),
             (btn_lstop, "Switch the test off and let the instrument run "
                         "freely again"),
             (btn_lview, "Save this graticule as a picture"),
@@ -11369,10 +15683,21 @@ def run_gui():
     # The limits tab. Learn, Start and Refresh all talk to the instrument
     # so they belong in the busy set; Stop deliberately does not - it is
     # what somebody reaches for when they want the instrument back.
+    # Clear is not in the busy set either, and for the same reason as
+    # Stop: busy(False) re-enables everything in it, which would hand
+    # back a Clear that lim_buttons had greyed because a test is
+    # running. Its own guard and lim_buttons decide when it is live.
+    # Send and Load are arrows now, and an arrow is the same glyph in
+    # every language: they carry no label to put back, only a tooltip,
+    # which is looked up when it is shown.
     buttons += [btn_llearn, btn_lsend, btn_lstart, btn_lrefresh]
-    labelled += [(btn_llearn, "Create template"),
-                 (btn_lsend, "Use this envelope"),
-                 (btn_lclear, "Clear the envelope"),
+    labelled += [(btn_lnew, "New template"),
+                 (btn_lsavefile, "Save template as..."),
+                 (btn_lsetup, "Save setup..."),
+                 (btn_ldelfile, "Delete template"),
+                 (btn_llearn, "Learn template"),
+                 (btn_ltrace, "Load trace..."),
+                 (btn_lgrab, "Capture screen"),
                  (btn_lstart, "Start test"),
                  (btn_lstop, "Stop test"),
                  (btn_lview, "Save image..."),
@@ -11386,11 +15711,140 @@ def run_gui():
     buttons += [btn_eget, btn_esave, btn_eclr]
     labelled += [(btn_eget, "Download"), (btn_esave, "Save as..."),
                  (btn_eclr, "Clear errors")]
+    # Write is not in `buttons`: it depends on an image being chosen as
+    # well as on nothing being busy, so it decides for itself.
+    buttons += [btn_fwprobe, btn_fwfolder, btn_fwfile, btn_fwback]
+    labelled += [(btn_fwprobe, "Connect"), (btn_fwfolder, "Folder..."),
+                 (btn_fwfile, "File..."),
+                 (btn_fwback, "Save backups to..."),
+                 (btn_fwstart, "Write firmware")]
+    # Back up is not in `buttons`: it needs something ticked as well as
+    # an idle instrument, so bak_buttons decides. The rest are ordinary
+    # bus work. Verify reads a file on this computer and needs no
+    # instrument at all.
+    # Options is here rather than with the rest of the System tab
+    # because it is one of the three greyed on firmware with no
+    # constant librarian, and state["cannot"] is only read for buttons
+    # in this set.
+    buttons += [btn_sysopts]
+    # btn_baknv is busy-gated but never in state["cannot"]: the monitor
+    # it talks to is in ROM on every instrument in the range, including
+    # the v2.16e generation that has no librarian and greys the two
+    # calibration buttons beside it.
+    buttons += [btn_bakscan, btn_bakput, btn_bakcalget, btn_bakcalput,
+                btn_baknv, btn_baknvput]
+    labelled += [(btn_bakscan, "Refresh"),
+                 (btn_bakmake, "Back up..."), (btn_bakput, "Restore..."),
+                 (btn_bakcheck, "Verify..."),
+                 (btn_bakcalget, "Back up..."),
+                 (btn_bakcalput, "Restore..."),
+                 (btn_baknv, "Back up..."),
+                 (btn_baknvput, "Restore...")]
+    for widget, english in (
+            # The two firmware buttons that sit side by side and look
+            # alike. The rest of that tab explains itself in full
+            # sentences and wants no tooltips.
+            (btn_fwfolder, "Read a whole folder of firmware images"),
+            (btn_fwfile, "Choose one firmware image from anywhere"),
+            (btn_bakscan, "Ask the instrument what it has to back up"),
+            (btn_bakmake, "Copy what is ticked into one backup file"),
+            (btn_bakput, "Write what is ticked from a backup file back "
+                         "to the instrument"),
+            (btn_bakcheck, "Read a backup file and check every file in "
+                           "it against its checksum"),
+            (btn_bakcalget, "Read the calibration constants and save "
+                            "them on this computer"),
+            (btn_bakcalput, "Write saved calibration constants back to "
+                            "the acquisition board"),
+            (btn_baknv, "Read the whole NVRAM through the bootloader and "
+                        "save it on this computer"),
+            (btn_baknvput, "Write a saved NVRAM back through the "
+                           "bootloader")):
+        hints(widget, english)
+
+    # Every remaining input and button gets a one-line tooltip too, so
+    # nothing on the window is unexplained on hover. Looked up when
+    # shown, so a language change needs nothing re-registered.
+    for widget, english in (
+            # Files tab
+            (btn_format, "Erase a volume and lay down a fresh, empty "
+                         "filesystem"),
+            (ent_path, "The current folder on the instrument - type a "
+                       "path and press Enter to go there"),
+            (cmb_inst, "Pick the instrument to work with, or scan for "
+                       "one"),
+            # Screenshot tab
+            (scr_fmt, "The file format the screenshot is saved in"),
+            (scr_lay, "Page orientation for the saved screenshot"),
+            (scr_pal, "The palette the instrument renders the "
+                      "screenshot in"),
+            # Masks tab options
+            (chk_mshowgrid, "Show or hide the drawing grid"),
+            (chk_msnap, "Snap points to the grid as they are drawn or "
+                        "moved"),
+            (chk_mgrat, "Show or hide the graticule behind the mask"),
+            (chk_mcross, "Show crosshairs at the pointer"),
+            (chk_mfill, "Fill the shapes rather than outline them"),
+            (chk_mhide, "Hide the mask to see the trace behind it"),
+            (chk_mnodots, "Hide the draggable points on the mask"),
+            (ent_mgrid, "Grid spacing, in divisions of the graticule"),
+            # Limits tab
+            (cmb_lsource, "The channel the template is built for and "
+                          "judged against"),
+            (ent_lgrid, "Grid spacing, in divisions of the graticule"),
+            # System tab
+            (btn_sysread, "Read the front-panel lock state from the "
+                          "instrument"),
+            (btn_syslock, "Lock the instrument's front panel"),
+            (btn_sysfree, "Unlock the instrument's front panel"),
+            (btn_systime, "Set the instrument's clock to the date and "
+                          "time shown"),
+            (btn_syssync, "Set the instrument's clock from this "
+                          "computer's clock"),
+            (chk_sysclock, "Show or hide the clock on the instrument's "
+                           "screen"),
+            (btn_sysports, "Apply the RS-232 and Centronics port "
+                           "settings"),
+            (btn_sysspc, "Run Signal Path Compensation - takes several "
+                         "minutes and needs a warmed-up instrument"),
+            (btn_sysdiag, "Run the selected self test and show the "
+                          "result"),
+            (btn_syswipe, "TEKSecure: erase every stored setup, waveform "
+                          "and reading on the instrument"),
+            (btn_sysfact, "Recall the instrument's factory default "
+                          "setup"),
+            (btn_sysopts, "View and change the instrument's installed "
+                          "options"),
+            # Firmware tab
+            (btn_fwprobe, "Connect and read the instrument's firmware "
+                          "version and flash"),
+            (btn_fwback, "Choose the folder the backups are written to"),
+            (btn_fwstart, "Back up, then erase the flash and write the "
+                          "chosen firmware image"),
+            (cbo_fwmodel, "The instrument model this firmware image is "
+                          "for"),
+            (chk_fwall, "List every firmware image, not just those for "
+                        "this model"),
+            (chk_fwcheck, "Read each backup a second time and compare, "
+                          "to catch a bad read"),
+            (chk_fwslow, "Bypass the flash page buffer - slower, for a "
+                         "first write on a model not tried before"),
+            # Settings tab
+            (set_preset, "Load a saved preset of colours and sizes"),
+            (btn_setsave, "Save the current colours and sizes as a "
+                          "named preset"),
+            (btn_setdrop, "Delete the selected preset"),
+            (btn_setdef, "Put the colours and sizes back to the "
+                         "program's defaults"),
+            (set_wide, "The pixel size of saved graticule images"),
+            (set_nudge, "How far an arrow key moves a selected point")):
+        hints(widget, english)
 
     # Windows keys: F5 refresh, Backspace up, Delete deletes the selection,
     # Enter and double-click save it, ctrl-A selects every file. Delete
     # works from either pane, as it does in Explorer.
     root.bind("<F5>", lambda e: do_refresh())
+
     def on_files_tab():
         """Is the file tab the one being looked at?
 
@@ -11418,14 +15872,16 @@ def run_gui():
 
     # The background menu, for a right-click that hits no row.
     menu_empty = tk.Menu(root, tearoff=0)
-    menu_empty.add_command(label=_("New folder..."), command=lambda: do_mkdir())
+    menu_empty.add_command(label=_("New folder..."),
+                           command=lambda: do_mkdir())
     menu_empty.add_separator()
     menu_empty.add_command(label=_("Refresh"), command=lambda: do_refresh())
     menu_empty.add_command(label=_("Upload files..."),
                            command=lambda: do_upload())
 
     menu_dir = tk.Menu(root, tearoff=0)
-    menu_dir.add_command(label=_("Open"), command=lambda: navigate(tree.focus()))
+    menu_dir.add_command(label=_("Open"),
+                         command=lambda: navigate(tree.focus()))
     menu_dir.add_command(label=_("Refresh"), command=do_refresh)
     menu_dir.add_separator()
     menu_dir.add_command(label=_("New folder..."), command=do_mkdir)
@@ -11468,9 +15924,15 @@ def run_gui():
             menu_file.add_command(label=_("Save as..."), command=do_download)
         else:
             menu_file.add_command(
-                label=_("Save as...") if n < 2 else _("Save %d files as...") % n,
+                label=(_("Save as...") if n < 2
+                       else _("Save %d files as...") % n),
                 command=do_download)
         menu_file.add_separator()
+        # Only for a single item: a copy needs a name, and asking for
+        # several names one box at a time is worse than not offering it.
+        if n == 1:
+            menu_file.add_command(label=_("Duplicate..."),
+                                  command=do_duplicate)
         menu_file.add_command(
             label=_("Delete") if n < 2 else _("Delete %d items") % n,
             command=do_delete)
@@ -11492,9 +15954,26 @@ def run_gui():
             return                     # window gone; nothing to update
         try:
             while True:
+                # Asked again every time round, not only on the way in.
+                # One result can close the window - a check that
+                # finishes, a handler that gives up - and the next
+                # result in the same batch would then be handed to
+                # widgets that no longer exist, which arrives as
+                # "invalid command name .!button" out of busy().
+                if state.get("closing"):
+                    return
                 label, ok, payload = w.out.get_nowait()
+                # A result ends the running account. Only progress lines
+                # belong to a job that is still going, so anything else
+                # closes the one the report was following.
+                if label not in ("progress", "event"):
+                    state["bakstep"] = None
                 if not ok:
                     busy(False)
+                    # A failure is the last line of the run it ends,
+                    # and the report is the only place it stays.
+                    if label in BAK_JOBS:
+                        bak_note(_("Failed - %s") % payload)
                     if label == "connect":
                         # Not an error. The scope being somewhere else, or
                         # switched off, is the ordinary first experience of
@@ -11503,7 +15982,7 @@ def run_gui():
                         # (-1073807343): Insufficient location information"
                         # - explains nothing they can act on. Say plainly
                         # that nothing answered, then go and look.
-                        say(_("Nothing answered at %s - scanning the bus ...")
+                        say(_("Nothing answered at %s")
                             % (state["addr"] or DEFAULT_ADDR))
                         root.title("TDS Toolkit %s - %s"
                                    % (__version__, _("not connected")))
@@ -11514,6 +15993,29 @@ def run_gui():
                         continue
                     say(_("%(job)s failed - %(why)s")
                         % {"job": label, "why": payload})
+                    if label == "fw_probe":
+                        # The tab has a line for exactly this, and it is
+                        # the line the user was reading when they pressed
+                        # Connect. A modal on top of it says the same
+                        # thing twice and has to be dismissed first.
+                        state["fwmonitor"] = None
+                        lbl_fwstate.config(text=str(payload),
+                                           foreground="#a00")
+                        fw_buttons()
+                        say(_("The bootloader did not answer"))
+                        continue
+                    if label == "lim_picture":
+                        # A reference that holds nothing refuses to be
+                        # read, and that refusal is the answer to the
+                        # question. The list is corrected to say empty
+                        # and the sentence goes on the status line; a
+                        # modal box for the ordinary state of an unused
+                        # reference is a box for nothing.
+                        state["lhas"] = False
+                        lim_refs_note(state["ldest"].get(), 0)
+                        lim_buttons()
+                        say(str(payload))
+                        continue
                     if label == "scan" and state.get("scan_failed"):
                         # The picker opens its own scan as it appears. If
                         # that fails there is already a dialog on screen
@@ -11526,25 +16028,34 @@ def run_gui():
                     continue
                 if label == "msk_behind":
                     busy(False)
-                    state.pop("mshotimage", None)
+                    # Whichever tab asked for it - see do_msk_behind.
+                    at = state.pop("behindfor", "m")
+                    state.pop(at + "shotimage", None)
                     # What the instrument counted while the picture was
                     # being taken, which is the verdict in DPO and the
-                    # better one anywhere. See msk_verdict.
-                    state["mhits"] = payload.get("hits")
+                    # better one anywhere. See msk_verdict. A limit test
+                    # has no hit counter, so this is the mask's alone.
+                    if at == "m":
+                        state["mhits"] = payload.get("hits")
                     if payload.get("shot"):
-                        state["mshot"] = payload["shot"]
-                        state["mwave"] = None
-                        draw_mask()
-                        say(_("The instrument is in DPO - its screen is "
-                              "behind the mask instead of a trace")
+                        state[at + "shot"] = payload["shot"]
+                        state[at + "wave"] = None
+                        edit_draw(at)
+                        say((_("The instrument is in DPO - its screen is "
+                               "behind the mask instead of a trace")
+                             if at == "m" else
+                             _("The instrument is in DPO - its screen is "
+                               "behind the envelope instead of a trace"))
                             + msk_say_hits())
                     else:
-                        state.pop("mshot", None)
-                        state["mwave"] = payload.get("wave")
-                        state["mview"] = msk_view_for(state["mwave"])
-                        draw_mask()
-                        held = state.get("mwave")
-                        say(((_("%s is behind the mask")
+                        state.pop(at + "shot", None)
+                        state[at + "wave"] = payload.get("wave")
+                        if at == "m":
+                            state["mview"] = msk_view_for(state["mwave"])
+                        edit_draw(at)
+                        held = state.get(at + "wave")
+                        say((((_("%s is behind the mask") if at == "m"
+                               else _("%s is behind the envelope"))
                               % (held.label or held.source)) if held
                              else _("Nothing to capture"))
                             + msk_say_hits())
@@ -11554,6 +16065,31 @@ def run_gui():
                     # Without this it stayed greyed with a screenshot on
                     # the canvas until some unrelated click redrew it.
                     msk_buttons()
+                    lim_buttons()
+                    continue
+                if label == "fw_probe":
+                    busy(False)
+                    # Never reached on a failure - that is handled above,
+                    # in the tab's own line rather than in a dialog.
+                    state["fwmonitor"] = payload
+                    fw_say_state()
+                    fw_buttons()
+                    say(_("The monitor answered - the flash is %s")
+                        % payload["flash"])
+                    continue
+                if label == "fw_catalogue":
+                    busy(False)
+                    state["fwimages"] = payload["images"]
+                    cbo_fwmodel.config(values=sorted(
+                        {m for im in payload["images"] for m in im.models}))
+                    fw_fill()
+                    say(_("%(count)d firmware images in %(folder)s")
+                        % {"count": len(payload["images"]),
+                           "folder": payload["folder"]})
+                    continue
+                if label == "fw_run":
+                    busy(False)
+                    fw_report(payload)
                     continue
                 if label == "connect":
                     state["addr"] = payload.get("addr") or state["addr"]
@@ -11583,6 +16119,14 @@ def run_gui():
                         # No filesystem means no folders to make and
                         # nothing to delete either, not just no transfers.
                         cannot += [by_name["New folder"], by_name["Delete"]]
+                        # And it is the marker for the generation that
+                        # has no constant librarian and no service
+                        # password: v2.16e answers neither, so the
+                        # calibration constants and the factory options
+                        # can only time out there. The two are decided
+                        # by the same fact and are greyed together.
+                        cannot += [btn_bakcalget, btn_bakcalput,
+                                   btn_sysopts]
                     state["cannot"] = cannot
                     state["reader"] = payload.get("reader")
                     # Mask testing is Option 2C. Without it the MASK
@@ -11619,9 +16163,23 @@ def run_gui():
                         # at all. Saying so beats an empty window and a
                         # string of errors from commands it never had.
                         busy(False)
+                        # A seam, not dead state: the smoke checks
+                        # read it to know which of the file checks
+                        # this instrument can be held to.
                         state["no_filesystem"] = True
                         say(_("This instrument has no filesystem over GPIB"))
-                        messagebox.showinfo(
+                        # Through `after`, like the Limited instrument
+                        # box below it, and for a reason worth stating.
+                        # A modal box raised from inside the pump runs
+                        # Tk's event loop within itself, and the pump is
+                        # suspended for as long as it is up - so every
+                        # answer the worker sends back queues behind it,
+                        # including the waveform sources, the hardcopy
+                        # formats, the error log question and the mask
+                        # segments asked for a few lines above. On the
+                        # one instrument that raises this box, that is
+                        # every remaining thing the program can do.
+                        root.after(400, lambda: messagebox.showinfo(
                             _("Nothing to browse"),
                             _("This instrument's firmware has no "
                               "filesystem commands at all - no working "
@@ -11630,7 +16188,7 @@ def run_gui():
                               "program to show. Firmware v5.0e and later "
                               "added the file transfer commands; the A "
                               "and B series can browse and download but "
-                              "not upload."))
+                              "not upload.")))
                         continue
                     if cannot and not state.get("told_about"):
                         state["told_about"] = True
@@ -11737,7 +16295,8 @@ def run_gui():
                 elif label == "scr_options":
                     busy(False)
                     show_scr_options(payload)
-                    names = [f["keyword"] for f in payload.get("formats") or []]
+                    names = [f["keyword"]
+                             for f in payload.get("formats") or []]
                     log_context("screen formats",
                                 "%s; chosen %s; palette %s"
                                 % (", ".join(names) or "none",
@@ -11781,6 +16340,15 @@ def run_gui():
                         state["wticked"] = wfm_order(
                             [wave_name(x) for x in waves])
                     wfm_pick(*(state.get("wticked") or ()))
+                    # A capture is presented at the instrument's own
+                    # horizontal scale: the middle of the record at the
+                    # scope's points-a-division, so what the app shows
+                    # first matches what was on the scope's screen rather
+                    # than the whole record squeezed onto ten divisions.
+                    # A record no larger than the screen is shown whole.
+                    if state.get("view") is not None and state.get("wave"):
+                        state["view"].to_scope(state["wave"])
+                        draw_plot()
                     missed = [s for s, _why in payload["refused"]]
                     missed += list(state.pop("wskipped", None) or [])
                     how = payload.get("how") or {}
@@ -11824,6 +16392,27 @@ def run_gui():
                     busy(False)
                     sys_show(payload)
                     say(_("Read the instrument's settings"))
+                elif label == "sys_option_read":
+                    busy(False)
+                    # payload is None when a word would not read, and
+                    # the dialog opens anyway with nothing ticked - the
+                    # option words are not the only way to work out
+                    # what an instrument is carrying, and refusing to
+                    # show the dialog would be worse than showing it
+                    # the way it always looked.
+                    say(_("Read the option words") if payload is not None
+                        else _("The option words would not read"))
+                    sys_options_dialog(payload)
+                elif label == "sys_clock_read":
+                    # The two clock fields and nothing else, and nothing
+                    # said on the status line: this runs every time the
+                    # tab is opened, and a message each time would be
+                    # noise about something nobody asked for.
+                    sys_clock_show(payload.get("date"), SYS_DATE, "-")
+                    sys_clock_show(payload.get("time"), SYS_TIME, ":")
+                    if state.get("sysnow"):
+                        state["sysnow"]["date"] = payload.get("date")
+                        state["sysnow"]["time"] = payload.get("time")
                 elif label == "sys_send":
                     busy(False)
                     sys_show(payload["now"],
@@ -11845,12 +16434,30 @@ def run_gui():
                             % payload["sent"])
                 elif label == "sys_spc":
                     busy(False)
-                    say(_("Signal path compensation passed") if
-                        payload["passed"] else
-                        _("Signal path compensation returned %s - "
-                          "anything but 0 is a failure")
-                        % payload["result"])
-                    if not payload["passed"]:
+                    if payload.get("stillgoing"):
+                        # Not a failure. The instrument is still
+                        # compensating; this program has only stopped
+                        # waiting to hear about it.
+                        say(_("Signal path compensation is still "
+                              "running on the instrument"))
+                        messagebox.showinfo(
+                            _("Still compensating"),
+                            _("The instrument has been compensating for "
+                              "%d minutes and has not finished.\n\nThat "
+                              "is not a failure - it is still working, "
+                              "and it will finish on its own. Wait until "
+                              "the instrument's own screen says it is "
+                              "done before using it, then run the self "
+                              "test on this tab if you want the verdict.")
+                            % int(payload.get("waited", 0) / 60))
+                    else:
+                        say(_("Signal path compensation passed") if
+                            payload["passed"] else
+                            _("Signal path compensation returned %s - "
+                              "anything but 0 is a failure")
+                            % payload["result"])
+                    if not payload["passed"] and not payload.get(
+                            "stillgoing"):
                         messagebox.showwarning(
                             _("Compensation did not pass"),
                             _("*CAL? returned %s. Zero means it passed; "
@@ -11860,20 +16467,45 @@ def run_gui():
                             % payload["result"])
                 elif label == "sys_diag":
                     busy(False)
-                    txt_sysdiag.delete("1.0", "end")
-                    txt_sysdiag.insert("1.0", payload["log"] or
-                                       payload["flag"] or "")
+                    sys_diag_show(payload)
                     if not payload.get("back"):
-                        # It warm-boots, so silence means it has not
-                        # finished coming back rather than that it
-                        # failed. Said as the two different things.
-                        say(_("The self test was started, but the "
-                              "instrument has not answered since - give "
-                              "it a moment and press Read"))
-                    else:
-                        say(_("Self test %(area)s: %(flag)s")
+                        # It was left alone for two and a half minutes
+                        # and asked slowly after that, so this is no
+                        # longer the ordinary "still booting" case it
+                        # used to be. Two things are worth saying and
+                        # neither can be told apart from the bus.
+                        say(_("The instrument has not answered since the "
+                              "self test started. Look at its screen: a "
+                              "diagnostic log wants CLEAR MENU, and a "
+                              "dark or frozen one wants its power "
+                              "cycling."))
+                        messagebox.showwarning(
+                            _("The instrument has not come back"),
+                            _("The self test warm-boots the instrument. "
+                              "It was left alone for two and a half "
+                              "minutes and has still not answered.\n\n"
+                              "Look at the instrument's own screen. If "
+                              "it is showing a diagnostic log, press "
+                              "CLEAR MENU to let it finish starting up. "
+                              "If it is frozen, switch it off and on."
+                              "\n\nNothing is lost either way. The "
+                              "result and the error log survive, so "
+                              "press Run again once it is back to read "
+                              "them."))
+                    elif payload["passed"]:
+                        say(_("Self test %s: everything passed")
+                            % payload["area"])
+                    elif payload.get("found"):
+                        # Said in words rather than as the flag. With
+                        # VERBOSE off the flag is the three characters
+                        # "FAI", which is not a sentence to put in
+                        # front of somebody.
+                        say(_("Self test %(area)s failed - the error "
+                              "log added %(n)d line(s), shown below")
                             % {"area": payload["area"],
-                               "flag": payload["flag"]})
+                               "n": len(payload["found"])})
+                    else:
+                        say(_("Self test %s failed") % payload["area"])
                 elif label == "sys_secure":
                     busy(False)
                     if payload["failed"]:
@@ -11891,6 +16523,204 @@ def run_gui():
                               "event - events were %s")
                             % (", ".join(payload["events"]) or _("none")))
                     do_sys_read()
+                elif label == "cal_read":
+                    busy(False)
+                    # Where it goes was settled before the read started,
+                    # so there is nothing to ask here - only to write.
+                    path = state.get("calpath")
+                    with open(path, "wb") as fh:
+                        fh.write(payload["data"])
+                    lines = [_("Saved to %s") % os.path.basename(path)]
+                    # Shown the way the NVRAM's sections are, and named
+                    # for what it is: the calibration block carries one
+                    # check word in word 0, not a word per section.
+                    lines.append(_(
+                        "    Calibration checksum: word 0 holds "
+                        "0x%(want)04X, the 251 words after it add up to "
+                        "0x%(got)04X")
+                        % {"want": payload.get("check", 0),
+                           "got": payload.get("sum", 0)})
+                    if not payload.get("sound", True):
+                        # Word 0 is the sum of the 251 words after it.
+                        # A block that disagrees with its own checksum
+                        # is damaged, and the file just written is a
+                        # copy of the damage - worth knowing before it
+                        # is relied on rather than while restoring it.
+                        lines.append(_(
+                            "The block does not agree with its own "
+                            "checksum, so what has been saved is "
+                            "already damaged. Keep it as evidence, but "
+                            "do not restore it to a working "
+                            "instrument."))
+                    if payload["flat"]:
+                        # Not proof of anything, but the one thing worth
+                        # looking at: the librarian's address is right
+                        # for the families the reference tool names and
+                        # an assumption everywhere else.
+                        lines.append(_(
+                            "Every word read back the same value, which "
+                            "calibration data is not. The address may be "
+                            "wrong for this model."))
+                    bak_note(*lines)
+                    say(_("Calibration constants saved"))
+                elif label == "cal_write":
+                    busy(False)
+                    lines = []
+                    if payload.get("stuck"):
+                        lines.append(_(
+                            "Word %(word)d would not take %(wanted)d - "
+                            "it reads %(got)d. Stopped there.")
+                            % payload["stuck"])
+                    lines.append(_("%(wrote)d of %(words)d word(s) "
+                                   "written and read back.") % payload)
+                    if payload.get("cancelled"):
+                        # Stopped part way, so the block is now
+                        # neither the file nor what was there.
+                        lines.append(_(
+                            "This was stopped part way through. The "
+                            "words already written are the file's; the "
+                            "rest are whatever the instrument held "
+                            "before. Restore it again to finish."))
+                    elif payload.get("unchecked"):
+                        # The writes went in; only the second read
+                        # was given up on. Said as the difference
+                        # it is, because "restore stopped" would
+                        # send the reader looking for a half
+                        # written block that is not there.
+                        lines.append(_(
+                            "Every word was written. Reading the "
+                            "whole block back to check it was "
+                            "stopped, so what is on the instrument "
+                            "now has not been checked."))
+                    elif payload.get("lost"):
+                        lines.append(_(
+                            "%(count)d word(s) took the write and read "
+                            "differently when the whole block was "
+                            "read again, the first of them word "
+                            "%(first)d. Those cells are not holding "
+                            "what was put in them.")
+                            % {"count": len(payload["lost"]),
+                               "first": payload["lost"][0]})
+                    # Transferred is not stored. The words go into a
+                    # working copy in the instrument's RAM and reading
+                    # them back proves only that they arrived;
+                    # CALIBRATE:STORE? is what commits the copy to the
+                    # acquisition board, and its answer is the only
+                    # thing that says the constants will still be there
+                    # after the next power cycle.
+                    if payload.get("stored") is True:
+                        lines.append(_(
+                            "Stored on the acquisition board. The "
+                            "instrument answered 0, which is what it "
+                            "answers when the constants have been "
+                            "committed."))
+                    elif payload.get("stored") is False:
+                        lines.append(_(
+                            "NOT stored. The words were sent and read "
+                            "back, but the instrument answered %d to "
+                            "the command that commits them, so nothing "
+                            "was kept: at the next power cycle this "
+                            "instrument will hold what it held before. "
+                            "The NVRAM protection switch is what stops "
+                            "the commit - set it to unprotected, with "
+                            "the instrument switched on and without "
+                            "rebooting it, and restore again.")
+                            % payload.get("store_code", 0))
+                    elif "stored" in payload:
+                        lines.append(_(
+                            "Whether they were stored is not known: the "
+                            "command that commits them answered "
+                            "%(said)s. The words were sent and read "
+                            "back. Power the instrument off and on and "
+                            "back the constants up again to see what it "
+                            "kept.") % {"said": payload.get("store_said")
+                                        or _("nothing")})
+                    if "sum" in payload:
+                        lines.append(_(
+                            "    Calibration checksum: word 0 holds "
+                            "0x%(want)04X, the 251 words after it add up to "
+                            "0x%(got)04X")
+                            % {"want": payload["check"],
+                               "got": payload["sum"]})
+                    bak_note(*lines)
+                    say(_("The instrument would not take every "
+                          "calibration word")
+                        if payload.get("stuck") else
+                        _("The calibration restore was stopped part "
+                          "way through")
+                        if payload.get("cancelled") else
+                        _("Calibration constants restored and stored")
+                        if payload.get("stored") is True else
+                        _("The constants were sent but the instrument "
+                          "did not store them")
+                        if payload.get("stored") is False
+                        else _("Calibration constants sent"))
+                elif label == "bak_survey":
+                    busy(False)
+                    bak_show_survey(payload)
+                    say(_("The instrument answered"))
+                elif label == "bak_nvram_put":
+                    busy(False)
+                    bak_note(_("Restored %(size)s of NVRAM from %(file)s")
+                             % {"size": human_bytes(payload["wrote"]),
+                                "file": os.path.basename(payload["path"])},
+                             _("    read back and identical"))
+                    # Said whenever the two differ, because otherwise
+                    # the line above reports 640 kB restored from a
+                    # 1 MB file and reads like a write that stopped
+                    # short. It did not: the rest of the window is the
+                    # same memory answering a second time.
+                    if payload.get("held", 0) > payload.get("distinct", 0):
+                        bak_note(_(
+                            "    the file is %(held)s and this instrument "
+                            "holds %(real)s of distinct memory - the rest "
+                            "of the window is the same memory answering "
+                            "again, and is not written twice")
+                            % {"held": human_bytes(payload["held"]),
+                               "real": human_bytes(payload["distinct"])})
+                    say(_("NVRAM restored"))
+                elif label == "bak_nvram":
+                    busy(False)
+                    for one in payload["backups"]:
+                        bak_note(_("%(what)s: %(size)s to %(file)s")
+                                 % {"what": one["what"],
+                                    "size": human_bytes(one["bytes"]),
+                                    "file": os.path.basename(one["path"])},
+                                 "    " + one["sha"])
+                    for one in payload.get("ticked") or []:
+                        bak_note(_("The clock moved while it was read, in "
+                                   "%d byte(s). That is the instrument "
+                                   "keeping time, not a fault.")
+                                 % one["bytes"])
+                    say(_("NVRAM backed up"))
+                elif label == "bak_make":
+                    busy(False)
+                    bak_note(_("%(files)d file(s), %(size)s")
+                             % {"files": len(payload["manifest"]["files"]),
+                                "size": human_bytes(payload["bytes"])},
+                             "    " + ", ".join(
+                                 "%s (%d)" % (k, n) for k, n
+                                 in sorted(payload["holds"].items())))
+                    for name, why in payload["failed"]:
+                        bak_note(_("%(part)s: %(why)s")
+                                 % {"part": name, "why": why})
+                    say(_("Backed up to %s")
+                        % os.path.basename(payload["path"])
+                        if not payload["failed"]
+                        else _("Backed up, with %d part(s) missing")
+                        % len(payload["failed"]))
+                elif label == "bak_put":
+                    busy(False)
+                    for name, what in payload["done"]:
+                        bak_note(_("%(part)s: %(what)s restored")
+                                 % {"part": name, "what": what})
+                    for name, why in payload["failed"]:
+                        bak_note(_("%(part)s: %(why)s")
+                                 % {"part": name, "why": why})
+                    say(_("Restored to the instrument")
+                        if not payload["failed"]
+                        else _("Restored, with %d part(s) that failed")
+                        % len(payload["failed"]))
                 elif label == "sys_factory":
                     busy(False)
                     say(_("The instrument is back on its factory setup"))
@@ -12059,6 +16889,17 @@ def run_gui():
                     lim_watch()
                 elif label == "lim_send":
                     busy(False)
+                    # Whether the read-back matched or not, the
+                    # instrument has been sent an envelope and there is
+                    # something in the destination to test against.
+                    state["lhas"] = True
+                    lim_buttons()
+                    # And read it back once more, so the list says how
+                    # many columns it now holds rather than what it held
+                    # before. The drawing is on the canvas already, so
+                    # this read cannot overwrite it - see the lim_picture
+                    # branch.
+                    root.after(50, lim_look)
                     if payload.get("verified"):
                         say(_("%(dest)s now holds the envelope drawn "
                               "here, read back and verified")
@@ -12081,6 +16922,25 @@ def run_gui():
                                                 in payload.get("got")
                                                 or []) or _("nothing")})
                     draw_limits()
+                elif label == "lim_clear":
+                    busy(False)
+                    gone = ", ".join(payload["names"])
+                    # The template that was on screen came from that
+                    # reference, so it is put down too - leaving it drawn
+                    # would show a band the instrument no longer has.
+                    for one in payload["names"]:
+                        forget_source(one)
+                    state["lband"] = []
+                    state["lwave"] = None
+                    # Known empty, not merely unread: this is the one
+                    # moment the program is certain there is nothing in
+                    # the destination to test against.
+                    state["lhas"] = False
+                    for one in payload["names"]:
+                        lim_refs_note(one, 0)
+                    lim_buttons()
+                    draw_limits()
+                    say(_("%s has been cleared on the instrument") % gone)
                 elif label == "lim_stop":
                     busy(False)
                     state.pop("lrun", None)
@@ -12098,11 +16958,59 @@ def run_gui():
                             say(_("FAIL - the instrument stopped, so "
                                   "%(source)s left the template")
                                 % {"source": held["source"]})
+                elif label == "lim_survey":
+                    busy(False)
+                    # Merged, not replaced: this usually answers about
+                    # one reference, and what is already known about
+                    # the other three is still true.
+                    known = {one["name"]: one
+                             for one in (state.get("lrefs") or [])}
+                    known.update({one["name"]: one
+                                  for one in payload["refs"]})
+                    state["lrefs"] = [known[n] for n in tds_wfm.REFS
+                                      if n in known]
+                    lim_refs_show(state["lrefs"])
+                    # What the survey says about the selected reference
+                    # is the same knowledge lim_look would have gone and
+                    # fetched. Taking it here saves reading it twice.
+                    here = state["ldest"].get()
+                    for one in payload["refs"]:
+                        if one["name"] == here:
+                            state["lhas"] = bool(one["columns"])
+                    lim_buttons()
+                    held = [one["name"] for one in payload["refs"]
+                            if one["columns"]]
+                    if len(payload["refs"]) == 1:
+                        # One reference, read because it was
+                        # double-clicked. Empty is an answer, and it
+                        # belongs on the status line rather than in a
+                        # box somebody has to dismiss.
+                        one = payload["refs"][0]
+                        say((_("%(ref)s holds a template of %(n)d "
+                               "column(s)")
+                             % {"ref": one["name"], "n": one["columns"]})
+                            if one["columns"]
+                            else _("%s is empty") % one["name"])
+                    else:
+                        say((_("%s holds a template") % ", ".join(held))
+                            if held
+                            else _("No reference holds a limit template"))
+                    # Draw the one that is selected, now it is known to
+                    # be worth drawing.
+                    if state.get("lhas"):
+                        lim_look()
                 elif label == "lim_picture":
                     busy(False)
                     state["lband"] = payload["band"]
+                    # An envelope is two values a column, so anything
+                    # shorter than a pair is not one. Read from the
+                    # instrument, so this is knowledge either way.
+                    state["lhas"] = len(payload["band"] or []) >= 2
+                    lim_refs_note(payload["dest"],
+                                  len(payload["band"] or []))
                     if payload["wave"] is not None:
                         state["lwave"] = payload["wave"]
+                        state["lwavefrom"] = "instrument"
                     # Before anything is thinned from it: how far the
                     # slider can usefully go is this band's business.
                     lim_range()
@@ -12111,7 +17019,15 @@ def run_gui():
                     # leave the drawing alone, or an adjustment
                     # would be lost every time the trace was
                     # looked at again.
+                    loading = state.pop("lload", None)
                     if state.pop("llearn", None) and payload["band"]:
+                        lim_take_band()
+                    elif payload["band"] and lim_may_draw(loading):
+                        # A template already on the instrument, put on
+                        # the canvas so it can be seen and adjusted
+                        # rather than made again. Whose idea the read
+                        # was decides whether it may replace a drawing;
+                        # see lim_may_draw.
                         lim_take_band()
                     lim_buttons()
                     draw_limits()
@@ -12224,6 +17140,22 @@ def run_gui():
                 elif label == "progress":
                     say(payload["text"])
                     progress(payload["frac"])
+                    # Every step of a backup or a restore is written to
+                    # the report as well, so the tab keeps an account of
+                    # what happened rather than only of what is
+                    # happening - the status line is gone the moment the
+                    # next line replaces it.
+                    #
+                    # The step, though, not every count inside it. The
+                    # readers format their running totals as
+                    # "<step> - <n of m>", so the part before the dash
+                    # is the step: one line per step rather than one per
+                    # chunk, which on a megabyte would be a thousand.
+                    if payload.get("job") in BAK_JOBS:
+                        step = payload["text"].split(" - ")[0]
+                        if step != state.get("bakstep"):
+                            state["bakstep"] = step
+                            bak_note("    " + step)
                 elif label == "event":
                     # An event this program did not ask for. Always in the
                     # log and always in the status bar; the dialog only the
@@ -12276,6 +17208,7 @@ def run_gui():
                     busy(False)
                     say(_("Deleted %d files") % len(payload["done"]))
                     report_failures("delete", payload["failed"])
+                    report_losses(payload)
                     navigate(state["cwd"], force=True)
                 elif label == "survey":
                     confirm_rmdir(payload["path"], payload["names"])
@@ -12286,18 +17219,76 @@ def run_gui():
                         tree.delete(gone)
                     state["cache"].pop(gone, None)
                     say(_("Removed %s") % gone + mass_storage_note(payload))
+                    report_losses(payload)
                     navigate(parent_of(gone) or state["cwd"], force=True)
+                elif label == "copy":
+                    busy(False)
+                    dest = payload["dest"]
+                    say(_("Copied to %s") % dest.rsplit("/", 1)[-1])
+                    state["cache"].pop(state["cwd"], None)
+                    navigate(state["cwd"], force=True)
                 elif label == "uploads":
                     busy(False)
                     for dest, n in payload["done"]:
-                        set_size(dest.rsplit("/", 1)[-1], n)
+                        # Only rows in the folder on screen. A dropped
+                        # folder writes into subfolders as well, and
+                        # their leaf names would otherwise be matched
+                        # against whatever happens to share a name here.
+                        if dest.rsplit("/", 1)[0] == state["cwd"]:
+                            set_size(dest.rsplit("/", 1)[-1], n)
                     total = sum(n for _, n in payload["done"])
-                    say(_("Uploaded and verified %(files)d file(s), "
-                          "%(bytes)s bytes")
-                        % {"files": len(payload["done"]),
-                           "bytes": format(total, ",")})
+                    if payload.get("folders"):
+                        say(_("Uploaded and verified %(files)d file(s) in "
+                              "%(folders)d folder(s), %(bytes)s bytes")
+                            % {"files": len(payload["done"]),
+                               "folders": payload["folders"],
+                               "bytes": format(total, ",")})
+                    else:
+                        say(_("Uploaded and verified %(files)d file(s), "
+                              "%(bytes)s bytes")
+                            % {"files": len(payload["done"]),
+                               "bytes": format(total, ",")})
                     report_failures("upload", payload["failed"])
+                    if payload.get("skipped"):
+                        # Said on its own and after the failures, because
+                        # it is a different fact: these were not tried,
+                        # and the instrument is the reason.
+                        messagebox.showwarning(
+                            _("Upload"),
+                            _("The upload stopped after %(failed)d file(s) "
+                              "failed one after another, and %(skipped)d "
+                              "file(s) were not attempted.\n\nThat pattern "
+                              "means the instrument stopped answering "
+                              "rather than that those files are bad. Each "
+                              "attempt deletes before it writes, so going "
+                              "on would have emptied folders it could not "
+                              "refill.\n\nPower cycle the instrument, then "
+                              "try again.")
+                            % {"failed": len(payload["failed"]),
+                               "skipped": len(payload["skipped"])})
                     navigate(state["cwd"], force=True)
+                elif label == "format":
+                    busy(False)
+                    # FORMAT has no query form and raises no event when it
+                    # works, so the listing afterwards is the whole
+                    # report. Names still there means it did not happen.
+                    if payload["left"]:
+                        messagebox.showwarning(
+                            _("The volume did not format"),
+                            _("%(drive)s still holds %(count)d item(s) "
+                              "after the format: %(items)s")
+                            % {"drive": payload["drive"],
+                               "count": len(payload["left"]),
+                               "items": name_list(payload["left"])})
+                        say(_("%s did not format") % payload["drive"])
+                    else:
+                        say(_("%s formatted - it is empty")
+                            % payload["drive"])
+                    # The cache is of a volume that no longer has
+                    # anything in it, so it goes rather than being
+                    # trusted for the redraw.
+                    state["cache"].pop(payload["drive"], None)
+                    navigate(payload["drive"], force=True)
                 elif label in ("upload", "delete", "mkdir"):
                     busy(False)
                     # Named in words rather than by the worker's own
@@ -12308,6 +17299,14 @@ def run_gui():
                             "mkdir": _("Folder created")}[label]
                     say("%s: %s%s" % (done, payload,
                                       mass_storage_note(payload)))
+                    # What was written may not be in the folder on show
+                    # - a waveform goes to WAVEFORM on the drive - so
+                    # that folder's cached listing goes too, rather
+                    # than being kept and shown stale later.
+                    wrote = (payload.get("path") or ""
+                             if isinstance(payload, dict) else "")
+                    if "/" in wrote:
+                        state["cache"].pop(wrote.rsplit("/", 1)[0], None)
                     navigate(state["cwd"], force=True)
         except queue.Empty:
             pass
@@ -12328,7 +17327,24 @@ def run_gui():
         Tk images are owned by the interpreter; one collected after it has
         been torn down raises from __del__, where nothing can catch it and
         the traceback is merely printed.
+
+        Asks first if the instrument is mid-operation. The worker is a
+        daemon thread, so closing the window kills it wherever it happens
+        to be - part way through a block transfer, between a delete and
+        the write that was going to replace it. Nothing here can finish
+        the operation on the way out, and waiting for it would hang the
+        close on a transfer that runs for minutes, so the honest thing is
+        to say what is happening and let the answer decide.
         """
+        if state.get("busy") and not state.get("closing"):
+            if not messagebox.askyesno(
+                    _("Still working"),
+                    _("The instrument is in the middle of something.\n\n"
+                      "Closing now stops it wherever it has got to, which "
+                      "can leave a part-written file on the instrument. "
+                      "Close anyway?"),
+                    icon="warning", default="no"):
+                return
         # Nothing more may touch a widget after this. A result arriving
         # from the worker a moment later would otherwise be handed to a
         # destroyed combobox, and "invalid command name .!combobox" is a
@@ -12476,6 +17492,23 @@ LEARN_HANDLES = 120
 LEARN_LEAST = 20
 LEARN_MOST = 500
 
+#: How wide the left pane starts on the three tabs that have one.
+#:
+#: Three lists of things to pick from, in three tabs a bench moves
+#: between, and they were 184, 300 and 240 pixels wide - each one
+#: whatever its own columns happened to add up to. Wide enough for the
+#: widest of the three, which is the mask library's name, signal and
+#: shape.
+#:
+#: The panes carrying it are given no weight, so the extra room a wider
+#: window brings goes to the graticule rather than to a list of names.
+#: The splitter still drags.
+#:
+#: 310 rather than 300: the mask library's three columns come to 285 and
+#: its scrollbar to another 17, and at 300 the last few pixels of the
+#: shape column were cut off.
+LEFT_PANE = 310
+
 
 def nudge_named(step):
     """A nudge distance as it is written on the box.
@@ -12588,6 +17621,12 @@ def translatable_strings():
     to _() - a file type is looked up by extension and translated
     afterwards - and an entry for one of those is not an orphan.
 
+    says() and hints() count as speaking, because they are: both hand
+    their English to _() when the label is written or the tooltip is
+    shown. Reading only _() calls, the check passed with six strings on
+    the Limits tab that no catalogue had an entry for - so they were in
+    English in all nine languages, which is exactly what this is for.
+
     Returns None when the source is not there to read, inside the
     packaged executable for instance, so the caller can tell "nothing to
     translate" from "could not look".
@@ -12610,11 +17649,27 @@ def translatable_strings():
         for node in ast.walk(tree):
             if isinstance(node, ast.Constant) and isinstance(node.value, str):
                 literals.add(node.value)
-            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-                    and node.func.id == "_" and node.args
-                    and isinstance(node.args[0], ast.Constant)
-                    and isinstance(node.args[0].value, str)):
-                spoken.add(node.args[0].value)
+            # (widget, "English") - the shape every entry in the hints
+            # table and the `labelled` list has. Both are handed to _()
+            # a moment later, so they are spoken as surely as a direct
+            # call is, and a table is where it is easiest to add a
+            # string and forget the catalogues.
+            if (isinstance(node, ast.Tuple) and len(node.elts) == 2
+                    and isinstance(node.elts[0], ast.Name)
+                    and isinstance(node.elts[1], ast.Constant)
+                    and isinstance(node.elts[1].value, str)
+                    and node.elts[1].value):
+                spoken.add(node.elts[1].value)
+            if not (isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Name)):
+                continue
+            # _("...") says its first argument; says(w, "...") and
+            # hints(w, "...") say their second.
+            at = {"_": 0, "says": 1, "hints": 1}.get(node.func.id)
+            if (at is not None and len(node.args) > at
+                    and isinstance(node.args[at], ast.Constant)
+                    and isinstance(node.args[at].value, str)):
+                spoken.add(node.args[at].value)
     if not read_any:
         return None
     return spoken, literals

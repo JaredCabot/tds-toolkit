@@ -5,7 +5,11 @@ from PyInstaller.utils.hooks import collect_all
 # see msk_folder(). Bundled files live in a temporary folder that goes
 # when the program does, which is no place for a library.
 datas = [('app.ico', '.'), ('lang', 'lang'), ('capabilities.json', '.'),
-         ('memprotect.png', '.'), ('masks', 'masks')]
+         ('memprotect.png', '.'), ('masks', 'masks'),
+         # Which instruments each firmware image suits. Read from the
+         # folder the user points at first, and from this when that
+         # folder has no index of its own - see tds_fw.index_models.
+         ('FIRMWARE-INDEX.txt', '.')]
 binaries = []
 hiddenimports = []
 tmp_ret = collect_all('tkinterdnd2')

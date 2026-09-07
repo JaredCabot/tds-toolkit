@@ -7,8 +7,8 @@
 # Keep in step with __version__ in tdstoolkit.py.
 VSVersionInfo(
   ffi=FixedFileInfo(
-    filevers=(1, 0, 0, 0),
-    prodvers=(1, 0, 0, 0),
+    filevers=(1, 1, 0, 0),
+    prodvers=(1, 1, 0, 0),
     mask=0x3f,
     flags=0x0,
     OS=0x40004,
@@ -25,13 +25,13 @@ VSVersionInfo(
                       'TDS Toolkit - files, waveforms, masks and limit '
                       'tests for Tektronix TDS500/600/700 oscilloscopes '
                       'over GPIB'),
-         StringStruct('FileVersion', '1.0.0'),
+         StringStruct('FileVersion', '1.1.0'),
          StringStruct('InternalName', 'tdstoolkit'),
          StringStruct('LegalCopyright',
                       'Copyright (c) 2026 Jared Cabot. MIT Licence.'),
          StringStruct('OriginalFilename', 'TDS Toolkit.exe'),
          StringStruct('ProductName', 'TDS Toolkit'),
-         StringStruct('ProductVersion', '1.0.0')])
+         StringStruct('ProductVersion', '1.1.0')])
     ]),
     VarFileInfo([VarStruct('Translation', [1033, 1200])])
   ]
