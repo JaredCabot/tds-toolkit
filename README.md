@@ -1,6 +1,6 @@
 # TDS Toolkit
 
-A Windows program for Tektronix TDS500, TDS600 and TDS700 series digitizing
+An application for using Tektronix TDS500, TDS600 and TDS700 series digitizing
 oscilloscopes over GPIB. It browses and transfers the instrument's files,
 captures waveforms and screens, draws and sends masks, runs limit tests, reads
 the service error log, and manages the instrument's system settings.
