@@ -58,8 +58,11 @@ overrides the bundled copy.
 
 ## Firmware images
 
-The Firmware tab does not ship any firmware. Point it at a folder of your
-own and it lists what is there.
+The program itself bundles no firmware, but a ready-made archive of images,
+`TDS-firmware-images.zip`, is attached to every [release](../../releases).
+Download it and point the Firmware tab straight at the zip - it is read
+without unpacking. You can equally point the tab at a folder of your own, and
+it lists what is there.
 
 Tektronix shipped one binary for a whole family, so the same image arrives
 under several model names - of 67 files in one collection, 47 were copies of
