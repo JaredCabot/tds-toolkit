@@ -1,5 +1,9 @@
 # TDS Toolkit
 
+<p align="center">
+  <img src="docs/title-image.png" alt="TDS Toolkit running the Masks tab: an eye diagram measured against a standard mask" width="900">
+</p>
+
 An application for using Tektronix TDS500, TDS600 and TDS700 series digitizing
 oscilloscopes over GPIB. It browses and transfers the instrument's files,
 captures waveforms and screens, draws and sends masks, runs limit tests, reads
