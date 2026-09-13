@@ -470,3 +470,80 @@ def _flip(across):
 
 TOOLS.update({"fliph": lambda: _flip(True),
               "flipv": lambda: _flip(False)})
+
+
+# ------------------------------------------- the waveform tab's zoom tools
+# Drawn in the filled-wedge language of the mask tools, but in the softer
+# grey the flip (mirror) icons use for their wedges rather than the near-black
+# _INK - so the heads read as arrows without shouting, and the two toolbars
+# still sit together as one set. Double-headed arrows: horizontal for the
+# time axis, vertical for amplitude; heads spread apart to zoom in (magnify),
+# pinched together to zoom out. "Whole record" is a framed record with a
+# double-arrow across it - fit the whole capture on the graticule.
+
+# The zoom heads are grey, not ink: the same weight as the flip icons' wedges.
+_ZOOM = (112, 112, 112, 255)
+
+
+def _harrow(spread):
+    buf = _blank()
+    if spread:                               # <====>  magnify (zoom in)
+        for y in (7, 8):
+            _line(buf, 5, y, 10, y, _ZOOM)
+        _wedge(buf, (1, 7), (6, 2), (6, 13), _ZOOM)
+        _wedge(buf, (1, 8), (6, 2), (6, 13), _ZOOM)
+        _wedge(buf, (14, 7), (9, 2), (9, 13), _ZOOM)
+        _wedge(buf, (14, 8), (9, 2), (9, 13), _ZOOM)
+    else:                                    # ==> <==  shrink (zoom out)
+        for y in (7, 8):
+            _line(buf, 0, y, 2, y, _ZOOM); _line(buf, 13, y, 15, y, _ZOOM)
+        _wedge(buf, (6, 7), (2, 2), (2, 13), _ZOOM)
+        _wedge(buf, (6, 8), (2, 2), (2, 13), _ZOOM)
+        _wedge(buf, (9, 7), (13, 2), (13, 13), _ZOOM)
+        _wedge(buf, (9, 8), (13, 2), (13, 13), _ZOOM)
+    return buf
+
+
+def _varrow(spread):
+    buf = _blank()
+    if spread:
+        for x in (7, 8):
+            _line(buf, x, 5, x, 10, _ZOOM)
+        _wedge(buf, (7, 1), (2, 6), (13, 6), _ZOOM)
+        _wedge(buf, (8, 1), (2, 6), (13, 6), _ZOOM)
+        _wedge(buf, (7, 14), (2, 9), (13, 9), _ZOOM)
+        _wedge(buf, (8, 14), (2, 9), (13, 9), _ZOOM)
+    else:
+        for x in (7, 8):
+            _line(buf, x, 0, x, 2, _ZOOM); _line(buf, x, 13, x, 15, _ZOOM)
+        _wedge(buf, (7, 6), (2, 2), (13, 2), _ZOOM)
+        _wedge(buf, (8, 6), (2, 2), (13, 2), _ZOOM)
+        _wedge(buf, (7, 9), (2, 13), (13, 13), _ZOOM)
+        _wedge(buf, (8, 9), (2, 13), (13, 13), _ZOOM)
+    return buf
+
+
+def _whole():
+    buf = _blank()
+    for x in range(2, 14):                   # the record's frame
+        _put(buf, x, 2, _ZOOM)
+        _put(buf, x, 13, _ZOOM)
+    for y in range(2, 14):
+        _put(buf, 2, y, _ZOOM)
+        _put(buf, 13, y, _ZOOM)
+    # a double-arrow spanning it, in the same language as the zoom heads:
+    # fit the whole width of the record on the graticule.
+    for y in (7, 8):
+        _line(buf, 6, y, 9, y, _ZOOM)
+    _wedge(buf, (3, 7), (6, 4), (6, 11), _ZOOM)
+    _wedge(buf, (3, 8), (6, 4), (6, 11), _ZOOM)
+    _wedge(buf, (12, 7), (9, 4), (9, 11), _ZOOM)
+    _wedge(buf, (12, 8), (9, 4), (9, 11), _ZOOM)
+    return buf
+
+
+TOOLS.update({"timein": lambda: _harrow(True),
+              "timeout": lambda: _harrow(False),
+              "ampin": lambda: _varrow(True),
+              "ampout": lambda: _varrow(False),
+              "whole": _whole})

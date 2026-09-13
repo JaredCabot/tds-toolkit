@@ -22,20 +22,63 @@ Full documentation is in
 |---|---|
 | Files | Two-pane browser for the instrument's drives. Download, upload, create folders, delete, and drag files in from Explorer. |
 | Screenshot | Captures the instrument's screen through its hardcopy port and saves it as PNG. Format, layout and palette are chosen in the program; the instrument's own hardcopy settings are put back afterwards. |
-| Waveforms | Captures live channels and stored references, plots them together, zooms and pans, saves as ISF, CSV, WFM, PNG or SVG, and loads a file back into a reference. |
+| Waveforms | Captures live channels and stored references, plots them together, zooms and pans, saves as ISF, CSV, WFM, PNG or SVG, and loads a file back into a reference. Decodes a captured waveform against a protocol - 26 built in, plus drop-in plugins - entirely on the PC. |
 | Limits | Builds a template from the signal on screen, sends it to the instrument as a limit test, and reports the verdict. The limit envelope can be drawn or edited by hand. |
 | Masks | A mask editor with a shipped library of standard telecom and serial-bus masks. Sends a mask to the instrument, sets the instrument up for an eye diagram, and counts hits against it. |
 | Error Log | Reads the instrument's own service error log, saves it, and clears it. |
 | Firmware | Writes a firmware image to the instrument through the ROM monitor it starts in when the NVRAM protection switch is unprotected. Backs up the existing NVRAM and firmware and verifies both before anything is erased, then reads the new image back and compares it. Images are published with the program as a single archive, read without being unpacked. |
 | Backup | Captures the whole instrument to a single file - front-panel setups, the acquisition board's calibration constants, the NVRAM and the stored references - and restores any part of it, verifying as it goes. |
 | System | Identity and firmware, front-panel lock, the clock, hardcopy and RS-232 ports, signal path compensation, extended diagnostics, secure erase, factory recall, the acquisition board's calibration constants, and the factory option words. |
-| Settings | Plot colours and presets, saved-picture resolution, and where the program keeps its settings and log. |
+| Settings | Plot colours and presets (including the decode-chevron colours and their fill switches), saved-picture resolution, and where the program keeps its settings and log. |
 
 Nine language catalogues are supplied: English, Deutsch, Español, Français,
 Italiano, Русский, 日本語, 简体中文 and tlhIngan Hol. The program follows the
 language Windows is set to unless told otherwise, and falls back to English.
 A `lang` folder beside the program overrides the bundled catalogues, so a
 language can be added or corrected without rebuilding anything.
+
+## Protocol decode
+
+The Waveform tab decodes a **captured** waveform - a channel that was read, or a
+stored reference loaded from a file - against a serial or parallel protocol, and
+does it entirely on the PC. Nothing is sent to the scope: most of these
+instruments cannot run a bus-decode application of their own (the on-scope
+decoder needs a Java runtime the base models do not have), so the decode is done
+against the samples the program already has. Pick a protocol from the list, map
+a captured source to each of its wires, and press Decode; the decoded events are
+drawn as chevrons on the trace and listed in a table beside the controls.
+
+Twenty-six protocols ship:
+
+| Family | Protocols |
+|---|---|
+| Async serial | RS-232 / UART, RS-422 / RS-485, MODBUS RTU, MIDI, XBee |
+| Clocked | I2C, SPI, Dual SPI, I2S, I3C |
+| One-wire / edge | 1-Wire, PWM |
+| Automotive | CAN, LIN, FlexRay |
+| Avionics (bipolar) | ARINC 429, MIL-STD-1553 |
+| Audio | S/PDIF, I2S |
+| Addressable LED | WS2812 / SK6812, APA102 / DotStar |
+| RC links | CRSF, SBUS |
+| Smart card | ISO 7816 |
+| Infra-red | IrDA SIR, IR remote |
+
+The IR-remote decoder covers thirteen consumer protocols in one: NEC, Extended
+NEC, Sony SIRC, Philips RC5, RC5X, RC6, RC-MM, Samsung, LG (28-bit), JVC,
+Panasonic/Kaseikyo, Denon/Sharp and Mitsubishi.
+
+RS-232/UART is validated against a real capture corpus; the rest against
+synthetic vectors. The bipolar and self-clocking ones - ARINC 429, MIL-STD-1553,
+S/PDIF and FlexRay - read two thresholds or recover their own clock, and the IR
+protocols are checked only against synthetic signals so far, so all of these are
+worth confirming against a real capture before being trusted on live gear.
+
+Each protocol is a small Python file in a `decoders/` folder beside the
+program's settings, autopopulated the way the masks library is: drop a
+`<name>.py` in and it appears in the list the next time the tab is opened, and
+an update's new decoders are copied in without overwriting one you wrote. The
+contract is the `Decoder` base class in `tds_decode.py`; see
+`decoders/_template.py` and `decoders/README.txt` to write your own.
 
 ## What your instrument can do
 
@@ -240,6 +283,10 @@ than the newest runner, because a binary built against an older glibc runs on
 newer distributions and the reverse is not true.
 
 ## Changelog
+
+New in **1.2.0**:
+
+- **Protocol decode** on the Waveform tab - twenty-six decoders (RS-232/UART, I2C, SPI, CAN, IR remote and more) plus drop-in plugins, run entirely on the PC against a captured waveform. See [Protocol decode](#protocol-decode) above.
 
 New in **1.1.0**:
 

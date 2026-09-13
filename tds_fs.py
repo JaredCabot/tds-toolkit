@@ -162,9 +162,23 @@ class TdsFs(object):
         self.inst.write('FILESYSTEM:CWD "%s"' % path)
 
     def dir(self, path=None):
-        """List a directory. Note DIR? takes no argument - we cd first."""
+        """List a directory. Note DIR? takes no argument - we cd first.
+
+        A CWD to a directory that does not exist fails silently and leaves
+        the working directory exactly where it was (it queues event 256),
+        so a DIR? straight after would list wherever the cwd still points
+        and return that as the answer. When a path is given, the cwd is
+        read back and must match before the listing is believed - a
+        listing that quietly answers about the wrong directory is worse
+        than one that fails.
+        """
         if path is not None:
             self.set_cwd(path)
+            got = self.get_cwd()
+            if got.rstrip("/").upper() != path.rstrip("/").upper():
+                raise IOError(
+                    'could not change to "%s": the instrument is still in '
+                    '"%s", so the directory may not exist' % (path, got))
         reply = self.payload(self.inst.query("FILESYSTEM:DIR?"))
         out = []
         for tok in reply.split(","):
@@ -460,6 +474,19 @@ class TdsFs(object):
         the instrument runs no applications at all.
         """
         self.inst.write(':FILESYSTEM:FORMAT "%s"' % drive)
+
+    def rename(self, source, dest):
+        """Rename a file on the instrument.
+
+        `FILESYSTEM:RENAME "old","new"`, from the decompiled
+        FileSystemProxy and exercised on a TDS 784D. It is what makes a
+        staged write possible: a verified temporary file is renamed over
+        the real name, so a write that fails part way leaves the previous
+        file untouched rather than half-overwritten. RENAME does not
+        replace an existing destination, so the caller deletes the old
+        name first.
+        """
+        self.inst.write(':FILESYSTEM:RENAME "%s","%s"' % (source, dest))
 
     def copy(self, source, dest):
         """Copy on the instrument, without the bytes crossing GPIB.

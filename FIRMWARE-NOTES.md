@@ -6,7 +6,7 @@ can do is known without having one on the bench.
 
 ## The images
 
-67 files in the firmware folder are **34 distinct binaries**. One image was
+68 files in the firmware folder are **35 distinct binaries**. One image was
 shipped for a whole family, so measuring one instrument settles the rest:
 
 | image | size | symbols | models |
@@ -15,13 +15,14 @@ shipped for a whole family, so measuring one instrument settles the rest:
 | `7e80aad56c` | 4 MB | yes | TDS714L, 754D, **784D** — all v7.4e |
 | `2e7d2cfdac` | 4 MB | yes | TDS520C, 540C, 580C, 754C, 784C — all v5.0e |
 | `633b691731` | 4 MB | yes | TDS754D, 784D, 794D — all v6.0e |
+| `35e7aff853` | 4 MB | yes | TDS694C v6.4e — its own image and NVRAM table |
 | `d5b6022c04` | 4 MB | yes | **TDS640A** v3.8.8e |
 | `d82e9f9ead` | 1.5 MB | **no** | TDS520 v2.16e |
 | `77619de137` | 1.5 MB | **no** | TDS540 v2.16e |
 | `ed3384d89e` | 1.5 MB | **no** | TDS620 v2.04e |
 | `42fec8e5a3` | 4 MB | **no** | TDS820 v2.03 |
 
-30 of the 34 carry a symbol table. The four that do not are the earliest
+31 of the 35 carry a symbol table. The four that do not are the earliest
 firmware — the original TDS500/600 at 1.5 MB, and the TDS820 sampling
 scope, which is a different instrument entirely.
 

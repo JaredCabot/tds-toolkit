@@ -1,14 +1,64 @@
+# Runtime log the program writes beside itself
+tdstoolkit.log
+tdstoolkit.log.*
+
+# Python
 __pycache__/
 *.py[cod]
 *.egg-info/
 .venv/
 venv/
 
+# PyInstaller. The exe goes to a Release, not into the repository - but
+# the spec is the recipe it is built from and is edited by hand, so it
+# is kept. Nothing regenerates it.
 build/
 dist/
 *.spec
 !TDS Toolkit.spec
 
 tdstoolkit.json
-tdstoolkit.log
-tdstoolkit.log.*
+
+# Runtime state the program writes beside itself: the upload manifest
+# (skip-unchanged), the per-instrument transfer outcome (failure lock-out),
+# and the single-process lock.
+tdstoolkit-uploads.json
+tdstoolkit-transfers.json
+tdstoolkit.lock
+
+# Bench scripts and one-shot probes. Useful to have, not part of the
+# program - and _to_delete is a staging area, not a folder to keep.
+scratch/
+_to_delete/
+
+# Private bench note, kept local and out of the repo.
+MEMORY-TEST-NOTES.md
+
+# --- Private bench material (kept local, never published) ---
+# The dev test harness and its fixtures, the bench tools, the captured
+# reference waveforms, the manual sources, worked bench examples, and the
+# private working notes. All of this lives on the maintainer's machine and
+# is deliberately out of the public repository. See CLAUDE.md.
+tests/
+tools/
+waves/
+examples/
+docs/manual/
+notes/
+sample.wfm
+
+# Runtime folder the app writes beside itself for saved limit-test masks.
+limits/
+
+# --- Internal/dev docs: kept on disk, deliberately not published ---
+# Design and reverse-engineering notes, the maintainer guide, the 68k
+# helper source (its assembled bytes are embedded in tds_fw.py), and the
+# decoder-authoring aids. None are needed to use the app. See the private
+# tools/ and notes/ for the rest of the maintainer-only material.
+/CLAUDE.md
+/FILE-TRANSFER-AUDIT.md
+/FILE-TRANSFER-HARDENING.md
+/fwhelper.S
+/docs/TDS Toolkit - Writing a Protocol Decoder.pdf
+/decoders/_template.py
+/decoders/README.txt

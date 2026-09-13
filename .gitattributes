@@ -1,14 +1,23 @@
+# Normalise line endings so the repository does not show phantom changes
+# on a Windows checkout. Text is stored with LF; batch files need CRLF to
+# be reliable when run by cmd.exe.
 * text=auto eol=lf
 *.cmd text eol=crlf
 *.ico binary
 *.png binary
 *.exe binary
 *.pdf binary
+*.zip binary
+*.bin binary
 
-# Instrument data, kept byte for byte: these came off Tektronix disks or
-# were written for an instrument to read, and text=auto would hand back
-# a file whose bytes are not the ones that went in.
+# Instrument data, kept byte for byte. These came off Tektronix disks or
+# were written for an instrument to read, and `text=auto` would store
+# them LF and hand back a file whose bytes are not the ones that went in.
+# The i-Pattern masks are zero-padded so git spots those on its own; the
+# setups, our own text masks and the generator's state files are not, and
+# git was rewriting all 38 of them.
 *.MSK binary
 *.SET binary
+*.sta binary
 *.wfm binary
 *.isf binary

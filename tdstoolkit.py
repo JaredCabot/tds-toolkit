@@ -1,5 +1,5 @@
 """
-tdstoolkit.py - a file explorer for the instrument's disk, over GPIB.
+tdstoolkit.py - TDS Toolkit: the application window and its tabs, over GPIB.
 
 tds_fs.py already is the filesystem: dir, read, write, mkdir, delete, cwd,
 overwrite, and the event-queue drain. This is a front end over it.
@@ -34,6 +34,7 @@ Usage:
     python tdstoolkit.py --check-translations   # audit lang/*.json
 """
 import ast
+import atexit
 import base64
 import copy
 import hashlib
@@ -54,6 +55,7 @@ from tds_fs import TdsFs, DEFAULT_ADDR
 import tds_err
 import tds_bak
 import tds_cal
+import tds_decode
 import tds_fw
 import tds_msk
 import tds_scr
@@ -63,12 +65,18 @@ import winicons
 import i18n
 from i18n import gettext as _
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 __author__ = "Jared Cabot"
 __email__ = "jetstreamtechnology@protonmail.com"
 __licence__ = "MIT"
 
 ATTEMPTS = 4
+
+#: 8.3 sibling name a staged write goes to before it is renamed over the
+#: real one. Written, verified, then RENAMEd into place, so a write that
+#: fails part way leaves the previous file untouched instead of half over-
+#: written. See FILE-TRANSFER-HARDENING.md section 6.
+STAGE_NAME = "TDSUPLD.TMP"
 
 # Where the program considers itself to live. Built as a one-file exe,
 # __file__ points inside the temporary folder PyInstaller unpacks to and
@@ -84,6 +92,153 @@ LOGFILE = os.path.join(APPDIR, "tdstoolkit.log")
 #: set it. Nothing in this program does.
 HOOK = None
 SETTINGSFILE = os.path.join(APPDIR, "tdstoolkit.json")
+
+#: A host-side record of files uploaded to each instrument and the sha1
+#: verified on the way in, kept as {addr: {dest: sha1}}. An upload can then
+#: skip a file already on the instrument byte for byte rather than rewriting
+#: it - and rewriting what is already there is the churn that takes this
+#: instrument's mass storage down. Beside the settings, never under a folder
+#: a build cleans.
+UPLOADS_FILE = os.path.join(APPDIR, "tdstoolkit-uploads.json")
+
+
+def load_uploads():
+    try:
+        with open(UPLOADS_FILE, "r") as fh:
+            got = json.load(fh)
+        return got if isinstance(got, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_uploads(marks):
+    try:
+        with open(UPLOADS_FILE, "w") as fh:
+            json.dump(marks, fh)
+    except Exception:
+        pass                       # a lost manifest costs a re-upload, not data
+
+
+#: Instruments a transfer left wedged, kept as {addr: why}. A run that
+#: writes files and then finds the volume root will not list has taken the
+#: file system down, and writing into it again is what turns a hung task
+#: into a lost card (FILE-TRANSFER-HARDENING.md section 9). Such an
+#: instrument is locked out of further writes until a fresh reconnect
+#: proves it well again - a retry alone will not clear it, which is the
+#: point. Presence of the addr means locked out.
+TRANSFERS_FILE = os.path.join(APPDIR, "tdstoolkit-transfers.json")
+
+
+def load_transfers():
+    try:
+        with open(TRANSFERS_FILE, "r") as fh:
+            got = json.load(fh)
+        return got if isinstance(got, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_transfers(state):
+    try:
+        with open(TRANSFERS_FILE, "w") as fh:
+            json.dump(state, fh)
+    except Exception:
+        pass
+
+
+def transfer_blocked(addr):
+    """Why this instrument is locked out after a failed transfer, or None."""
+    return load_transfers().get(addr or "")
+
+
+def set_transfer_block(addr, why):
+    state = load_transfers()
+    state[addr or ""] = why
+    save_transfers(state)
+
+
+def clear_transfer_block(addr):
+    state = load_transfers()
+    if state.pop(addr or "", None) is not None:
+        save_transfers(state)
+
+
+#: One program on the bus at a time. A second program sending to the
+#: instrument during a transfer lands its command inside the file being
+#: written (FILE-TRANSFER-HARDENING.md section 1), so only one copy may
+#: hold an instrument session at once. A pid file beside the settings: a
+#: pid that is alive and not ours means the bus is taken; a holder that
+#: died leaves a pid that is not, and the lock is taken over rather than
+#: blocking forever.
+LOCKFILE = os.path.join(APPDIR, "tdstoolkit.lock")
+_lock_pid = None
+
+
+def _pid_alive(pid):
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        import ctypes
+        QUERY = 0x1000                       # PROCESS_QUERY_LIMITED_INFORMATION
+        STILL_ACTIVE = 259
+        k = ctypes.windll.kernel32
+        handle = k.OpenProcess(QUERY, False, pid)
+        if not handle:
+            return False
+        code = ctypes.c_ulong()
+        ok = k.GetExitCodeProcess(handle, ctypes.byref(code))
+        k.CloseHandle(handle)
+        return bool(ok) and code.value == STILL_ACTIVE
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def take_process_lock(addr=""):
+    """Claim the bus. Returns None on success, or a sentence to show.
+
+    Held for the life of this run once taken; a reconnect by the same
+    process is a no-op. Never blocks the user if the lock file itself
+    cannot be written - a missing safeguard is better than a program that
+    will not start.
+    """
+    global _lock_pid
+    ours = os.getpid()
+    if _lock_pid == ours:
+        return None
+    try:
+        with open(LOCKFILE) as fh:
+            held = int((fh.read().split() or ["0"])[0])
+    except Exception:
+        held = 0
+    if held and held != ours and _pid_alive(held):
+        return ("Another copy of TDS Toolkit (process %d) is using the "
+                "instrument. Only one may at a time - a second program's "
+                "commands would land inside a file being transferred. Close "
+                "the other copy, then connect again." % held)
+    try:
+        with open(LOCKFILE, "w") as fh:
+            fh.write("%d %s" % (ours, addr or ""))
+        _lock_pid = ours
+        atexit.register(release_process_lock)
+    except Exception:
+        pass
+    return None
+
+
+def release_process_lock():
+    global _lock_pid
+    if _lock_pid != os.getpid():
+        return
+    try:
+        with open(LOCKFILE) as fh:
+            if int((fh.read().split() or ["0"])[0]) == os.getpid():
+                os.remove(LOCKFILE)
+    except Exception:
+        pass
+    _lock_pid = None
 
 
 def address_argument(argv=None):
@@ -613,356 +768,7 @@ def log_note(where, text):
         pass
 
 
-class Worker(object):
-    """Serialises every instrument operation onto one thread.
-
-    COUNT_FOR is how long the instrument is left counting against a
-    mask before the tally is read, where reading the trace would
-    otherwise stop it. A second is a few hundred acquisitions on a
-    784D; in DPO no wait is needed, since the hardcopy itself takes
-    several.
-
-    Jobs are (label, callable). Results come back as (label, ok, payload) on
-    an output queue the UI polls; nothing is called back on this thread.
-    """
-
-    COUNT_FOR = 1.0
-
-    def __init__(self):
-        self.jobs = queue.Queue()
-        self.out = queue.Queue()
-        self.fs = None
-        self.addr = None
-        self.context = "start"
-        # Set to the command name once an instrument has been found not to
-        # have it, so nothing tries the same transfer three more times.
-        self.no_transfers = None
-        # Whether FILESYSTEM:OVERWRITE ON was understood. Until a
-        # connection says otherwise, assume not and delete before
-        # writing, which is the behaviour that works everywhere.
-        self.can_overwrite = False
-        # One correction per connection: if the capability table is wrong
-        # about an instrument, ask it once and carry on. Asking again on
-        # every subsequent failure would just be the probe by other means.
-        self.re_probed = False
-        self._stop = threading.Event()
-        # Set by the UI to ask a long job to give up. Only the scan reads
-        # it, because the scan is the only job that is both slow and
-        # safely interruptible - it opens and closes one address at a
-        # time and owns nothing in between. Stopping a transfer part-way
-        # is a different matter entirely and is not offered.
-        self.cancelled = threading.Event()
-        self.thread = threading.Thread(target=self._run, daemon=True)
-        self.thread.start()
-
-    def submit(self, label, fn, needs_fs=True):
-        """Queue a job. `needs_fs` False for work that runs with no
-        instrument open - connecting and scanning, which are how you get
-        one. Stated by the caller rather than inferred from the label,
-        because a label is a display name and should not carry meaning.
-
-        Giving up on one job is not giving up on the next, so the
-        flag is cleared here: it is the one place every job passes
-        through. Cleared as the job is queued rather than as it is
-        taken up, so a cancel pressed after this cannot be
-        swallowed by the clear."""
-        self.cancelled.clear()
-        self.jobs.put((label, fn, needs_fs))
-
-    def _run(self):
-        while not self._stop.is_set():
-            try:
-                label, fn, needs_fs = self.jobs.get(timeout=0.2)
-            except queue.Empty:
-                continue
-            self.context = label
-            try:
-                if needs_fs and self.fs is None:
-                    raise RuntimeError("not connected")
-                self.out.put((label, True, fn(self)))
-            except Exception as exc:
-                # The class name goes in the log, where it is a clue, and
-                # not in the dialog, where "NotReadable:" in front of a
-                # written sentence is noise. Some exceptions say nothing
-                # at all, and then the name is all there is.
-                log_note(label, "FAILED %s: %s" % (type(exc).__name__, exc))
-                # And where it came from, for anything that is not one of
-                # the instrument's own refusals. A one-line class name
-                # says a job failed; it does not say which call failed,
-                # and a fault nobody can reproduce is only diagnosable
-                # from the log somebody sends afterwards.
-                if not isinstance(exc, (tds_wfm.NotReadable, RuntimeError,
-                                        IOError, ValueError)):
-                    log_note(label, "  " + traceback.format_exc()
-                             .strip().replace("\n", "\n  "))
-                self.out.put((label, False,
-                              str(exc) or type(exc).__name__))
-
-    def stop(self):
-        self._stop.set()
-
-    def _routine(self, code):
-        """Is this event one we already understand in this context?
-
-        Context matters. A mass storage error while recursively deleting a
-        folder is measured, expected and harmless. The same code while
-        reading a file would mean something quite different, and should
-        still get the user's attention.
-        """
-        if code in EXPECTED_EVENTS:
-            return True
-        here = self.context.split(" ")[0]
-        if code == MASS_STORAGE and here in DELETE_OPS:
-            return True
-        if code == NO_MEDIA and here in NO_MEDIA_OPS:
-            return True
-        return code == BAD_FILENAME and here in PROBE_OPS
-
-    def _watch_events(self):
-        """Record every event the instrument raises, whoever drained it.
-
-        Written as a wrapper round the one method that empties the event
-        queue, rather than as a call added to each operation, because the
-        drains are scattered through both this file and tds_fs and the
-        whole point is that none of them can quietly discard a code. An
-        error the user reports hours later is only diagnosable if it was
-        written down when it happened.
-        """
-        raw = self.fs.errors
-
-        def watched():
-            codes = raw()
-            if not codes:
-                return codes
-            # 256 "file name not found" is generated by design, dozens at a
-            # time - probing for volumes, classifying each directory entry.
-            # Logging those would bury the one line that matters under a
-            # hundred that never do, so only the noteworthy are written
-            # down. Anything the context does not account for is noteworthy,
-            # including 250, which is tolerated but always recorded.
-            notable = [c for c in codes
-                       if c == MASS_STORAGE or not self._routine(c)]
-            msgs = getattr(self.fs, "last_messages", []) or []
-            detail = "; ".join("%d %s" % (c, t) for c, t in msgs) or str(codes)
-            if notable:
-                log_note(self.context, detail)
-            odd = [c for c in codes if not self._routine(c)]
-            if odd:
-                self.out.put(("event", True, {"codes": odd, "detail": detail,
-                                              "where": self.context}))
-            return codes
-
-        self.fs.errors = watched
-        # The unwrapped one is kept, for the one drain that must
-        # not report what it finds: whatever is in the queue when
-        # a session opens got there before it. See connect.
-        self._quiet_drain = raw
-
-    # -- operations, all called on the worker thread -----------------------
-
-    def connect(self, addr=None):
-        # Any previous session is closed first. Leaving it open would hold
-        # the old instrument's VISA lock, which is exactly what stops a
-        # second attempt from working after a failed one.
-        if self.fs is not None:
-            self.fs.close()
-            self.fs = None
-        self.fs = TdsFs(**({"addr": addr} if addr else {}))
-        # Ask who is there before anything else, on a short leash. An
-        # address with nothing on it is otherwise discovered only when
-        # the first real query gives up, three quarters of a minute
-        # later, and the program looks hung when all that has happened
-        # is that the scope is switched off.
-        #
-        # If it does not answer, everything goes back to disconnected.
-        # Left alone, self.fs stayed set while wfm, scr and err still
-        # wrapped the session closed above, so the "not connected" guard
-        # let jobs through to a handle VISA had already invalidated.
-        # Cleared before it is asked anything. An instrument left
-        # part way through a transfer - by this program being killed, or
-        # by anything else that walked away from a read - still has the
-        # rest of that file to hand over, and it hands it over before it
-        # answers anything new. Measured on a TDS 754D: with 640 kB
-        # still queued, *IDN? never came back and connect reported an
-        # empty address, on an instrument sitting there working
-        # perfectly. The clear used to come thirty lines below this,
-        # which is after the question it protects.
-        self.fs.clear()
-        try:
-            self.fs.hello()
-        except Exception:
-            self.fs.close()
-            self.fs = self.wfm = self.scr = self.err = None
-            raise
-        # One VISA session serves both subsystems; the waveform side
-        # borrows the filesystem side's header-stripping rule so there is
-        # only one place that knows about HEADER ON.
-        self.wfm = tds_wfm.TdsWfm(self.fs.inst, TdsFs.payload)
-        self.scr = tds_scr.TdsScr(self.fs.inst, TdsFs.payload)
-        self.err = tds_err.TdsErr(self.fs.inst, TdsFs.payload)
-        self.addr = addr or getattr(self.fs, "addr", None) or "default"
-        self._watch_events()
-        # "Is there a waveform in this source?" is answered, for an
-        # empty one, with 2241 and a 420 in the event queue. That is the
-        # answer, so it is cleared where it is provoked rather than
-        # surfacing later as a fault nobody caused. Quietly - the
-        # watcher would report the very events the question exists to
-        # provoke. See TdsWfm.exists.
-        self.wfm.drain = self._quiet_drain
-        # Replies with no command header in front of them. A 784D is
-        # already set that way; a 640A is not, and every reply arrives as
-        # ":FILESYSTEM:FREESPACE 0" instead of "0".
-        self.fs.headers("OFF")
-        self.no_transfers = None
-        self.re_probed = False
-        # Whatever was in the event queue happened before this program
-        # opened the session - very likely another program's doing, or
-        # our own from a previous run - and reporting it as though this
-        # session caused it is misleading. Drained once, here, so
-        # everything after this really is ours.
-        #
-        # Drained *quietly*, which is the whole point and was not
-        # what happened: the watcher raises anything it does not
-        # recognise as a modal box saying it was not expected, and
-        # a 2241 left in the queue by a bench session an hour
-        # earlier greeted the next connect with a warning about
-        # something the program had not done. Written to the log,
-        # where it is a clue, and nowhere else.
-        try:
-            stale = self._quiet_drain()
-            if stale:
-                log_note("connect", "cleared %d event(s) left over from "
-                         "before this session: %s"
-                         % (len(stale), getattr(self.fs, "last_messages",
-                                                stale)))
-        except Exception:
-            pass
-        self.fs.set_overwrite("ON")
-        # Whether that was understood decides how an upload replaces a
-        # file, and it matters more than it looks. With OVERWRITE ON a
-        # write lands straight on top of the old file; without it, the
-        # old file has to be deleted first - and DELETE is what exhausts
-        # this family's filesystem. Measured on a TDS 784D: 21
-        # delete-then-write cycles took mass storage down and wanted a
-        # power cycle, where 120 writes of distinct files with no delete
-        # and 60 replacements over one name raised nothing whatsoever.
-        self.can_overwrite = UNDEFINED_HEADER not in self.fs.errors()
-        self.fs.set_delwarn("OFF")
-        # Which transfer commands this firmware has. Looked up if this
-        # instrument is one we already know, asked if it is not - either
-        # way settled here, rather than discovered by a user watching a
-        # progress bar that is never going to finish.
-        idn = self.fs.idn()
-        entry = known_instrument(idn)
-        can = (self.fs.apply_known(entry) if entry
-               else self.fs.probe_transfers())
-        log_context("connect", "%s: reader=%s write=%s (%s)"
-                    % (idn, can["reader"], can["can_write"], can["source"]))
-        # Mask testing is Option 2C - "Mask Testing (Option 2C Only)" in
-        # the user manual. A 784D here reports 2C:comm and a 784C does
-        # not, and without it the MASK subsystem answers queries and
-        # draws nothing. Asked once, here, so the Masks tab can offer
-        # the route or grey it rather than failing silently.
-        try:
-            opts = self.fs.opts()
-        except Exception:
-            opts = ""
-        out = {"idn": idn, "cwd": self.fs.get_cwd(), "addr": self.addr,
-               "options": opts, "masks": "2C" in opts.upper()}
-        out.update(can)
-        return out
-
-    def scan(self):
-        """Ask VISA what is on the bus and identify each instrument.
-
-        Every address gets a `*IDN?`, which is the one query every SCPI
-        instrument answers and which changes nothing on the device. Short
-        timeouts throughout: an address that does not answer promptly is
-        far more likely to be a printer or a dead session than a scope
-        worth waiting on, and a scan that takes a minute will not be run.
-
-        Anything already open is left alone - its identification is
-        already known, and opening a second session to it could disturb a
-        transfer in progress.
-        """
-        import pyvisa
-        rm = pyvisa.ResourceManager()
-        try:
-            addresses = list(rm.list_resources())
-        except Exception as exc:
-            raise RuntimeError(
-                "VISA could not list the bus: %s\n\nCheck that a VISA "
-                "runtime and your GPIB driver are installed." % exc)
-        # Swept in numerical order, not the order VISA happened to list
-        # them in: each address is split on its runs of digits and those
-        # are compared as numbers, so the sweep climbs GPIB0::1, ::2 ...
-        # ::17 up the bus rather than ::1, ::17, ::2. A known address is
-        # connected to directly and never reaches a scan at all.
-        addresses.sort(key=lambda res: [int(t) if t.isdigit() else t
-                                        for t in re.split(r"(\d+)", res)])
-
-        found, current = [], getattr(self, "addr", None)
-        for i, res in enumerate(addresses, 1):
-            if self.cancelled.is_set():
-                return {"found": found, "cancelled": True,
-                        "reached": i - 1, "total": len(addresses)}
-            self._progress("Identifying %s  (%d of %d)"
-                           % (res, i, len(addresses)),
-                           (i - 1.0) / max(len(addresses), 1))
-            idn, note = "", ""
-            if current and res == current and self.fs is not None:
-                # The one we are already talking to. Asked inside the
-                # same guard as the rest: a scope that has been switched
-                # off since connecting raises here, and an unguarded
-                # raise would end the scan and report nothing about any
-                # of the other addresses.
-                try:
-                    idn = self.fs.idn()
-                except Exception as exc:
-                    note = describe_visa_error(exc)
-            else:
-                inst = None
-                try:
-                    # Short, because these two decide how long Cancel
-                    # takes to be noticed: the flag is only looked at
-                    # between addresses, so a scan cannot be stopped
-                    # part way through one. Worst case was 3.5 seconds
-                    # of silence per dead address and is now two. A
-                    # scope that is switched on answers *IDN? in
-                    # milliseconds, so this is still three orders of
-                    # magnitude of headroom.
-                    inst = rm.open_resource(res, open_timeout=800)
-                    inst.timeout = 1200
-                    idn = (inst.query("*IDN?") or "").strip()
-                except Exception as exc:
-                    # Why it did not answer is worth showing. VISA lists
-                    # everything it has ever been told about, so a bus with
-                    # one live instrument can easily show five addresses,
-                    # and "no reply" alone leaves the user guessing which
-                    # are switched off and which are misconfigured.
-                    note = describe_visa_error(exc)
-                finally:
-                    # Closed whether it answered or not. Left to the
-                    # success path, every silent address on the bus
-                    # leaked a session per scan, and VISA starts
-                    # refusing to open any of them once enough pile up.
-                    if inst is not None:
-                        try:
-                            inst.close()
-                        except Exception:
-                            pass
-            found.append({"addr": res, "idn": idn, "note": note,
-                          "scope": looks_like_scope(idn)})
-        return {"found": found, "cancelled": False,
-                "reached": len(addresses), "total": len(addresses)}
-
-    # The instrument exposes no "list my volumes" query, so they are probed:
-    # cd to a candidate and see whether the cwd moved. A candidate that does
-    # not exist leaves the cwd alone and raises event 256, which is drained.
-    # Measured on a TDS 784D: fd0: and hd0: exist, and hd1:, fd1:, ram:,
-    # nvram:, cf0:, disk0:, tffs0:, usb0: all do not. The list is kept longer
-    # than that finding so a different model can answer for itself.
-    CANDIDATES = ("hd0:", "fd0:", "hd1:", "fd1:")
+class _WorkerFilesystem(object):
 
     def volumes(self):
         """Which volumes this instrument has."""
@@ -1088,34 +894,708 @@ class Worker(object):
             raise IOError(why)
         return {"path": path, "data": data, "secs": time.time() - t}
 
-    def _transfer_failed(self, command, path, exc, secs):
-        """Why a transfer produced nothing, in the instrument's own words.
+    def _finalize_staged(self, tmp, real, data):
+        """Swap a verified temp file over the real one (Fix 6).
 
-        A firmware without FILESYSTEM:READFILE does not refuse the command
-        - it says "undefined header" into the event queue and then simply
-        never answers, so the only symptom the user sees is the program
-        sitting there. Asking the queue afterwards turns that into a
-        sentence, and stops the caller retrying something that cannot work.
+        `tmp` is already on the instrument and has been read back
+        byte-for-byte, so the payload is proven. RENAME does the swap in
+        place - no second transfer of the bytes - but it will not replace
+        an existing name, so the original is deleted first.
+
+        If this firmware has no working RENAME the verified bytes are
+        written straight to the real name instead and read back again, so
+        even the fallback path never lands a file it has not checked. The
+        temp is cleared away either way.
         """
-        said = ""
+        parent = real.rstrip("/").rsplit("/", 1)[0]
+        leaf = real.rsplit("/", 1)[-1]
         try:
+            self.fs.delete(real)
+            self.fs.wait_done()
+            self.fs.rename(tmp, real)
+            self.fs.wait_done()
             self.fs.errors()
-            msgs = getattr(self.fs, "last_messages", []) or []
-            codes = [c for c, _t in msgs]
-            if NO_MEDIA in codes:
-                return "There is no disk in the drive."
-            if UNDEFINED_HEADER in codes:
-                self.no_transfers = command
-                return ("This instrument's firmware has no "
-                        "FILESYSTEM:%s command, so file contents cannot "
-                        "be transferred over GPIB. Browsing, creating "
-                        "folders and deleting still work." % command)
-            said = "; ".join("%d %s" % (c, txt) for c, txt in msgs)
+            listed = [n.upper() for n in real_names(self.fs.dir(parent))]
+            if leaf.upper() in listed and STAGE_NAME.upper() not in listed:
+                return
         except Exception:
             pass
-        return ("%s gave no answer after %.0f s (%s).%s"
-                % (path, secs, type(exc).__name__,
-                   ("  The instrument said: " + said) if said else ""))
+        # RENAME missing or it did not take. The original may be gone
+        # (delete above ran), so put the verified bytes down directly and
+        # read them back before trusting them, then remove the temp.
+        self.fs.clear()
+        self.fs.write(real, data)
+        self.fs.wait_done()
+        self.fs.errors()
+        back = self.fs.read(
+            real, timeout=TRANSFER_TIMEOUT + len(data) / READ_RATE)
+        try:
+            self.fs.delete(tmp)
+            self.fs.wait_done()
+            self.fs.errors()
+        except Exception:
+            pass
+        if back != data:
+            raise RuntimeError(
+                "staged rename is unsupported and the direct rewrite of "
+                "%s did not verify" % real)
+
+    def write_verified(self, path, data, base=0.0, span=1.0):
+        """Write, read back, compare. Never reports success on a guess.
+
+        `base` and `span` map this file's progress into a slice of the bar,
+        so one upload of many fills its own third rather than resetting the
+        whole bar each time.
+
+        An upload cannot report byte-by-byte progress: the payload goes out
+        as one transfer because EOI on the last data byte is what ends the
+        indefinite-length block, so splitting it would truncate the file.
+        What it can report honestly is which phase it is in, and each
+        attempt is three phases of roughly equal length.
+        """
+        leaf = path.rsplit("/", 1)[-1]
+        # Fix 6 (staged overwrite): if a file of this name is already on
+        # the instrument, send the new copy to a temp sibling and RENAME
+        # it over the original only once it has been read back and
+        # verified. A write that dies half way then costs the temp, not
+        # the copy already on disk. New files (nothing to lose) write
+        # straight to their final name, exactly as before.
+        real = None
+        if self.can_overwrite:
+            over_parent = path.rstrip("/").rsplit("/", 1)[0]
+            try:
+                already = leaf.upper() in [
+                    n.upper() for n in real_names(self.fs.dir(over_parent))]
+            except Exception:
+                already = False
+            if already:
+                real = path
+                path = over_parent + "/" + STAGE_NAME
+        last = None
+        for attempt in range(1, ATTEMPTS + 1):
+            step = span / ATTEMPTS
+            here = base + span * (attempt - 1.0) / ATTEMPTS
+            suffix = "" if attempt == 1 else " (attempt %d of %d)" % (
+                attempt, ATTEMPTS)
+            self._progress("Preparing %s%s" % (leaf, suffix), here)
+            # Only on a firmware that cannot overwrite. This delete used
+            # to happen before every write, unconditionally, and it is
+            # the single most expensive thing this program did to an
+            # instrument: DELETE is what exhausts the filesystem, and at
+            # one per file an upload of a dozen files was already at the
+            # limit. It was never needed - OVERWRITE ON is set at
+            # connect and has been for as long as this has - so it was
+            # costing the whole upload and buying nothing.
+            #
+            # It also made a failed upload destructive: the old file was
+            # already gone before the new one was sent.
+            if not self.can_overwrite:
+                try:
+                    self.fs.delete(path)
+                except Exception:
+                    pass
+                self.fs.wait_done()
+            self._progress("Sending %s, %s bytes%s"
+                           % (leaf, format(len(data), ","), suffix),
+                           here + step / 3)
+            try:
+                self.fs.write(path, data)
+            except Exception as exc:
+                # A write that did not finish left the instrument part
+                # way through an indefinite-length block, waiting for
+                # bytes that are not coming. Everything sent after that
+                # times out too, so without this one device clear the
+                # first big file in a folder takes the rest of the
+                # upload down with it.
+                self.fs.clear()
+                last = "the write did not finish: %s" % exc
+                continue
+            self.fs.wait_done()
+            # Ask before reading back rather than after: waiting for a
+            # read-back of a file that was never created costs a timeout
+            # to learn what the event queue will say straight away.
+            #
+            # Note what is NOT checked for here. An undefined-header event
+            # after a write does not mean the firmware lacks WRITEFILE -
+            # measured on a TDS 784C with no disk in the drive, the write
+            # is refused for the real reason and the payload behind it is
+            # then read as if it were commands, which raises 113 for a
+            # line of file content. Whether the command exists is settled
+            # once, safely, at connect; here the instrument's own words
+            # are simply passed on.
+            self.fs.errors()
+            wrote = getattr(self.fs, "last_messages", []) or []
+            if NO_MEDIA in [c for c, _t in wrote]:
+                raise IOError("There is no disk in the drive, so nothing "
+                              "can be written to it.")
+            # Then look for it. A write that landed shows up in the
+            # directory immediately; one the instrument accepted and
+            # discarded does not, and reading back a file that was never
+            # created only buys a timeout on the way to the same answer.
+            parent = path.rstrip("/").rsplit("/", 1)[0]
+            wleaf = path.rsplit("/", 1)[-1]   # the name actually written
+            # Asked twice before it is believed. Measured on a TDS 784D:
+            # the listing taken straight after a 256 kB write came back
+            # empty, and the file was there all along - the instrument
+            # answers *OPC? before its own directory shows the write.
+            # Rewriting a large file because of that costs minutes and
+            # fixes nothing.
+            for settle in (0.0, 2.0):
+                time.sleep(settle)
+                try:
+                    listed = [n.upper()
+                              for n in real_names(self.fs.dir(parent))]
+                except Exception:
+                    listed = None      # cannot tell - fall through and read
+                if listed is None or wleaf.upper() in listed:
+                    break
+            if listed is not None and wleaf.upper() not in listed:
+                # The write itself did not raise - the bytes went out and
+                # the instrument took them - so the clear beside the
+                # write above was never reached. This is the same wound
+                # and wants the same dressing: measured on a TDS 784D,
+                # once the listing stops showing what was just written,
+                # every command after it times out until the bus is
+                # cleared.
+                self.fs.clear()
+                last = "the file never appeared in %s after writing" % parent
+                continue
+            self._progress("Reading %s back to verify it%s" % (leaf, suffix),
+                           here + 2 * step / 3)
+            try:
+                # Sized to the file, not flat. TRANSFER_TIMEOUT alone is
+                # how long the instrument may take to start talking; a
+                # 1.4 MB read then needs the better part of a minute to
+                # arrive at the measured 32 kB/s, and a flat 20 seconds
+                # cut off every read-back over about half a megabyte.
+                back = self.fs.read(
+                    path, timeout=TRANSFER_TIMEOUT + len(data) / READ_RATE)
+            except Exception as exc:
+                # Same reasoning as the write above: a read that stopped
+                # part way leaves bytes in the instrument's output queue,
+                # and the next command is answered with the tail of this
+                # one.
+                self.fs.clear()
+                why = self._transfer_failed("READFILE", path, exc, 0.0)
+                if self.no_transfers:
+                    raise IOError(why)
+                last = "read-back failed: %s" % exc
+                continue
+            if back == data:
+                if real is not None:
+                    # Verified in the temp; put it in place of the original.
+                    self._finalize_staged(path, real, data)
+                    return {"path": real, "bytes": len(data),
+                            "attempts": attempt}
+                return {"path": path, "bytes": len(data), "attempts": attempt}
+            nz = sum(1 for b in back if b)
+            last = ("mismatch: %d bytes back, %d non-zero"
+                    % (len(back), nz))
+        raise RuntimeError("upload not verified after %d attempts (%s)"
+                           % (ATTEMPTS, last))
+
+    def delete(self, path):
+        """Delete a file, from the volume root, after the protection check."""
+        why = self.refuse_reason(path)
+        if why:
+            raise RuntimeError(why)
+        parent = path.rstrip("/").rsplit("/", 1)[0]
+        leaf = path.rstrip("/").rsplit("/", 1)[-1].upper()
+        self.fs.set_cwd(path.split("/")[0])
+        self.fs.delete(path)
+        self.fs.wait_done()
+        events = self.fs.errors()
+        self.fs.set_cwd(parent)
+        gone = leaf not in [n.upper() for n in self.fs.dir()]
+        self.fs.errors()
+        if not gone:
+            raise RuntimeError("%s was not deleted (events %s)"
+                               % (path, events))
+        return {"path": path, "events": events, "removed": True}
+
+    def mkdir(self, path):
+        self.fs.mkdir(path)
+        self.fs.wait_done()
+        return {"path": path, "events": self.fs.errors()}
+
+    def _folder_names(self, folder):
+        """What is in `folder` now, asking twice if it answers empty.
+
+        A listing taken straight after a write or a delete can come back
+        empty on this instrument and be right again a moment later - see
+        INSTRUMENT-NOTES, "After a big write, the directory can lag" - so
+        an empty answer is asked again before it is believed. Without
+        that, the loss check below would cry wolf on a folder that is
+        merely slow.
+        """
+        for wait in (0.0, 2.0):
+            if wait:
+                time.sleep(wait)
+            try:
+                self.fs.set_cwd(folder)
+                names = real_names(self.fs.dir())
+            except Exception:
+                names = []
+            self.fs.errors()
+            if names:
+                return names
+        return []
+
+    def _lost(self, folder, before, asked):
+        """Names that vanished from `folder` without being asked for.
+
+        This instrument has, twice, emptied a directory of things nobody
+        deleted. It has not been reproduced in about fifty attempts and
+        the mechanism is unknown, so there is nothing to fix - but it is
+        silent, and silent data loss is the one thing worth spending a
+        listing on. Comparing what was there against what is there costs
+        one DIR? and turns the loss into a warning.
+
+        Deliberately one-directional: it reports what went, never what
+        arrived, so another program writing to the same folder is not
+        mistaken for damage.
+        """
+        if not before:
+            return []
+        asked = {n.upper() for n in asked}
+        after = {n.upper() for n in self._folder_names(folder)}
+        return [n for n in before
+                if n.upper() not in after and n.upper() not in asked]
+
+    def delete_many(self, paths):
+        done, failed = [], []
+        # Every path in one delete comes from one folder, which is what
+        # the file list can select. Taking the folder from the first is
+        # enough, and a mixed list simply checks the wrong folder rather
+        # than breaking.
+        folder = paths[0].rsplit("/", 1)[0] if paths else None
+        before = self._folder_names(folder) if folder else []
+        for i, p in enumerate(paths, 1):
+            self._progress("Deleting %d of %d: %s"
+                           % (i, len(paths), p.rsplit("/", 1)[-1]),
+                           (i - 1.0) / len(paths))
+            try:
+                self.delete(p)
+                done.append(p)
+            except Exception as exc:
+                failed.append((p, str(exc)))
+        lost = self._lost(folder, before,
+                          [p.rsplit("/", 1)[-1] for p in paths])
+        return {"done": done, "failed": failed, "lost": lost,
+                "folder": folder}
+
+    def upload_many(self, items):
+        """`items` is [(path on the PC, destination path on the instrument)].
+
+        Every file is verified individually by write_verified, so a batch
+        that reports success really did land byte for byte.
+        """
+        done, failed, unchanged, skipped, running = [], [], [], [], 0
+        addr = getattr(self, "addr", "") or ""
+        marks = load_uploads().get(addr, {})
+        seen = {}            # parent -> leaf names now on the instrument
+        dirty = False
+        try:
+            for i, (src, dest) in enumerate(items, 1):
+                share = 1.0 / len(items)
+                try:
+                    with open(src, "rb") as fh:
+                        data = fh.read()
+                except Exception as exc:
+                    failed.append((dest, str(exc)))
+                    running += 1
+                    if running >= GIVE_UP_AFTER and i < len(items):
+                        skipped = [d for _s, d in items[i:]]
+                        log_note("upload_many", "stopped after %d consecutive"
+                                 " failures with %d file(s) not attempted"
+                                 % (running, len(skipped)))
+                        break
+                    continue
+                # Skip a file already on the instrument byte for byte.
+                # Rewriting what is already there is the churn that takes
+                # mass storage down, so a file is skipped only when its hash
+                # matches what was last written to this address AND it still
+                # appears in the listing - a copy deleted on the instrument
+                # since is written again.
+                digest = tds_bak.digest(data)
+                if marks.get(dest) == digest:
+                    parent = dest.rstrip("/").rsplit("/", 1)[0]
+                    leaf = dest.rstrip("/").rsplit("/", 1)[-1].upper()
+                    if parent not in seen:
+                        try:
+                            seen[parent] = set(n.upper() for n
+                                               in real_names(self.fs.dir(parent)))
+                        except Exception:
+                            seen[parent] = None     # cannot tell - do not skip
+                    there = seen[parent]
+                    if there is not None and leaf in there:
+                        self._progress("%s is already there, unchanged"
+                                       % dest.rsplit("/", 1)[-1], i * share)
+                        unchanged.append(dest)
+                        running = 0
+                        continue
+                try:
+                    self.write_verified(dest, data, (i - 1.0) * share, share)
+                    done.append((dest, len(data)))
+                    marks[dest] = digest
+                    dirty = True
+                    running = 0
+                except Exception as exc:
+                    failed.append((dest, str(exc)))
+                    if marks.pop(dest, None) is not None:
+                        dirty = True     # a bad write - the mark is no good
+                    running += 1
+                    # Two in a row is an instrument that has stopped
+                    # answering, not two awkward files, and carrying on is
+                    # actively harmful: every attempt deletes the file it is
+                    # about to replace, so a batch that ploughs on through a
+                    # dead bus empties a folder it cannot refill. Measured on
+                    # a TDS 784D - it stopped answering part way through a
+                    # 70-file upload and every file after it failed four
+                    # times, having deleted the instrument's copy first.
+                    if running >= GIVE_UP_AFTER and i < len(items):
+                        skipped = [d for _s, d in items[i:]]
+                        log_note("upload_many", "stopped after %d consecutive"
+                                 " failures with %d file(s) not attempted"
+                                 % (running, len(skipped)))
+                        break
+        finally:
+            if dirty:
+                all_marks = load_uploads()
+                all_marks[addr] = marks
+                save_uploads(all_marks)
+        return {"done": done, "failed": failed, "skipped": skipped,
+                "unchanged": unchanged}
+
+    def download_tree(self, path, destdir, as_name=None):
+        """Download a folder and everything beneath it.
+
+        `as_name` renames the folder written on the PC. A whole volume is
+        why: "hd0:" is a perfectly good name on the instrument and not a
+        legal one on Windows.
+
+        The whole tree is enumerated first so that progress can be
+        reported against a known total. That costs one listing per folder
+        up front, which is cheaper than it sounds beside the transfers
+        themselves, and much better than a bar that cannot say how far
+        along it is.
+        """
+        leaf = as_name or path.rstrip("/").rsplit("/", 1)[-1]
+        want, folders = [], []
+
+        def walk(remote, local):
+            folders.append(local)
+            self._progress("Looking in %s ..." % remote, None)
+            listing = self.listdir_split(remote)
+            for f in listing["files"]:
+                want.append(("%s/%s" % (remote, f), os.path.join(local, f)))
+            for d in listing["dirs"]:
+                walk("%s/%s" % (remote, d), os.path.join(local, d))
+
+        walk(path, os.path.join(destdir, leaf))
+        for d in folders:
+            try:
+                os.makedirs(d, exist_ok=True)
+            except Exception as exc:
+                raise RuntimeError("cannot create %s: %s" % (d, exc))
+
+        done, failed = [], []
+        for i, (remote, local) in enumerate(want, 1):
+            self._progress("Downloading %d of %d: %s"
+                           % (i, len(want), remote.rsplit("/", 1)[-1]),
+                           (i - 1.0) / max(len(want), 1))
+            try:
+                data = self.read(remote)["data"]
+                with open(local, "wb") as fh:
+                    fh.write(data)
+                done.append((local, len(data)))
+            except Exception as exc:
+                failed.append((remote, str(exc)))
+        return {"done": done, "failed": failed,
+                "dir": os.path.join(destdir, leaf),
+                "folders": len(folders)}
+
+    def download_many(self, paths, destdir):
+        """Read each file and write it into `destdir` as it arrives.
+
+        Written one at a time rather than collected and returned, so a long
+        selection does not sit in memory and a failure part way through
+        still leaves the files that did arrive.
+        """
+        done, failed = [], []
+        for i, p in enumerate(paths, 1):
+            leaf = p.rsplit("/", 1)[-1]
+            self._progress("Downloading %d of %d: %s" % (i, len(paths), leaf),
+                           (i - 1.0) / len(paths))
+            try:
+                data = self.read(p)["data"]
+                dest = os.path.join(destdir, leaf)
+                with open(dest, "wb") as fh:
+                    fh.write(data)
+                done.append((dest, len(data)))
+            except Exception as exc:
+                failed.append((p, str(exc)))
+        return {"done": done, "failed": failed, "dir": destdir}
+
+    @classmethod
+    def refuse_reason(cls, path):
+        """Why `path` cannot be deleted at all, or None.
+
+        Only the two that are not files: a drive, and the phantom entry
+        that carries half of somebody's long file name.
+        """
+        p = path.rstrip("/")
+        leaf = p.rsplit("/", 1)[-1].upper()
+        if "/" not in p:
+            return "'%s' is a drive, not a file or folder." % p
+        if is_phantom(leaf):
+            # Should be unreachable - these never reach the UI - but a
+            # DELETE aimed at one would strip the long name off the real
+            # file that follows it in the directory table.
+            return ("'%s' is not a file. It is part of how a long file "
+                    "name is stored on the card, and deleting it would "
+                    "damage the file it belongs to." % leaf)
+        return None
+
+    @classmethod
+    def system_reason(cls, path):
+        """Why `path` is the instrument's own, or None if it is not.
+
+        Not a refusal. The caller asks about it first and deletes it if
+        the answer is yes.
+        """
+        p = path.rstrip("/")
+        leaf = p.rsplit("/", 1)[-1].upper()
+        upper = p.upper()
+        if "/" not in p:
+            return None
+        # Nothing on a floppy is the instrument's. The system files live
+        # on the hard disk; a floppy holds whatever the user put there
+        # and is theirs to empty.
+        if upper.split("/", 1)[0].startswith("FD"):
+            return None
+        for tree in cls.SYSTEM_TREES:
+            if ("/" + tree) in upper or upper.endswith("/" + tree):
+                return cls.RUNTIME_MSG
+        for table in (cls.SYSTEM_DIRS, cls.SYSTEM_FILES):
+            if leaf in table:
+                return table[leaf]
+        return None
+
+    def format_volume(self, plan):
+        """Format a whole volume, and check afterwards that it is empty.
+
+        The instrument says nothing either way - FILESYSTEM:FORMAT has no
+        query form and raises no event on success - so the listing
+        afterwards is the only report there is. A volume that still holds
+        names did not format, and saying so beats a silent success.
+        """
+        drive = plan["drive"]
+        self.context = "format %s" % drive
+        self._progress("Formatting %s ..." % drive, None)
+        self.fs.set_cwd(drive)
+        self.fs.format_drive(drive)
+        self.fs.wait_done()
+        events = self.fs.errors()
+        self._progress("Checking what is left on %s" % drive, None)
+        self.fs.set_cwd(drive)
+        left = real_names(self.fs.dir())
+        self.fs.errors()
+        return {"drive": drive, "left": left, "events": events}
+
+    def survey(self, path):
+        """What is inside a folder, for the confirmation dialog.
+
+        Leaves the cwd back at the VOLUME ROOT, never inside `path`. Leaving
+        it inside is what caused the incident this program is now careful
+        about: RMDIR issued while standing in the target is refused with
+        event 257, and that refusal left the filesystem subsystem returning a
+        fixed garbage pattern for every path until the card was reimaged.
+        """
+        self.fs.set_cwd(path)
+        names = real_names(self.fs.dir())
+        self.fs.set_cwd(path.split("/")[0])
+        self.fs.errors()
+        return {"path": path, "names": names}
+
+    def rmdir(self, path):
+        """Remove a folder and everything in it, deepest folder first.
+
+        FILESYSTEM:RMDIR is recursive on this firmware - see tds_fs.rmdir -
+        and on a large tree it does not finish. Measured on a TDS 784D:
+        one RMDIR aimed at a folder of 11 subfolders and about 30 files
+        raised event 250 and stopped part way, having emptied seven of
+        the subfolders and removed one outright, and the folder itself
+        was still there afterwards. A half-deleted folder is the worst
+        of the three outcomes, so the walk is done here instead: one
+        folder at a time, from the bottom up, each command small enough
+        for the instrument to finish before the next one arrives.
+
+        Costs more commands than the single RMDIR. It buys a progress
+        bar on a tree that took minutes in silence, and a failure part
+        way that can simply be run again - the walk finds whatever is
+        left, so a second attempt carries on where the first stopped.
+
+        Refuses a protected name, and verifies afterwards rather than
+        trusting the empty event queue, because on this instrument silence
+        means nothing either way. Only the folder named is checked against
+        the protection table, which is what the recursive RMDIR did too:
+        the names inside a copy are the same names as inside the original,
+        so checking them all would make any copy of APP undeletable.
+        """
+        why = self.refuse_reason(path)
+        if why:
+            raise RuntimeError(why)
+        leaf = path.rstrip("/").rsplit("/", 1)[-1].upper()
+        parent = path.rstrip("/").rsplit("/", 1)[0]
+        volume = path.split("/")[0]
+        self.context = "rmdir %s" % path
+        # What else is in the folder this one is being taken out of.
+        # Removing a tree is the operation the unexplained loss has shown
+        # up around, so the neighbours are counted before and after; see
+        # _lost.
+        beside = self._folder_names(parent)
+
+        # Children before parents, which is the order they have to go in.
+        tree = []
+
+        def walk(where):
+            self._progress("Looking in %s ..." % where, None)
+            listing = self.listdir_split(where)
+            for one in listing["dirs"]:
+                walk("%s/%s" % (where, one))
+            tree.append((where, listing["files"]))
+
+        walk(path)
+        for i, (where, files) in enumerate(tree, 1):
+            # Stand at the VOLUME ROOT, which cannot be inside the target
+            # at any depth. RMDIR is refused with event 257 if the cwd is
+            # within the folder being removed, and that refusal is what
+            # wedged the filesystem subsystem badly enough to need a
+            # reimage. listdir_split above left the cwd inside the tree,
+            # so this is not optional.
+            self._progress("Emptying %s (%d of %d)"
+                           % (where.rsplit("/", 1)[-1], i, len(tree)),
+                           (i - 1.0) / len(tree))
+            if files:
+                # One command for the whole folder, not one per file.
+                # DELETE is the operation that exhausts this firmware -
+                # about two dozen and mass storage goes down - so a
+                # folder of seventy files was three times over the limit
+                # on its own. Measured on a TDS 784D: the wildcard form
+                # cleared eight files in 0.2 s with an empty event
+                # queue, and 120 in about four seconds, with the
+                # instrument writing and reading normally straight
+                # afterwards. Event 250 is common here and means
+                # nothing; the re-listing below is what decides.
+                self.fs.set_cwd(volume)
+                self.fs.delete("%s/*.*" % where)
+                self.fs.wait_done()
+                self.fs.errors()
+                # Whatever *.* did not match, by hand. On a TDS 784D it
+                # matches everything - a folder of WITHEXT.TXT, NOEXT,
+                # DOTTED. and X.B was cleared by one wildcard - so this
+                # loop is expected never to run there. It stays because
+                # the same code serves a 640A, a 680B and a 784C, none
+                # of which have been asked, and because the cost of
+                # being wrong is a folder that will not delete. One
+                # listing a folder is a cheap way not to guess.
+                try:
+                    self.fs.set_cwd(where)
+                    stayed = real_names(self.fs.dir())
+                except Exception:
+                    stayed = []
+                for name in stayed:
+                    self.fs.set_cwd(volume)
+                    self.fs.delete("%s/%s" % (where, name))
+                    # A query arriving while dosFs is still working is
+                    # what raises event 250.
+                    self.fs.wait_done()
+            self.fs.errors()
+            self.fs.set_cwd(volume)
+            self.fs.rmdir(where)
+            self.fs.wait_done()
+            events = self.fs.errors()
+
+        still = self._folder_names(parent)
+        gone = leaf not in [n.upper() for n in still]
+        if not gone:
+            raise RuntimeError("%s is still there after removing the %d "
+                               "folder(s) inside it (events %s). Running "
+                               "it again will carry on from here."
+                               % (path, len(tree), events))
+        lost = [n for n in beside
+                if n.upper() != leaf
+                and n.upper() not in {s.upper() for s in still}]
+        return {"path": path, "events": events, "removed": True,
+                "folders": len(tree), "lost": lost, "folder": parent}
+
+    def copy(self, source, dest, is_dir):
+        """Copy a file or a folder on the instrument. No GPIB transfer.
+
+        387 kB/s against 3.0 kB/s for the same bytes through WRITEFILE, so
+        this is 129 times faster than downloading and re-uploading and it
+        is the right way to duplicate anything already on the instrument.
+
+        A file is one command. A folder has to be walked, because COPY
+        refuses a directory source - the manual's own example raises event
+        257 on v7.4e and creates nothing. The walk is top down, unlike
+        rmdir's: a destination folder has to exist before anything can be
+        copied into it. One wildcard per folder rather than one command
+        per file, which is the same economy the wildcard delete gets.
+
+        Verifies by listing rather than by the event queue, because on this
+        instrument an empty queue means nothing either way.
+        """
+        volume = dest.split("/")[0]
+        self.context = "copy %s to %s" % (source, dest)
+        if not is_dir:
+            self._progress("Copying %s ..." % source.rsplit("/", 1)[-1], None)
+            self.fs.set_cwd(volume)
+            self.fs.copy(source, dest)
+            self.fs.wait_done()
+            self.fs.errors()
+            return self._copied(dest, 1)
+
+        # Parents before children: a folder must exist to be copied into.
+        tree = []
+
+        def walk(where, under):
+            self._progress("Looking in %s ..." % where, None)
+            listing = self.listdir_split(where)
+            tree.append((where, under, listing["files"]))
+            for one in listing["dirs"]:
+                walk("%s/%s" % (where, one), "%s/%s" % (under, one))
+
+        walk(source, dest)
+        for i, (where, under, files) in enumerate(tree, 1):
+            self._progress("Copying %s (%d of %d)"
+                           % (under.rsplit("/", 1)[-1], i, len(tree)),
+                           (i - 1.0) / len(tree))
+            self.fs.set_cwd(volume)
+            self.fs.mkdir(under)
+            self.fs.wait_done()
+            self.fs.errors()
+            if files:
+                self.fs.set_cwd(volume)
+                self.fs.copy("%s/*.*" % where, under)
+                self.fs.wait_done()
+                self.fs.errors()
+        return self._copied(dest, len(tree))
+
+    def _copied(self, dest, folders):
+        """Confirm the destination arrived, by listing its parent."""
+        parent = dest.rstrip("/").rsplit("/", 1)[0]
+        leaf = dest.rstrip("/").rsplit("/", 1)[-1].upper()
+        self.fs.set_cwd(parent)
+        there = leaf in [n.upper() for n in self.fs.dir()]
+        self.fs.errors()
+        if not there:
+            raise RuntimeError("%s is not there after the copy." % dest)
+        return {"dest": dest, "folders": folders, "copied": True}
+
+
+class _WorkerWaveform(object):
 
     # -- waveforms ---------------------------------------------------------
 
@@ -1134,54 +1614,6 @@ class Worker(object):
                 # this costs a query on the first refresh and nothing
                 # afterwards.
                 "colours": self.wfm.display_colours()}
-
-    # -- the instrument's error log ----------------------------------------
-
-    def err_entries(self):
-        """The service log, oldest first.
-
-        An empty list is a result - the instrument has nothing to report
-        - and is not the same as the firmware having no log at all,
-        which raises.
-        """
-        t = time.time()
-        found = self.err.entries()
-        return {"entries": found, "secs": time.time() - t}
-
-    def err_available(self):
-        return {"errlog": self.err.available()}
-
-    def err_clear(self):
-        events = self.err.clear()
-        left = self.err.entries()
-        if left:
-            raise IOError("The instrument still reports %d entries after "
-                          "being told to clear the log.%s"
-                          % (len(left),
-                             ("  It said: " + "; ".join(events))
-                             if events else ""))
-        return {"cleared": True}
-
-    # -- the screen --------------------------------------------------------
-
-    def scr_options(self):
-        """What the hardcopy subsystem here can be asked for.
-
-        Every instrument in the range has one, so there is no question
-        of whether this works at all - only of which formats come back
-        as an image rather than as a page of printer control language,
-        and whether the thing has colour to give.
-        """
-        offers = self.scr.offers()
-        settings = self.scr.settings()
-        return {"formats": [dict(f) for f in offers],
-                "best": self.scr.best(),
-                "palette": "PALETTE" in settings,
-                "settings": settings}
-
-    def scr_get(self, keyword=None, layout=None, palette=None):
-        screen = self.scr.capture(keyword, layout, palette)
-        return {"screen": screen, "secs": screen.seconds}
 
     def wfm_select(self, name, on):
         """Turn a source on or off on the instrument's display.
@@ -1258,144 +1690,6 @@ class Worker(object):
             done.append(out)
         return {"sent": done}
 
-    def write_verified(self, path, data, base=0.0, span=1.0):
-        """Write, read back, compare. Never reports success on a guess.
-
-        `base` and `span` map this file's progress into a slice of the bar,
-        so one upload of many fills its own third rather than resetting the
-        whole bar each time.
-
-        An upload cannot report byte-by-byte progress: the payload goes out
-        as one transfer because EOI on the last data byte is what ends the
-        indefinite-length block, so splitting it would truncate the file.
-        What it can report honestly is which phase it is in, and each
-        attempt is three phases of roughly equal length.
-        """
-        leaf = path.rsplit("/", 1)[-1]
-        last = None
-        for attempt in range(1, ATTEMPTS + 1):
-            step = span / ATTEMPTS
-            here = base + span * (attempt - 1.0) / ATTEMPTS
-            suffix = "" if attempt == 1 else " (attempt %d of %d)" % (
-                attempt, ATTEMPTS)
-            self._progress("Preparing %s%s" % (leaf, suffix), here)
-            # Only on a firmware that cannot overwrite. This delete used
-            # to happen before every write, unconditionally, and it is
-            # the single most expensive thing this program did to an
-            # instrument: DELETE is what exhausts the filesystem, and at
-            # one per file an upload of a dozen files was already at the
-            # limit. It was never needed - OVERWRITE ON is set at
-            # connect and has been for as long as this has - so it was
-            # costing the whole upload and buying nothing.
-            #
-            # It also made a failed upload destructive: the old file was
-            # already gone before the new one was sent.
-            if not self.can_overwrite:
-                try:
-                    self.fs.delete(path)
-                except Exception:
-                    pass
-                self.fs.wait_done()
-            self._progress("Sending %s, %s bytes%s"
-                           % (leaf, format(len(data), ","), suffix),
-                           here + step / 3)
-            try:
-                self.fs.write(path, data)
-            except Exception as exc:
-                # A write that did not finish left the instrument part
-                # way through an indefinite-length block, waiting for
-                # bytes that are not coming. Everything sent after that
-                # times out too, so without this one device clear the
-                # first big file in a folder takes the rest of the
-                # upload down with it.
-                self.fs.clear()
-                last = "the write did not finish: %s" % exc
-                continue
-            self.fs.wait_done()
-            # Ask before reading back rather than after: waiting for a
-            # read-back of a file that was never created costs a timeout
-            # to learn what the event queue will say straight away.
-            #
-            # Note what is NOT checked for here. An undefined-header event
-            # after a write does not mean the firmware lacks WRITEFILE -
-            # measured on a TDS 784C with no disk in the drive, the write
-            # is refused for the real reason and the payload behind it is
-            # then read as if it were commands, which raises 113 for a
-            # line of file content. Whether the command exists is settled
-            # once, safely, at connect; here the instrument's own words
-            # are simply passed on.
-            self.fs.errors()
-            wrote = getattr(self.fs, "last_messages", []) or []
-            if NO_MEDIA in [c for c, _t in wrote]:
-                raise IOError("There is no disk in the drive, so nothing "
-                              "can be written to it.")
-            # Then look for it. A write that landed shows up in the
-            # directory immediately; one the instrument accepted and
-            # discarded does not, and reading back a file that was never
-            # created only buys a timeout on the way to the same answer.
-            parent = path.rstrip("/").rsplit("/", 1)[0]
-            # Asked twice before it is believed. Measured on a TDS 784D:
-            # the listing taken straight after a 256 kB write came back
-            # empty, and the file was there all along - the instrument
-            # answers *OPC? before its own directory shows the write.
-            # Rewriting a large file because of that costs minutes and
-            # fixes nothing.
-            for settle in (0.0, 2.0):
-                time.sleep(settle)
-                try:
-                    listed = [n.upper()
-                              for n in real_names(self.fs.dir(parent))]
-                except Exception:
-                    listed = None      # cannot tell - fall through and read
-                if listed is None or leaf.upper() in listed:
-                    break
-            if listed is not None and leaf.upper() not in listed:
-                # The write itself did not raise - the bytes went out and
-                # the instrument took them - so the clear beside the
-                # write above was never reached. This is the same wound
-                # and wants the same dressing: measured on a TDS 784D,
-                # once the listing stops showing what was just written,
-                # every command after it times out until the bus is
-                # cleared.
-                self.fs.clear()
-                last = "the file never appeared in %s after writing" % parent
-                continue
-            self._progress("Reading %s back to verify it%s" % (leaf, suffix),
-                           here + 2 * step / 3)
-            try:
-                # Sized to the file, not flat. TRANSFER_TIMEOUT alone is
-                # how long the instrument may take to start talking; a
-                # 1.4 MB read then needs the better part of a minute to
-                # arrive at the measured 32 kB/s, and a flat 20 seconds
-                # cut off every read-back over about half a megabyte.
-                back = self.fs.read(
-                    path, timeout=TRANSFER_TIMEOUT + len(data) / READ_RATE)
-            except Exception as exc:
-                # Same reasoning as the write above: a read that stopped
-                # part way leaves bytes in the instrument's output queue,
-                # and the next command is answered with the tail of this
-                # one.
-                self.fs.clear()
-                why = self._transfer_failed("READFILE", path, exc, 0.0)
-                if self.no_transfers:
-                    raise IOError(why)
-                last = "read-back failed: %s" % exc
-                continue
-            if back == data:
-                return {"path": path, "bytes": len(data), "attempts": attempt}
-            nz = sum(1 for b in back if b)
-            last = ("mismatch: %d bytes back, %d non-zero"
-                    % (len(back), nz))
-        raise RuntimeError("upload not verified after %d attempts (%s)"
-                           % (ATTEMPTS, last))
-
-    #: Where a waveform sent to the instrument's disk is put. At the
-    #: root of the drive rather than in whichever folder the Files tab
-    #: happens to be showing: the instrument recalls a waveform from
-    #: wherever it is pointed, and one known place is easier to find
-    #: again than wherever somebody was last browsing.
-    WFM_DIR = "WAVEFORM"
-
     def wfm_to_disk(self, data, drive, stem):
         """Write a .WFM into WAVEFORM on this drive, under a fresh name.
 
@@ -1437,29 +1731,83 @@ class Worker(object):
                                % (folder, head))
         return self.write_verified("%s/%s" % (folder, name), data)
 
-    def delete(self, path):
-        """Delete a file, from the volume root, after the protection check."""
-        why = self.refuse_reason(path)
-        if why:
-            raise RuntimeError(why)
-        parent = path.rstrip("/").rsplit("/", 1)[0]
-        leaf = path.rstrip("/").rsplit("/", 1)[-1].upper()
-        self.fs.set_cwd(path.split("/")[0])
-        self.fs.delete(path)
-        self.fs.wait_done()
-        events = self.fs.errors()
-        self.fs.set_cwd(parent)
-        gone = leaf not in [n.upper() for n in self.fs.dir()]
-        self.fs.errors()
-        if not gone:
-            raise RuntimeError("%s was not deleted (events %s)"
-                               % (path, events))
-        return {"path": path, "events": events, "removed": True}
 
-    def mkdir(self, path):
-        self.fs.mkdir(path)
-        self.fs.wait_done()
-        return {"path": path, "events": self.fs.errors()}
+class _WorkerErrorLog(object):
+
+    # -- the instrument's error log ----------------------------------------
+
+    def err_entries(self):
+        """The service log, oldest first.
+
+        An empty list is a result - the instrument has nothing to report
+        - and is not the same as the firmware having no log at all,
+        which raises.
+        """
+        t = time.time()
+        found = self.err.entries()
+        return {"entries": found, "secs": time.time() - t}
+
+    def err_available(self):
+        return {"errlog": self.err.available()}
+
+    def err_clear(self):
+        events = self.err.clear()
+        left = self.err.entries()
+        if left:
+            raise IOError("The instrument still reports %d entries after "
+                          "being told to clear the log.%s"
+                          % (len(left),
+                             ("  It said: " + "; ".join(events))
+                             if events else ""))
+        return {"cleared": True}
+
+    def _errlog(self):
+        """The instrument's error log, or [] if it has not got one."""
+        try:
+            return self.err.entries()
+        except Exception:
+            return []
+
+    def _errlog_since(self, before):
+        """The entries added since `before` was taken.
+
+        The log is a ring: once it is full the oldest entries fall off,
+        and then what was read first is no longer a prefix of what is
+        read now. So the common-prefix answer is checked rather than
+        assumed, and anything that does not fit it falls back to
+        "whatever is there that was not there before".
+        """
+        after = self._errlog()
+        if after[:len(before)] == before:
+            return after[len(before):]
+        return [one for one in after if one not in before]
+
+
+class _WorkerScreenshot(object):
+
+    # -- the screen --------------------------------------------------------
+
+    def scr_options(self):
+        """What the hardcopy subsystem here can be asked for.
+
+        Every instrument in the range has one, so there is no question
+        of whether this works at all - only of which formats come back
+        as an image rather than as a page of printer control language,
+        and whether the thing has colour to give.
+        """
+        offers = self.scr.offers()
+        settings = self.scr.settings()
+        return {"formats": [dict(f) for f in offers],
+                "best": self.scr.best(),
+                "palette": "PALETTE" in settings,
+                "settings": settings}
+
+    def scr_get(self, keyword=None, layout=None, palette=None):
+        screen = self.scr.capture(keyword, layout, palette)
+        return {"screen": screen, "secs": screen.seconds}
+
+
+class _WorkerMask(object):
 
     # -- masks ------------------------------------------------------------
     #
@@ -1525,12 +1873,6 @@ class Worker(object):
         return {"sent": len(lines),
                 "refused": [m for m in said if not m.startswith("0,")],
                 "got": tds_set.TdsSet(self.fs.inst).read(source)}
-
-    # How far after the trigger to look when there is no clock. What
-    # decorrelates the data is how many different edges can trigger it,
-    # not how long the delay is, so this is kept short: the delay's own
-    # jitter grows with it and buys nothing.
-    DELAY_BITS = 16
 
     def msk_delayed(self, source, bit):
         """A whole eye on the instrument's own screen, with no clock.
@@ -2318,6 +2660,23 @@ class Worker(object):
         return {"wanted": want,
                 "got": dict(enumerate(got, 1)) if got else {}}
 
+    def msk_envelope(self, lines, dest, numbers, allocate_from=None):
+        """Send a mask as a limit template, then read it back.
+
+        The read-back is reported rather than raised on. This route has
+        been built from Tektronix's own .ENV files and checked as far as
+        it can be checked from here, but reading an envelope back off an
+        instrument has not been measured on one - so a mismatch is shown
+        with both sets of numbers instead of being declared a failure of
+        the instrument. See TdsWfm.verify_envelope.
+        """
+        out = self.wfm.send_envelope(lines, dest, allocate_from)
+        out.update(self.wfm.verify_envelope(dest, numbers))
+        return out
+
+
+class _WorkerLimits(object):
+
     def lim_build(self, source, vertical, horizontal, dest):
         """Have the instrument build a limit template for itself.
 
@@ -2460,582 +2819,8 @@ class Worker(object):
         self.wfm.q("*OPC?")
         return {"on": False}
 
-    def msk_envelope(self, lines, dest, numbers, allocate_from=None):
-        """Send a mask as a limit template, then read it back.
 
-        The read-back is reported rather than raised on. This route has
-        been built from Tektronix's own .ENV files and checked as far as
-        it can be checked from here, but reading an envelope back off an
-        instrument has not been measured on one - so a mismatch is shown
-        with both sets of numbers instead of being declared a failure of
-        the instrument. See TdsWfm.verify_envelope.
-        """
-        out = self.wfm.send_envelope(lines, dest, allocate_from)
-        out.update(self.wfm.verify_envelope(dest, numbers))
-        return out
-
-    # -- batches ----------------------------------------------------------
-    #
-    # A multiple selection runs as ONE job rather than as a queue of jobs
-    # driven from the UI. The bus is single-threaded and every operation
-    # here moves the current directory, so interleaving them would be a way
-    # to end up somewhere unexpected. Progress is reported as it goes; a
-    # failure on one item is recorded and the rest carry on, as Explorer
-    # does when one file of a selection is in use.
-
-    def _progress(self, text, frac=None):
-        """Tell the UI where we are. `frac` is 0..1, or None for unknown.
-
-        Carries the job it belongs to. A progress line is labelled
-        "progress" and not with the work that raised it, so without
-        this the only way to tell whose it was is a flag the UI sets
-        when it starts something - and a flag can be left standing.
-        """
-        self.out.put(("progress", True, {"text": text, "frac": frac,
-                                         "job": self.context}))
-
-    def _folder_names(self, folder):
-        """What is in `folder` now, asking twice if it answers empty.
-
-        A listing taken straight after a write or a delete can come back
-        empty on this instrument and be right again a moment later - see
-        INSTRUMENT-NOTES, "After a big write, the directory can lag" - so
-        an empty answer is asked again before it is believed. Without
-        that, the loss check below would cry wolf on a folder that is
-        merely slow.
-        """
-        for wait in (0.0, 2.0):
-            if wait:
-                time.sleep(wait)
-            try:
-                self.fs.set_cwd(folder)
-                names = real_names(self.fs.dir())
-            except Exception:
-                names = []
-            self.fs.errors()
-            if names:
-                return names
-        return []
-
-    def _lost(self, folder, before, asked):
-        """Names that vanished from `folder` without being asked for.
-
-        This instrument has, twice, emptied a directory of things nobody
-        deleted. It has not been reproduced in about fifty attempts and
-        the mechanism is unknown, so there is nothing to fix - but it is
-        silent, and silent data loss is the one thing worth spending a
-        listing on. Comparing what was there against what is there costs
-        one DIR? and turns the loss into a warning.
-
-        Deliberately one-directional: it reports what went, never what
-        arrived, so another program writing to the same folder is not
-        mistaken for damage.
-        """
-        if not before:
-            return []
-        asked = {n.upper() for n in asked}
-        after = {n.upper() for n in self._folder_names(folder)}
-        return [n for n in before
-                if n.upper() not in after and n.upper() not in asked]
-
-    def delete_many(self, paths):
-        done, failed = [], []
-        # Every path in one delete comes from one folder, which is what
-        # the file list can select. Taking the folder from the first is
-        # enough, and a mixed list simply checks the wrong folder rather
-        # than breaking.
-        folder = paths[0].rsplit("/", 1)[0] if paths else None
-        before = self._folder_names(folder) if folder else []
-        for i, p in enumerate(paths, 1):
-            self._progress("Deleting %d of %d: %s"
-                           % (i, len(paths), p.rsplit("/", 1)[-1]),
-                           (i - 1.0) / len(paths))
-            try:
-                self.delete(p)
-                done.append(p)
-            except Exception as exc:
-                failed.append((p, str(exc)))
-        lost = self._lost(folder, before,
-                          [p.rsplit("/", 1)[-1] for p in paths])
-        return {"done": done, "failed": failed, "lost": lost,
-                "folder": folder}
-
-    def upload_many(self, items):
-        """`items` is [(path on the PC, destination path on the instrument)].
-
-        Every file is verified individually by write_verified, so a batch
-        that reports success really did land byte for byte.
-        """
-        done, failed, running = [], [], 0
-        for i, (src, dest) in enumerate(items, 1):
-            share = 1.0 / len(items)
-            try:
-                with open(src, "rb") as fh:
-                    data = fh.read()
-                self.write_verified(dest, data, (i - 1.0) * share, share)
-                done.append((dest, len(data)))
-                running = 0
-            except Exception as exc:
-                failed.append((dest, str(exc)))
-                running += 1
-                # Two in a row is an instrument that has stopped
-                # answering, not two awkward files, and carrying on is
-                # actively harmful: every attempt deletes the file it is
-                # about to replace, so a batch that ploughs on through a
-                # dead bus empties a folder it cannot refill. Measured on
-                # a TDS 784D - it stopped answering part way through a
-                # 70-file upload and every file after it failed four
-                # times, having deleted the instrument's copy first.
-                if running >= GIVE_UP_AFTER and i < len(items):
-                    skipped = [d for _s, d in items[i:]]
-                    log_note("upload_many",
-                             "stopped after %d consecutive failures with "
-                             "%d file(s) not attempted"
-                             % (running, len(skipped)))
-                    return {"done": done, "failed": failed,
-                            "skipped": skipped}
-        return {"done": done, "failed": failed, "skipped": []}
-
-    def download_tree(self, path, destdir, as_name=None):
-        """Download a folder and everything beneath it.
-
-        `as_name` renames the folder written on the PC. A whole volume is
-        why: "hd0:" is a perfectly good name on the instrument and not a
-        legal one on Windows.
-
-        The whole tree is enumerated first so that progress can be
-        reported against a known total. That costs one listing per folder
-        up front, which is cheaper than it sounds beside the transfers
-        themselves, and much better than a bar that cannot say how far
-        along it is.
-        """
-        leaf = as_name or path.rstrip("/").rsplit("/", 1)[-1]
-        want, folders = [], []
-
-        def walk(remote, local):
-            folders.append(local)
-            self._progress("Looking in %s ..." % remote, None)
-            listing = self.listdir_split(remote)
-            for f in listing["files"]:
-                want.append(("%s/%s" % (remote, f), os.path.join(local, f)))
-            for d in listing["dirs"]:
-                walk("%s/%s" % (remote, d), os.path.join(local, d))
-
-        walk(path, os.path.join(destdir, leaf))
-        for d in folders:
-            try:
-                os.makedirs(d, exist_ok=True)
-            except Exception as exc:
-                raise RuntimeError("cannot create %s: %s" % (d, exc))
-
-        done, failed = [], []
-        for i, (remote, local) in enumerate(want, 1):
-            self._progress("Downloading %d of %d: %s"
-                           % (i, len(want), remote.rsplit("/", 1)[-1]),
-                           (i - 1.0) / max(len(want), 1))
-            try:
-                data = self.read(remote)["data"]
-                with open(local, "wb") as fh:
-                    fh.write(data)
-                done.append((local, len(data)))
-            except Exception as exc:
-                failed.append((remote, str(exc)))
-        return {"done": done, "failed": failed,
-                "dir": os.path.join(destdir, leaf),
-                "folders": len(folders)}
-
-    def download_many(self, paths, destdir):
-        """Read each file and write it into `destdir` as it arrives.
-
-        Written one at a time rather than collected and returned, so a long
-        selection does not sit in memory and a failure part way through
-        still leaves the files that did arrive.
-        """
-        done, failed = [], []
-        for i, p in enumerate(paths, 1):
-            leaf = p.rsplit("/", 1)[-1]
-            self._progress("Downloading %d of %d: %s" % (i, len(paths), leaf),
-                           (i - 1.0) / len(paths))
-            try:
-                data = self.read(p)["data"]
-                dest = os.path.join(destdir, leaf)
-                with open(dest, "wb") as fh:
-                    fh.write(data)
-                done.append((dest, len(data)))
-            except Exception as exc:
-                failed.append((p, str(exc)))
-        return {"done": done, "failed": failed, "dir": destdir}
-
-    # ---------------------------------------------------------- protection
-    #
-    # Two different answers, and they used to be one.
-    #
-    # A drive is not a file and a phantom directory entry is not a file
-    # either; deleting one is meaningless or damaging and there is nothing
-    # to confirm. Those are refused outright.
-    #
-    # The Java runtime, the boot chain and the shipped applications are a
-    # different matter. They were refused outright too, on the belief that
-    # putting one back meant reimaging the card. That turned out to be
-    # wrong: every system file loads back over GPIB, so this is somebody
-    # else's instrument and somebody else's decision. They are now
-    # deletable, behind a warning of their own that has to be answered
-    # before the ordinary delete confirmation is even asked.
-    #
-    # Still worth being careful about: an RMDIR test wedged the filesystem
-    # subsystem and cost a reimage. That is why the working directory is
-    # moved to the volume root first, and that guard is not negotiable.
-    RUNTIME_MSG = ("It is part of the Java runtime. Deleting it will stop "
-                   "the instrument from running applications until the "
-                   "file is put back.")
-    BOOT_MSG = ("It is part of the instrument's boot chain. Deleting it "
-                "will stop the runtime starting at power-on.")
-
-    # SYSTEM~1 is deliberately not here. It is the card's own recycle
-    # folder and holds nothing the instrument needs; it fills up with
-    # whatever was deleted from a PC and is exactly the sort of thing
-    # somebody opens this program to clear out.
-    SYSTEM_DIRS = {
-        "APP": ("It holds the Java runtime and every shipped application."),
-        "TDSRTE1": RUNTIME_MSG,
-    }
-    SYSTEM_FILES = {
-        "STARTUP.BAT": BOOT_MSG, "OSSA.BAT": BOOT_MSG,
-        "RTE1.BAT": BOOT_MSG, "RTE1ORIG.BAT": BOOT_MSG,
-        "RT.JAR": RUNTIME_MSG, "JAVA68K.O": RUNTIME_MSG,
-        "LIBJIT.O": RUNTIME_MSG, "NIGPIB.O": RUNTIME_MSG,
-        "EXTCP.O": RUNTIME_MSG, "PATCH.O": RUNTIME_MSG,
-        "LOGO.BIN": RUNTIME_MSG, "VERSION.DAT": RUNTIME_MSG,
-    }
-    # Everything at or below this path is the runtime itself.
-    SYSTEM_TREES = ("APP/TDSRTE1",)
-
-    @classmethod
-    def refuse_reason(cls, path):
-        """Why `path` cannot be deleted at all, or None.
-
-        Only the two that are not files: a drive, and the phantom entry
-        that carries half of somebody's long file name.
-        """
-        p = path.rstrip("/")
-        leaf = p.rsplit("/", 1)[-1].upper()
-        if "/" not in p:
-            return "'%s' is a drive, not a file or folder." % p
-        if is_phantom(leaf):
-            # Should be unreachable - these never reach the UI - but a
-            # DELETE aimed at one would strip the long name off the real
-            # file that follows it in the directory table.
-            return ("'%s' is not a file. It is part of how a long file "
-                    "name is stored on the card, and deleting it would "
-                    "damage the file it belongs to." % leaf)
-        return None
-
-    @classmethod
-    def system_reason(cls, path):
-        """Why `path` is the instrument's own, or None if it is not.
-
-        Not a refusal. The caller asks about it first and deletes it if
-        the answer is yes.
-        """
-        p = path.rstrip("/")
-        leaf = p.rsplit("/", 1)[-1].upper()
-        upper = p.upper()
-        if "/" not in p:
-            return None
-        # Nothing on a floppy is the instrument's. The system files live
-        # on the hard disk; a floppy holds whatever the user put there
-        # and is theirs to empty.
-        if upper.split("/", 1)[0].startswith("FD"):
-            return None
-        for tree in cls.SYSTEM_TREES:
-            if ("/" + tree) in upper or upper.endswith("/" + tree):
-                return cls.RUNTIME_MSG
-        for table in (cls.SYSTEM_DIRS, cls.SYSTEM_FILES):
-            if leaf in table:
-                return table[leaf]
-        return None
-
-    def format_volume(self, plan):
-        """Format a whole volume, and check afterwards that it is empty.
-
-        The instrument says nothing either way - FILESYSTEM:FORMAT has no
-        query form and raises no event on success - so the listing
-        afterwards is the only report there is. A volume that still holds
-        names did not format, and saying so beats a silent success.
-        """
-        drive = plan["drive"]
-        self.context = "format %s" % drive
-        self._progress("Formatting %s ..." % drive, None)
-        self.fs.set_cwd(drive)
-        self.fs.format_drive(drive)
-        self.fs.wait_done()
-        events = self.fs.errors()
-        self._progress("Checking what is left on %s" % drive, None)
-        self.fs.set_cwd(drive)
-        left = real_names(self.fs.dir())
-        self.fs.errors()
-        return {"drive": drive, "left": left, "events": events}
-
-    def survey(self, path):
-        """What is inside a folder, for the confirmation dialog.
-
-        Leaves the cwd back at the VOLUME ROOT, never inside `path`. Leaving
-        it inside is what caused the incident this program is now careful
-        about: RMDIR issued while standing in the target is refused with
-        event 257, and that refusal left the filesystem subsystem returning a
-        fixed garbage pattern for every path until the card was reimaged.
-        """
-        self.fs.set_cwd(path)
-        names = real_names(self.fs.dir())
-        self.fs.set_cwd(path.split("/")[0])
-        self.fs.errors()
-        return {"path": path, "names": names}
-
-    def rmdir(self, path):
-        """Remove a folder and everything in it, deepest folder first.
-
-        FILESYSTEM:RMDIR is recursive on this firmware - see tds_fs.rmdir -
-        and on a large tree it does not finish. Measured on a TDS 784D:
-        one RMDIR aimed at a folder of 11 subfolders and about 30 files
-        raised event 250 and stopped part way, having emptied seven of
-        the subfolders and removed one outright, and the folder itself
-        was still there afterwards. A half-deleted folder is the worst
-        of the three outcomes, so the walk is done here instead: one
-        folder at a time, from the bottom up, each command small enough
-        for the instrument to finish before the next one arrives.
-
-        Costs more commands than the single RMDIR. It buys a progress
-        bar on a tree that took minutes in silence, and a failure part
-        way that can simply be run again - the walk finds whatever is
-        left, so a second attempt carries on where the first stopped.
-
-        Refuses a protected name, and verifies afterwards rather than
-        trusting the empty event queue, because on this instrument silence
-        means nothing either way. Only the folder named is checked against
-        the protection table, which is what the recursive RMDIR did too:
-        the names inside a copy are the same names as inside the original,
-        so checking them all would make any copy of APP undeletable.
-        """
-        why = self.refuse_reason(path)
-        if why:
-            raise RuntimeError(why)
-        leaf = path.rstrip("/").rsplit("/", 1)[-1].upper()
-        parent = path.rstrip("/").rsplit("/", 1)[0]
-        volume = path.split("/")[0]
-        self.context = "rmdir %s" % path
-        # What else is in the folder this one is being taken out of.
-        # Removing a tree is the operation the unexplained loss has shown
-        # up around, so the neighbours are counted before and after; see
-        # _lost.
-        beside = self._folder_names(parent)
-
-        # Children before parents, which is the order they have to go in.
-        tree = []
-
-        def walk(where):
-            self._progress("Looking in %s ..." % where, None)
-            listing = self.listdir_split(where)
-            for one in listing["dirs"]:
-                walk("%s/%s" % (where, one))
-            tree.append((where, listing["files"]))
-
-        walk(path)
-        for i, (where, files) in enumerate(tree, 1):
-            # Stand at the VOLUME ROOT, which cannot be inside the target
-            # at any depth. RMDIR is refused with event 257 if the cwd is
-            # within the folder being removed, and that refusal is what
-            # wedged the filesystem subsystem badly enough to need a
-            # reimage. listdir_split above left the cwd inside the tree,
-            # so this is not optional.
-            self._progress("Emptying %s (%d of %d)"
-                           % (where.rsplit("/", 1)[-1], i, len(tree)),
-                           (i - 1.0) / len(tree))
-            if files:
-                # One command for the whole folder, not one per file.
-                # DELETE is the operation that exhausts this firmware -
-                # about two dozen and mass storage goes down - so a
-                # folder of seventy files was three times over the limit
-                # on its own. Measured on a TDS 784D: the wildcard form
-                # cleared eight files in 0.2 s with an empty event
-                # queue, and 120 in about four seconds, with the
-                # instrument writing and reading normally straight
-                # afterwards. Event 250 is common here and means
-                # nothing; the re-listing below is what decides.
-                self.fs.set_cwd(volume)
-                self.fs.delete("%s/*.*" % where)
-                self.fs.wait_done()
-                self.fs.errors()
-                # Whatever *.* did not match, by hand. On a TDS 784D it
-                # matches everything - a folder of WITHEXT.TXT, NOEXT,
-                # DOTTED. and X.B was cleared by one wildcard - so this
-                # loop is expected never to run there. It stays because
-                # the same code serves a 640A, a 680B and a 784C, none
-                # of which have been asked, and because the cost of
-                # being wrong is a folder that will not delete. One
-                # listing a folder is a cheap way not to guess.
-                try:
-                    self.fs.set_cwd(where)
-                    stayed = real_names(self.fs.dir())
-                except Exception:
-                    stayed = []
-                for name in stayed:
-                    self.fs.set_cwd(volume)
-                    self.fs.delete("%s/%s" % (where, name))
-                    # A query arriving while dosFs is still working is
-                    # what raises event 250.
-                    self.fs.wait_done()
-            self.fs.errors()
-            self.fs.set_cwd(volume)
-            self.fs.rmdir(where)
-            self.fs.wait_done()
-            events = self.fs.errors()
-
-        still = self._folder_names(parent)
-        gone = leaf not in [n.upper() for n in still]
-        if not gone:
-            raise RuntimeError("%s is still there after removing the %d "
-                               "folder(s) inside it (events %s). Running "
-                               "it again will carry on from here."
-                               % (path, len(tree), events))
-        lost = [n for n in beside
-                if n.upper() != leaf
-                and n.upper() not in {s.upper() for s in still}]
-        return {"path": path, "events": events, "removed": True,
-                "folders": len(tree), "lost": lost, "folder": parent}
-
-    def copy(self, source, dest, is_dir):
-        """Copy a file or a folder on the instrument. No GPIB transfer.
-
-        387 kB/s against 3.0 kB/s for the same bytes through WRITEFILE, so
-        this is 129 times faster than downloading and re-uploading and it
-        is the right way to duplicate anything already on the instrument.
-
-        A file is one command. A folder has to be walked, because COPY
-        refuses a directory source - the manual's own example raises event
-        257 on v7.4e and creates nothing. The walk is top down, unlike
-        rmdir's: a destination folder has to exist before anything can be
-        copied into it. One wildcard per folder rather than one command
-        per file, which is the same economy the wildcard delete gets.
-
-        Verifies by listing rather than by the event queue, because on this
-        instrument an empty queue means nothing either way.
-        """
-        volume = dest.split("/")[0]
-        self.context = "copy %s to %s" % (source, dest)
-        if not is_dir:
-            self._progress("Copying %s ..." % source.rsplit("/", 1)[-1], None)
-            self.fs.set_cwd(volume)
-            self.fs.copy(source, dest)
-            self.fs.wait_done()
-            self.fs.errors()
-            return self._copied(dest, 1)
-
-        # Parents before children: a folder must exist to be copied into.
-        tree = []
-
-        def walk(where, under):
-            self._progress("Looking in %s ..." % where, None)
-            listing = self.listdir_split(where)
-            tree.append((where, under, listing["files"]))
-            for one in listing["dirs"]:
-                walk("%s/%s" % (where, one), "%s/%s" % (under, one))
-
-        walk(source, dest)
-        for i, (where, under, files) in enumerate(tree, 1):
-            self._progress("Copying %s (%d of %d)"
-                           % (under.rsplit("/", 1)[-1], i, len(tree)),
-                           (i - 1.0) / len(tree))
-            self.fs.set_cwd(volume)
-            self.fs.mkdir(under)
-            self.fs.wait_done()
-            self.fs.errors()
-            if files:
-                self.fs.set_cwd(volume)
-                self.fs.copy("%s/*.*" % where, under)
-                self.fs.wait_done()
-                self.fs.errors()
-        return self._copied(dest, len(tree))
-
-    def _copied(self, dest, folders):
-        """Confirm the destination arrived, by listing its parent."""
-        parent = dest.rstrip("/").rsplit("/", 1)[0]
-        leaf = dest.rstrip("/").rsplit("/", 1)[-1].upper()
-        self.fs.set_cwd(parent)
-        there = leaf in [n.upper() for n in self.fs.dir()]
-        self.fs.errors()
-        if not there:
-            raise RuntimeError("%s is not there after the copy." % dest)
-        return {"dest": dest, "folders": folders, "copied": True}
-
-    # ------------------------------------------------- the system tab
-    # Housekeeping the instrument keeps in non-volatile memory: its
-    # clock, its calibration, its self tests, where hardcopies go, and
-    # which options it believes it has. Every command here is out of
-    # the TDS Family Programmer Manual 070-9876-00 except the option
-    # words, which are not in any manual - see sys_option.
-
-    #: Each row is (code, word, on value, description). The word is a
-    #: constant in non-volatile memory and the value switches the
-    #: option on; 0 always switches it off. Read out of the firmware:
-    #: words 327680-327696 are one block, six longs then eleven words
-    #: at 0x04000806, and the getter for each option query pushes its
-    #: own index. 327691 is allocated but no firmware in the family
-    #: ever reads it, so it is not offered.
-    #:
-    #: 1G is the odd one. It is not an option word at all: the firmware
-    #: reports it when the acquisition board identity reads 14, and
-    #: 131219 is the constant that overrides that identity when it is
-    #: non-zero. Writing it therefore tells the instrument it has a
-    #: different acquisition board, which is why it is last and why 0
-    #: (hand the identity back to the hardware) is the way off.
-    OPTION_WORDS = (
-        ("1M", 327686, 1, "4M acquisition length"),
-        ("05", 327687, 1, "Video trigger"),
-        ("13", 327688, 1, "RS-232-C and Centronics interfaces"),
-        ("2F", 327689, 1, "Advanced DSP math"),
-        ("1F", 327690, 1, "Floppy disk drive"),
-        ("2C", 327692, 1, "Communication Signal Analyzer"),
-        ("3C", 327693, 1, "P6701B with system calibration"),
-        ("4C", 327694, 1, "P6703B with system calibration"),
-        ("2M", 327695, 1, "8M acquisition length"),
-        ("1G", 131219, 14, "Limit sample rate to 1 GS/s"),
-    )
-
-    #: The options that are software alone. The rest need hardware and
-    #: simply will not appear without it - and 3C and 4C raise a
-    #: processor board fault when they are switched on without their
-    #: calibration data.
-    OPTION_SOFT = ("1M", "2F", "2C", "1G")
-
-    #: What *OPT? calls an option, where that is not what the option
-    #: word list calls it. Measured, not guessed: a TDS 680B on v4.4.1e
-    #: answers "13:Rs232/cent,1M:extended record length,0,2F:math
-    #: pack,0,FD:1.44MB floppy drive,0,0,0,0,0,0" - and its floppy is
-    #: FD there and 1F here. Anything not in this table is taken to
-    #: name itself.
-    OPTION_ALIASES = {"FD": "1F"}
-
-    #: ATOFFSET numbers a word one higher than ATPUT does.
-    #:
-    #: The option words are written with WORDCONSTANT:ATPUT <word>, and
-    #: read back with WORDCONSTANT:ATOFFSET? <base>,0 - and the two do
-    #: not agree about which word is which. Reading at the address
-    #: ATPUT writes gives the word *before* it.
-    #:
-    #: Measured, and confirmed against a second source rather than
-    #: assumed. On a TDS 680B, reading at the ATPUT addresses says 05,
-    #: 2F and 1F are on and 1M and 13 are off; *OPT? on the same
-    #: instrument says 1M, 13, 2F and the floppy. Adding one makes all
-    #: ten agree with *OPT? exactly, including the seven that are off.
-    #: Two independent readings of the same ten facts, so this is the
-    #: relationship and not a coincidence of one scope's option set.
-    #:
-    #: Confirmed again on a TDS 754D running v8.0e - a different family
-    #: and a different option set - where the ten biased reads agree
-    #: with its *OPT? on all ten, 13, 2F, 1F, 2C and 2M on. Reading at
-    #: the unbiased addresses on that instrument gives 0, 0, 0, 1, 1,
-    #: 0, 1, 0, 0, 23347, which agrees with nothing.
-    OPTION_ATOFFSET_BIAS = 1
+class _WorkerSystem(object):
 
     def options_read(self):
         """Which options the instrument's own words say are enabled.
@@ -3327,27 +3112,6 @@ class Worker(object):
                 # 754D: VERBOSE OFF gives 'FAI' and VERBOSE ON 'FAIL'.
                 "passed": flag.upper().startswith("PAS")}
 
-    def _errlog(self):
-        """The instrument's error log, or [] if it has not got one."""
-        try:
-            return self.err.entries()
-        except Exception:
-            return []
-
-    def _errlog_since(self, before):
-        """The entries added since `before` was taken.
-
-        The log is a ring: once it is full the oldest entries fall off,
-        and then what was read first is no longer a prefix of what is
-        read now. So the common-prefix answer is checked rather than
-        assumed, and anything that does not fit it falls back to
-        "whatever is there that was not there before".
-        """
-        after = self._errlog()
-        if after[:len(before)] == before:
-            return after[len(before):]
-        return [one for one in after if one not in before]
-
     def sys_secure(self):
         """TEKSecure: zero every reference waveform and every setup.
 
@@ -3435,6 +3199,9 @@ class Worker(object):
         """
         return [str(e) for e in self.fs.errors()
                 if not str(e).startswith("0,")]
+
+
+class _WorkerCalibration(object):
 
     def cal_read(self, base=None, check=True):
         """The acquisition board's calibration words, read twice.
@@ -3606,6 +3373,9 @@ class Worker(object):
         report["events"] = self._refusals()
         return report
 
+
+class _WorkerBackup(object):
+
     # --------------------------------------------------- backup and restore
     #
     # tds_bak builds the file and checks it. Everything here is what has
@@ -3722,6 +3492,52 @@ class Worker(object):
         if refused:
             raise IOError("; ".join("%s: %s" % (n, why) for n, why in refused))
 
+    def _upload_volume(self, made, items):
+        """The volume a batch writes to, e.g. 'hd0:', or None if unclear."""
+        for coll in (made, [d for _s, d in items]):
+            for p in coll:
+                if ":" in p:
+                    return p.split(":", 1)[0] + ":"
+        return None
+
+    def health_check(self, volume):
+        """Is the instrument's file system answering? Returns None if it
+        is, or a sentence saying what is wrong.
+
+        A root that will not list is the wedged mass-storage state, and
+        writing into it is what turns a hung task into a lost card; a
+        listing that comes back empty is the same signature, not a genuinely
+        empty disk (see FILE-TRANSFER-HARDENING.md sections 3 and 8). Either
+        way the caller must not write. `dir()` already verifies the cwd took
+        and raises if the volume will not answer.
+        """
+        try:
+            listed = self.fs.dir(volume)
+        except Exception as exc:
+            return "%s did not list (%s)" % (volume, exc)
+        if not listed:
+            return ("%s listed nothing - on this instrument an empty root is "
+                    "the wedged-filesystem signature, not an empty disk"
+                    % volume)
+        return None
+
+    def _clear_lockout_if_healthy(self, cwd):
+        """Fix 10: let a recovered instrument back in after a failed run.
+
+        A transfer that wedged the file system locks the instrument out of
+        further writes (see upload_plan). Only a fresh reconnect clears
+        that, and only if its volume now lists - a scope still wedged stays
+        locked, so an upload is still refused. Called from connect.
+        """
+        if not transfer_blocked(self.addr):
+            return
+        cwd = cwd or ""
+        vol = cwd.split(":", 1)[0] + ":" if ":" in cwd else ""
+        if vol and not self.health_check(vol):
+            clear_transfer_block(self.addr)
+            log_note("connect", "instrument healthy again after a failed "
+                     "transfer; write lock-out cleared")
+
     def upload_plan(self, made, items):
         """Make these folders, then write these files. Both already named.
 
@@ -3742,6 +3558,39 @@ class Worker(object):
         knows what is already in the destination and therefore what a
         proposed name would collide with.
         """
+        # Fix 10 (failure lock-out): refuse outright if an earlier run left
+        # this instrument in a failed, wedged state. Only a fresh reconnect
+        # clears that (see connect), so a retry alone will not - which is
+        # the point: writing again into a wedged file system is exactly what
+        # loses a card. Checked before the pre-flight below, so a disk that
+        # is flapping back to a good listing cannot let a write slip through
+        # without the instrument first being power-cycled.
+        locked = transfer_blocked(self.addr)
+        if locked:
+            log_note("upload_plan",
+                     "REFUSED, instrument locked out: %s" % locked)
+            # Surfaced through the same "blocked" path as a pre-flight
+            # health-check refusal: the reason kept from the run that
+            # wedged it reads naturally in that dialog ("... did not
+            # answer normally: <reason> ... power cycle ... try again"),
+            # and a power cycle is exactly what clears the lock-out - the
+            # reconnect after it passes the health check. No second dialog
+            # string to translate, and the remedy shown is the right one.
+            return {"done": [], "failed": [],
+                    "skipped": [d for _s, d in items], "folders": 0,
+                    "blocked": locked}
+        # Pre-flight: the file system must be answering before a byte is
+        # written. If it is not, nothing is written and the batch is
+        # BLOCKED - safe to retry once the instrument is well, no override
+        # needed - rather than deleting-and-rewriting into a wedged disk.
+        volume = self._upload_volume(made, items)
+        if volume:
+            wrong = self.health_check(volume)
+            if wrong:
+                log_note("upload_plan", "BLOCKED before writing: %s" % wrong)
+                return {"done": [], "failed": [],
+                        "skipped": [d for _s, d in items],
+                        "folders": 0, "blocked": wrong}
         for i, one in enumerate(made):
             self._progress("Making folder %d of %d" % (i + 1, len(made)),
                            None)
@@ -3752,6 +3601,18 @@ class Worker(object):
         out = (self.upload_many(items) if items
                else {"done": [], "failed": [], "skipped": []})
         out["folders"] = len(made)
+        # Post-flight: a run that verified its own files but left the root
+        # unreadable is the state that preceded the loss of a card. The root
+        # must still list, or the whole run is a failure however well the
+        # individual files verified.
+        if volume:
+            wrong = self.health_check(volume)
+            if wrong:
+                log_note("upload_plan", "FAILED after writing: %s" % wrong)
+                out["unhealthy"] = wrong
+                # Fix 10: this run wedged the disk. Lock the instrument out
+                # of further writes until a fresh reconnect proves it well.
+                set_transfer_block(self.addr, wrong)
         return out
 
     def upload_tree(self, folder, dest):
@@ -3851,6 +3712,9 @@ class Worker(object):
         finally:
             shutil.rmtree(work, ignore_errors=True)
         return report
+
+
+class _WorkerFirmware(object):
 
     # ------------------------------------------------------------ firmware
     #
@@ -4065,6 +3929,33 @@ class Worker(object):
                 pass
         return report
 
+    def fw_backup(self, plan):
+        """Both the NVRAM and the firmware, for their own sake - the backup
+        half of fw_run with nothing written. No image is read, and the flash
+        is never erased or programmed, so this is safe to run whenever the
+        monitor is up. The same reader and the same second-read check as the
+        backup a write takes on its way past, through the one fw_keep - so a
+        backup kept for its own sake is the same bytes and the same proof.
+        """
+        stop = self.cancelled.is_set
+        report = {"backups": []}
+        inst = self.fw_session(plan["resource"], plan.get("normal") or "")
+        try:
+            flash = tds_fw.Flash(tds_fw.Monitor(inst))
+            report["flash"] = flash.identify()
+            self._progress("Measuring the NVRAM window", None)
+            keep = flash.nvram_keep_len(stop=stop)
+            for what, base, length in (
+                    ("NVRAM", tds_fw.NVRAM_BASE, keep),
+                    ("Firmware", tds_fw.FLASH_BASE, plan["backup_len"])):
+                self.fw_keep(flash, what, base, length, plan, report, stop)
+        finally:
+            try:
+                inst.close()
+            except Exception:
+                pass
+        return report
+
     def fw_nvram_put(self, plan):
         """Write a saved NVRAM back.
 
@@ -4261,6 +4152,546 @@ class Worker(object):
             except Exception:
                 pass
         return report
+
+
+class Worker(_WorkerFilesystem, _WorkerWaveform, _WorkerErrorLog, _WorkerScreenshot, _WorkerMask, _WorkerLimits, _WorkerSystem, _WorkerCalibration, _WorkerBackup, _WorkerFirmware):
+    """Serialises every instrument operation onto one thread.
+
+    COUNT_FOR is how long the instrument is left counting against a
+    mask before the tally is read, where reading the trace would
+    otherwise stop it. A second is a few hundred acquisitions on a
+    784D; in DPO no wait is needed, since the hardcopy itself takes
+    several.
+
+    Jobs are (label, callable). Results come back as (label, ok, payload) on
+    an output queue the UI polls; nothing is called back on this thread.
+    """
+
+    COUNT_FOR = 1.0
+
+    def __init__(self):
+        self.jobs = queue.Queue()
+        self.out = queue.Queue()
+        self.fs = None
+        self.addr = None
+        self.context = "start"
+        # Set to the command name once an instrument has been found not to
+        # have it, so nothing tries the same transfer three more times.
+        self.no_transfers = None
+        # Whether FILESYSTEM:OVERWRITE ON was understood. Until a
+        # connection says otherwise, assume not and delete before
+        # writing, which is the behaviour that works everywhere.
+        self.can_overwrite = False
+        # One correction per connection: if the capability table is wrong
+        # about an instrument, ask it once and carry on. Asking again on
+        # every subsequent failure would just be the probe by other means.
+        self.re_probed = False
+        self._stop = threading.Event()
+        # Set by the UI to ask a long job to give up. Only the scan reads
+        # it, because the scan is the only job that is both slow and
+        # safely interruptible - it opens and closes one address at a
+        # time and owns nothing in between. Stopping a transfer part-way
+        # is a different matter entirely and is not offered.
+        self.cancelled = threading.Event()
+        self.thread = threading.Thread(target=self._run, daemon=True)
+        self.thread.start()
+
+    def submit(self, label, fn, needs_fs=True):
+        """Queue a job. `needs_fs` False for work that runs with no
+        instrument open - connecting and scanning, which are how you get
+        one. Stated by the caller rather than inferred from the label,
+        because a label is a display name and should not carry meaning.
+
+        Giving up on one job is not giving up on the next, so the
+        flag is cleared here: it is the one place every job passes
+        through. Cleared as the job is queued rather than as it is
+        taken up, so a cancel pressed after this cannot be
+        swallowed by the clear."""
+        self.cancelled.clear()
+        self.jobs.put((label, fn, needs_fs))
+
+    def _run(self):
+        while not self._stop.is_set():
+            try:
+                label, fn, needs_fs = self.jobs.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            self.context = label
+            try:
+                if needs_fs and self.fs is None:
+                    raise RuntimeError("not connected")
+                self.out.put((label, True, fn(self)))
+            except Exception as exc:
+                # The class name goes in the log, where it is a clue, and
+                # not in the dialog, where "NotReadable:" in front of a
+                # written sentence is noise. Some exceptions say nothing
+                # at all, and then the name is all there is.
+                log_note(label, "FAILED %s: %s" % (type(exc).__name__, exc))
+                # And where it came from, for anything that is not one of
+                # the instrument's own refusals. A one-line class name
+                # says a job failed; it does not say which call failed,
+                # and a fault nobody can reproduce is only diagnosable
+                # from the log somebody sends afterwards.
+                if not isinstance(exc, (tds_wfm.NotReadable, RuntimeError,
+                                        IOError, ValueError)):
+                    log_note(label, "  " + traceback.format_exc()
+                             .strip().replace("\n", "\n  "))
+                self.out.put((label, False,
+                              str(exc) or type(exc).__name__))
+
+    def stop(self):
+        self._stop.set()
+
+    def _routine(self, code):
+        """Is this event one we already understand in this context?
+
+        Context matters. A mass storage error while recursively deleting a
+        folder is measured, expected and harmless. The same code while
+        reading a file would mean something quite different, and should
+        still get the user's attention.
+        """
+        if code in EXPECTED_EVENTS:
+            return True
+        here = self.context.split(" ")[0]
+        if code == MASS_STORAGE and here in DELETE_OPS:
+            return True
+        if code == NO_MEDIA and here in NO_MEDIA_OPS:
+            return True
+        return code == BAD_FILENAME and here in PROBE_OPS
+
+    def _watch_events(self):
+        """Record every event the instrument raises, whoever drained it.
+
+        Written as a wrapper round the one method that empties the event
+        queue, rather than as a call added to each operation, because the
+        drains are scattered through both this file and tds_fs and the
+        whole point is that none of them can quietly discard a code. An
+        error the user reports hours later is only diagnosable if it was
+        written down when it happened.
+        """
+        raw = self.fs.errors
+
+        def watched():
+            codes = raw()
+            if not codes:
+                return codes
+            # 256 "file name not found" is generated by design, dozens at a
+            # time - probing for volumes, classifying each directory entry.
+            # Logging those would bury the one line that matters under a
+            # hundred that never do, so only the noteworthy are written
+            # down. Anything the context does not account for is noteworthy,
+            # including 250, which is tolerated but always recorded.
+            notable = [c for c in codes
+                       if c == MASS_STORAGE or not self._routine(c)]
+            msgs = getattr(self.fs, "last_messages", []) or []
+            detail = "; ".join("%d %s" % (c, t) for c, t in msgs) or str(codes)
+            if notable:
+                log_note(self.context, detail)
+            odd = [c for c in codes if not self._routine(c)]
+            if odd:
+                self.out.put(("event", True, {"codes": odd, "detail": detail,
+                                              "where": self.context}))
+            return codes
+
+        self.fs.errors = watched
+        # The unwrapped one is kept, for the one drain that must
+        # not report what it finds: whatever is in the queue when
+        # a session opens got there before it. See connect.
+        self._quiet_drain = raw
+
+    # -- operations, all called on the worker thread -----------------------
+
+    def connect(self, addr=None):
+        # One program on the bus at a time. Checked before the session is
+        # opened, so a second copy is turned away rather than left to
+        # corrupt the first one's transfer. A reconnect by this same
+        # process already holds the lock and passes straight through.
+        wrong = take_process_lock(addr or DEFAULT_ADDR)
+        if wrong:
+            raise RuntimeError(wrong)
+        # Any previous session is closed first. Leaving it open would hold
+        # the old instrument's VISA lock, which is exactly what stops a
+        # second attempt from working after a failed one.
+        if self.fs is not None:
+            self.fs.close()
+            self.fs = None
+        self.fs = TdsFs(**({"addr": addr} if addr else {}))
+        # Ask who is there before anything else, on a short leash. An
+        # address with nothing on it is otherwise discovered only when
+        # the first real query gives up, three quarters of a minute
+        # later, and the program looks hung when all that has happened
+        # is that the scope is switched off.
+        #
+        # If it does not answer, everything goes back to disconnected.
+        # Left alone, self.fs stayed set while wfm, scr and err still
+        # wrapped the session closed above, so the "not connected" guard
+        # let jobs through to a handle VISA had already invalidated.
+        # Cleared before it is asked anything. An instrument left
+        # part way through a transfer - by this program being killed, or
+        # by anything else that walked away from a read - still has the
+        # rest of that file to hand over, and it hands it over before it
+        # answers anything new. Measured on a TDS 754D: with 640 kB
+        # still queued, *IDN? never came back and connect reported an
+        # empty address, on an instrument sitting there working
+        # perfectly. The clear used to come thirty lines below this,
+        # which is after the question it protects.
+        self.fs.clear()
+        try:
+            self.fs.hello()
+        except Exception:
+            self.fs.close()
+            self.fs = self.wfm = self.scr = self.err = None
+            raise
+        # One VISA session serves both subsystems; the waveform side
+        # borrows the filesystem side's header-stripping rule so there is
+        # only one place that knows about HEADER ON.
+        self.wfm = tds_wfm.TdsWfm(self.fs.inst, TdsFs.payload)
+        self.scr = tds_scr.TdsScr(self.fs.inst, TdsFs.payload)
+        self.err = tds_err.TdsErr(self.fs.inst, TdsFs.payload)
+        self.addr = addr or getattr(self.fs, "addr", None) or "default"
+        self._watch_events()
+        # "Is there a waveform in this source?" is answered, for an
+        # empty one, with 2241 and a 420 in the event queue. That is the
+        # answer, so it is cleared where it is provoked rather than
+        # surfacing later as a fault nobody caused. Quietly - the
+        # watcher would report the very events the question exists to
+        # provoke. See TdsWfm.exists.
+        self.wfm.drain = self._quiet_drain
+        # Replies with no command header in front of them. A 784D is
+        # already set that way; a 640A is not, and every reply arrives as
+        # ":FILESYSTEM:FREESPACE 0" instead of "0".
+        self.fs.headers("OFF")
+        self.no_transfers = None
+        self.re_probed = False
+        # Whatever was in the event queue happened before this program
+        # opened the session - very likely another program's doing, or
+        # our own from a previous run - and reporting it as though this
+        # session caused it is misleading. Drained once, here, so
+        # everything after this really is ours.
+        #
+        # Drained *quietly*, which is the whole point and was not
+        # what happened: the watcher raises anything it does not
+        # recognise as a modal box saying it was not expected, and
+        # a 2241 left in the queue by a bench session an hour
+        # earlier greeted the next connect with a warning about
+        # something the program had not done. Written to the log,
+        # where it is a clue, and nowhere else.
+        try:
+            stale = self._quiet_drain()
+            if stale:
+                log_note("connect", "cleared %d event(s) left over from "
+                         "before this session: %s"
+                         % (len(stale), getattr(self.fs, "last_messages",
+                                                stale)))
+        except Exception:
+            pass
+        self.fs.set_overwrite("ON")
+        # Whether that was understood decides how an upload replaces a
+        # file, and it matters more than it looks. With OVERWRITE ON a
+        # write lands straight on top of the old file; without it, the
+        # old file has to be deleted first - and DELETE is what exhausts
+        # this family's filesystem. Measured on a TDS 784D: 21
+        # delete-then-write cycles took mass storage down and wanted a
+        # power cycle, where 120 writes of distinct files with no delete
+        # and 60 replacements over one name raised nothing whatsoever.
+        self.can_overwrite = UNDEFINED_HEADER not in self.fs.errors()
+        self.fs.set_delwarn("OFF")
+        # Which transfer commands this firmware has. Looked up if this
+        # instrument is one we already know, asked if it is not - either
+        # way settled here, rather than discovered by a user watching a
+        # progress bar that is never going to finish.
+        idn = self.fs.idn()
+        entry = known_instrument(idn)
+        can = (self.fs.apply_known(entry) if entry
+               else self.fs.probe_transfers())
+        log_context("connect", "%s: reader=%s write=%s (%s)"
+                    % (idn, can["reader"], can["can_write"], can["source"]))
+        # Mask testing is Option 2C - "Mask Testing (Option 2C Only)" in
+        # the user manual. A 784D here reports 2C:comm and a 784C does
+        # not, and without it the MASK subsystem answers queries and
+        # draws nothing. Asked once, here, so the Masks tab can offer
+        # the route or grey it rather than failing silently.
+        try:
+            opts = self.fs.opts()
+        except Exception:
+            opts = ""
+        out = {"idn": idn, "cwd": self.fs.get_cwd(), "addr": self.addr,
+               "options": opts, "masks": "2C" in opts.upper()}
+        out.update(can)
+        # Fix 10: a run that wedged this instrument's file system locks it
+        # out of further writes (see upload_plan). This fresh session is
+        # where a recovered instrument is let back in - but only if it is
+        # really well again.
+        self._clear_lockout_if_healthy(out["cwd"])
+        return out
+
+    def scan(self):
+        """Ask VISA what is on the bus and identify each instrument.
+
+        Every address gets a `*IDN?`, which is the one query every SCPI
+        instrument answers and which changes nothing on the device. Short
+        timeouts throughout: an address that does not answer promptly is
+        far more likely to be a printer or a dead session than a scope
+        worth waiting on, and a scan that takes a minute will not be run.
+
+        Anything already open is left alone - its identification is
+        already known, and opening a second session to it could disturb a
+        transfer in progress.
+        """
+        import pyvisa
+        rm = pyvisa.ResourceManager()
+        try:
+            addresses = list(rm.list_resources())
+        except Exception as exc:
+            raise RuntimeError(
+                "VISA could not list the bus: %s\n\nCheck that a VISA "
+                "runtime and your GPIB driver are installed." % exc)
+        # Swept in numerical order, not the order VISA happened to list
+        # them in: each address is split on its runs of digits and those
+        # are compared as numbers, so the sweep climbs GPIB0::1, ::2 ...
+        # ::17 up the bus rather than ::1, ::17, ::2. A known address is
+        # connected to directly and never reaches a scan at all.
+        addresses.sort(key=lambda res: [int(t) if t.isdigit() else t
+                                        for t in re.split(r"(\d+)", res)])
+
+        found, current = [], getattr(self, "addr", None)
+        for i, res in enumerate(addresses, 1):
+            if self.cancelled.is_set():
+                return {"found": found, "cancelled": True,
+                        "reached": i - 1, "total": len(addresses)}
+            self._progress("Identifying %s  (%d of %d)"
+                           % (res, i, len(addresses)),
+                           (i - 1.0) / max(len(addresses), 1))
+            idn, note = "", ""
+            if current and res == current and self.fs is not None:
+                # The one we are already talking to. Asked inside the
+                # same guard as the rest: a scope that has been switched
+                # off since connecting raises here, and an unguarded
+                # raise would end the scan and report nothing about any
+                # of the other addresses.
+                try:
+                    idn = self.fs.idn()
+                except Exception as exc:
+                    note = describe_visa_error(exc)
+            else:
+                inst = None
+                try:
+                    # Short, because these two decide how long Cancel
+                    # takes to be noticed: the flag is only looked at
+                    # between addresses, so a scan cannot be stopped
+                    # part way through one. Worst case was 3.5 seconds
+                    # of silence per dead address and is now two. A
+                    # scope that is switched on answers *IDN? in
+                    # milliseconds, so this is still three orders of
+                    # magnitude of headroom.
+                    inst = rm.open_resource(res, open_timeout=800)
+                    inst.timeout = 1200
+                    idn = (inst.query("*IDN?") or "").strip()
+                except Exception as exc:
+                    # Why it did not answer is worth showing. VISA lists
+                    # everything it has ever been told about, so a bus with
+                    # one live instrument can easily show five addresses,
+                    # and "no reply" alone leaves the user guessing which
+                    # are switched off and which are misconfigured.
+                    note = describe_visa_error(exc)
+                finally:
+                    # Closed whether it answered or not. Left to the
+                    # success path, every silent address on the bus
+                    # leaked a session per scan, and VISA starts
+                    # refusing to open any of them once enough pile up.
+                    if inst is not None:
+                        try:
+                            inst.close()
+                        except Exception:
+                            pass
+            found.append({"addr": res, "idn": idn, "note": note,
+                          "scope": looks_like_scope(idn)})
+        return {"found": found, "cancelled": False,
+                "reached": len(addresses), "total": len(addresses)}
+
+    # The instrument exposes no "list my volumes" query, so they are probed:
+    # cd to a candidate and see whether the cwd moved. A candidate that does
+    # not exist leaves the cwd alone and raises event 256, which is drained.
+    # Measured on a TDS 784D: fd0: and hd0: exist, and hd1:, fd1:, ram:,
+    # nvram:, cf0:, disk0:, tffs0:, usb0: all do not. The list is kept longer
+    # than that finding so a different model can answer for itself.
+    CANDIDATES = ("hd0:", "fd0:", "hd1:", "fd1:")
+
+    def _transfer_failed(self, command, path, exc, secs):
+        """Why a transfer produced nothing, in the instrument's own words.
+
+        A firmware without FILESYSTEM:READFILE does not refuse the command
+        - it says "undefined header" into the event queue and then simply
+        never answers, so the only symptom the user sees is the program
+        sitting there. Asking the queue afterwards turns that into a
+        sentence, and stops the caller retrying something that cannot work.
+        """
+        said = ""
+        try:
+            self.fs.errors()
+            msgs = getattr(self.fs, "last_messages", []) or []
+            codes = [c for c, _t in msgs]
+            if NO_MEDIA in codes:
+                return "There is no disk in the drive."
+            if UNDEFINED_HEADER in codes:
+                self.no_transfers = command
+                return ("This instrument's firmware has no "
+                        "FILESYSTEM:%s command, so file contents cannot "
+                        "be transferred over GPIB. Browsing, creating "
+                        "folders and deleting still work." % command)
+            said = "; ".join("%d %s" % (c, txt) for c, txt in msgs)
+        except Exception:
+            pass
+        return ("%s gave no answer after %.0f s (%s).%s"
+                % (path, secs, type(exc).__name__,
+                   ("  The instrument said: " + said) if said else ""))
+
+    #: Where a waveform sent to the instrument's disk is put. At the
+    #: root of the drive rather than in whichever folder the Files tab
+    #: happens to be showing: the instrument recalls a waveform from
+    #: wherever it is pointed, and one known place is easier to find
+    #: again than wherever somebody was last browsing.
+    WFM_DIR = "WAVEFORM"
+
+    # How far after the trigger to look when there is no clock. What
+    # decorrelates the data is how many different edges can trigger it,
+    # not how long the delay is, so this is kept short: the delay's own
+    # jitter grows with it and buys nothing.
+    DELAY_BITS = 16
+
+    # -- batches ----------------------------------------------------------
+    #
+    # A multiple selection runs as ONE job rather than as a queue of jobs
+    # driven from the UI. The bus is single-threaded and every operation
+    # here moves the current directory, so interleaving them would be a way
+    # to end up somewhere unexpected. Progress is reported as it goes; a
+    # failure on one item is recorded and the rest carry on, as Explorer
+    # does when one file of a selection is in use.
+
+    def _progress(self, text, frac=None):
+        """Tell the UI where we are. `frac` is 0..1, or None for unknown.
+
+        Carries the job it belongs to. A progress line is labelled
+        "progress" and not with the work that raised it, so without
+        this the only way to tell whose it was is a flag the UI sets
+        when it starts something - and a flag can be left standing.
+        """
+        self.out.put(("progress", True, {"text": text, "frac": frac,
+                                         "job": self.context}))
+
+    # ---------------------------------------------------------- protection
+    #
+    # Two different answers, and they used to be one.
+    #
+    # A drive is not a file and a phantom directory entry is not a file
+    # either; deleting one is meaningless or damaging and there is nothing
+    # to confirm. Those are refused outright.
+    #
+    # The Java runtime, the boot chain and the shipped applications are a
+    # different matter. They were refused outright too, on the belief that
+    # putting one back meant reimaging the card. That turned out to be
+    # wrong: every system file loads back over GPIB, so this is somebody
+    # else's instrument and somebody else's decision. They are now
+    # deletable, behind a warning of their own that has to be answered
+    # before the ordinary delete confirmation is even asked.
+    #
+    # Still worth being careful about: an RMDIR test wedged the filesystem
+    # subsystem and cost a reimage. That is why the working directory is
+    # moved to the volume root first, and that guard is not negotiable.
+    RUNTIME_MSG = ("It is part of the Java runtime. Deleting it will stop "
+                   "the instrument from running applications until the "
+                   "file is put back.")
+    BOOT_MSG = ("It is part of the instrument's boot chain. Deleting it "
+                "will stop the runtime starting at power-on.")
+
+    # SYSTEM~1 is deliberately not here. It is the card's own recycle
+    # folder and holds nothing the instrument needs; it fills up with
+    # whatever was deleted from a PC and is exactly the sort of thing
+    # somebody opens this program to clear out.
+    SYSTEM_DIRS = {
+        "APP": ("It holds the Java runtime and every shipped application."),
+        "TDSRTE1": RUNTIME_MSG,
+    }
+    SYSTEM_FILES = {
+        "STARTUP.BAT": BOOT_MSG, "OSSA.BAT": BOOT_MSG,
+        "RTE1.BAT": BOOT_MSG, "RTE1ORIG.BAT": BOOT_MSG,
+        "RT.JAR": RUNTIME_MSG, "JAVA68K.O": RUNTIME_MSG,
+        "LIBJIT.O": RUNTIME_MSG, "NIGPIB.O": RUNTIME_MSG,
+        "EXTCP.O": RUNTIME_MSG, "PATCH.O": RUNTIME_MSG,
+        "LOGO.BIN": RUNTIME_MSG, "VERSION.DAT": RUNTIME_MSG,
+    }
+    # Everything at or below this path is the runtime itself.
+    SYSTEM_TREES = ("APP/TDSRTE1",)
+
+    # ------------------------------------------------- the system tab
+    # Housekeeping the instrument keeps in non-volatile memory: its
+    # clock, its calibration, its self tests, where hardcopies go, and
+    # which options it believes it has. Every command here is out of
+    # the TDS Family Programmer Manual 070-9876-00 except the option
+    # words, which are not in any manual - see sys_option.
+
+    #: Each row is (code, word, on value, description). The word is a
+    #: constant in non-volatile memory and the value switches the
+    #: option on; 0 always switches it off. Read out of the firmware:
+    #: words 327680-327696 are one block, six longs then eleven words
+    #: at 0x04000806, and the getter for each option query pushes its
+    #: own index. 327691 is allocated but no firmware in the family
+    #: ever reads it, so it is not offered.
+    #:
+    #: 1G is the odd one. It is not an option word at all: the firmware
+    #: reports it when the acquisition board identity reads 14, and
+    #: 131219 is the constant that overrides that identity when it is
+    #: non-zero. Writing it therefore tells the instrument it has a
+    #: different acquisition board, which is why it is last and why 0
+    #: (hand the identity back to the hardware) is the way off.
+    OPTION_WORDS = (
+        ("1M", 327686, 1, "4M acquisition length"),
+        ("05", 327687, 1, "Video trigger"),
+        ("13", 327688, 1, "RS-232-C and Centronics interfaces"),
+        ("2F", 327689, 1, "Advanced DSP math"),
+        ("1F", 327690, 1, "Floppy disk drive"),
+        ("2C", 327692, 1, "Communication Signal Analyzer"),
+        ("3C", 327693, 1, "P6701B with system calibration"),
+        ("4C", 327694, 1, "P6703B with system calibration"),
+        ("2M", 327695, 1, "8M acquisition length"),
+        ("1G", 131219, 14, "Limit sample rate to 1 GS/s"),
+    )
+
+    #: The options that are software alone. The rest need hardware and
+    #: simply will not appear without it - and 3C and 4C raise a
+    #: processor board fault when they are switched on without their
+    #: calibration data.
+    OPTION_SOFT = ("1M", "2F", "2C", "1G")
+
+    #: What *OPT? calls an option, where that is not what the option
+    #: word list calls it. Measured, not guessed: a TDS 680B on v4.4.1e
+    #: answers "13:Rs232/cent,1M:extended record length,0,2F:math
+    #: pack,0,FD:1.44MB floppy drive,0,0,0,0,0,0" - and its floppy is
+    #: FD there and 1F here. Anything not in this table is taken to
+    #: name itself.
+    OPTION_ALIASES = {"FD": "1F"}
+
+    #: ATOFFSET numbers a word one higher than ATPUT does.
+    #:
+    #: The option words are written with WORDCONSTANT:ATPUT <word>, and
+    #: read back with WORDCONSTANT:ATOFFSET? <base>,0 - and the two do
+    #: not agree about which word is which. Reading at the address
+    #: ATPUT writes gives the word *before* it.
+    #:
+    #: Measured, and confirmed against a second source rather than
+    #: assumed. On a TDS 680B, reading at the ATPUT addresses says 05,
+    #: 2F and 1F are on and 1M and 13 are off; *OPT? on the same
+    #: instrument says 1M, 13, 2F and the floppy. Adding one makes all
+    #: ten agree with *OPT? exactly, including the seven that are off.
+    #: Two independent readings of the same ten facts, so this is the
+    #: relationship and not a coincidence of one scope's option set.
+    #:
+    #: Confirmed again on a TDS 754D running v8.0e - a different family
+    #: and a different option set - where the ten biased reads agree
+    #: with its *OPT? on all ten, 13, 2F, 1F, 2C and 2M on. Reading at
+    #: the unbiased addresses on that instrument gives 0, 0, 0, 1, 1,
+    #: 0, 1, 0, 0, 23347, which agrees with nothing.
+    OPTION_ATOFFSET_BIAS = 1
 
 
 # ---------------------------------------------------------------- previews
@@ -4669,8 +5100,14 @@ def run_gui():
                            padding=(10, 2), command=lambda: do_wfm_send())
     btn_wdel = ttk.Button(wtop, text=_("Delete waveform"), padding=(10, 2),
                           command=lambda: do_wfm_delete())
+    # At the far right of the top bar, the way Masks and Limits carry
+    # their Refresh - it asks the instrument which sources it has, which
+    # is a top-bar action, not one of the lists' own.
+    btn_wscan = ttk.Button(wtop, text=_("Refresh"), padding=(10, 2),
+                           command=lambda: do_wfm_sources())
+    says(btn_wscan, "Refresh")
     WAVE_LEFT = (btn_wget, btn_wsave, btn_wload, btn_wsend, btn_wdel)
-    WAVE_RIGHT = ()
+    WAVE_RIGHT = (btn_wscan,)
 
     def flowing(host, row1, row2, left, right, key):
         """A toolbar that wraps to a second row when it runs out of room.
@@ -4716,7 +5153,12 @@ def run_gui():
                            "wflow")
     wtop.bind("<Configure>", flow_buttons)
 
-    wpanes = ttk.PanedWindow(wavetab, orient="horizontal")
+    # A plain frame, not a paned window: the left column is a fixed width
+    # (LEFT_PANE, the same as the Limits and Masks tabs) and does not resize,
+    # so all three tabs match and the waveform window is not squeezed by an
+    # accidental drag. The waveform window is resized against the decode
+    # section below it instead.
+    wpanes = ttk.Frame(wavetab)
     wpanes.pack(fill="both", expand=True, padx=2, pady=4)
 
     # Two lists, because they are two different things and the
@@ -4731,15 +5173,9 @@ def run_gui():
     # is told not to shrink to its lists, or its own request would win
     # and the three would go back to disagreeing.
     wleftf.pack_propagate(False)
-    # Under the two lists, because the two lists are what it refreshes.
-    # Up among the save buttons it read as another way of saying Get
-    # waveform, which it is not: this asks the instrument which sources
-    # it has, and Get waveform reads one of them. Packed before the
-    # splitter so that the splitter's expand does not leave it nowhere
-    # to go.
-    btn_wscan = ttk.Button(wleftf, text=_("Refresh"), padding=(10, 2),
-                           command=lambda: do_wfm_sources())
-    btn_wscan.pack(side="bottom", anchor="w", pady=(4, 0))
+    # Refresh now lives at the far right of the top button bar (see
+    # WAVE_RIGHT), the way Masks and Limits carry theirs, which frees the
+    # foot of this column for the three lists.
     wsplit = ttk.PanedWindow(wleftf, orient="vertical")
     wsplit.pack(fill="both", expand=True)
 
@@ -4753,11 +5189,30 @@ def run_gui():
     # is gone and these are all there is.
     SHOWN, HIDDEN = "\u25c9", "\u25cb"
 
+    # The width a vertical scrollbar takes in this theme, measured once from
+    # a throwaway. The Live and Stored lists carry no scrollbar of their own
+    # but reserve this same gutter on the right, so their white area is the
+    # width the Protocol decode list has left after its scrollbar, and the
+    # three line up.
+    _probe = ttk.Scrollbar(root, orient="vertical")
+    _probe.update_idletasks()
+    scroll_w = _probe.winfo_reqwidth()
+    scroll_w = scroll_w if scroll_w > 1 else 17
+    _probe.destroy()
+
     def source_list(parent, rows):
         # selectmode="none" rather than a highlight nobody reads: with
         # the buttons carrying the selection, a second highlighted row
         # is a second answer to the same question.
-        box = ttk.Treeview(parent, columns=("name",), show="tree",
+        #
+        # No scrollbar of its own - six or four rows never overflow - but an
+        # empty gutter the width of one on the right, so the white tree area
+        # matches the Protocol decode list below (which does carry one) and
+        # the three line up rather than this one running a scrollbar's width
+        # wider.
+        frame = ttk.Frame(parent)
+        frame.pack(fill="both", expand=True)
+        box = ttk.Treeview(frame, columns=("name",), show="tree",
                            selectmode="none", height=rows)
         # The first column carries the tree's own indent as well as the
         # button, so it needs more room than the glyph alone suggests.
@@ -4768,10 +5223,13 @@ def run_gui():
         box.bind("<Double-Button-1>",
                  lambda e, b=box: do_wfm_toggle(b.identify_row(e.y)))
         box.bind("<Button-1>", lambda e, b=box: on_click_row(b, e))
+        gutter = ttk.Frame(frame, width=scroll_w)
+        box.pack(side="left", fill="both", expand=True)
+        gutter.pack(side="right", fill="y")
         return box
 
     def fit_notes(evt):
-        """Wrap the two notes to the pane, not to a guess.
+        """Wrap the list notes to the pane, not to a guess.
 
         A label clips rather than wraps when it runs out of room, so a
         fixed wraplength is either too wide for a narrow pane or wastes
@@ -4781,6 +5239,7 @@ def run_gui():
         room = max(80, evt.width - 16)
         lbl_wlive.config(wraplength=room)
         lbl_wrnote.config(wraplength=room)
+        lbl_wdecnote.config(wraplength=room)
 
 
     wlivef = ttk.Frame(wsplit)
@@ -4799,7 +5258,6 @@ def run_gui():
     # Several at once, so more than one trace can be put on the
     # graticule together, the way they sit on the instrument's screen.
     wsrc = source_list(wlivef, 6)
-    wsrc.pack(fill="both", expand=True)
     wsplit.add(wlivef, weight=1)
 
     wreff = ttk.Frame(wsplit)
@@ -4811,58 +5269,624 @@ def run_gui():
     says(lbl_wrnote, "Held in the instrument's memory.\n"
                      "Pick one or more, then load a file into them.")
     lbl_wrnote.pack(anchor="w", pady=(0, 2))
-    # Several at once, so one file can be loaded into more than one
-    # reference and all of them sent in a single go.
-    wref = source_list(wreff, 5)
-    wref.pack(fill="both", expand=True)
-    wsplit.add(wreff, weight=1)
+    # Exactly the four the instrument has (REF1-REF4), and no taller: the
+    # references never grow past four, so a fixed height leaves the room
+    # below for the protocol-decode list rather than spending it on empty
+    # rows. weight=0 keeps this pane at its natural size when the window
+    # grows; the decode pane below takes the slack.
+    wref = source_list(wreff, len(tds_wfm.REFS))
+    wsplit.add(wreff, weight=0)
+
+    # ---- protocol decode: the freed space underneath
+    # A third list, autopopulated from the decoders folder the same way
+    # the masks library is - drop a <name>.py in and it appears here. The
+    # controls that apply a decode live under the plot on the right, where
+    # there is room for a source per wire and the protocol's own settings.
+    wdecf = ttk.Frame(wsplit)
+    lbl_wdec = ttk.Label(wdecf, text=_("Protocol decode"))
+    says(lbl_wdec, "Protocol decode")
+    lbl_wdec.pack(anchor="w", pady=(6, 0))
+    lbl_wdecnote = ttk.Label(wdecf, foreground="#555", wraplength=190,
+                             justify="left")
+    says(lbl_wdecnote, "Decode a captured waveform - no instrument needed.\n"
+                       "Pick a protocol, then set it up on the right.")
+    lbl_wdecnote.pack(anchor="w", pady=(0, 2))
+    wdeclist = ttk.Frame(wdecf)
+    wdeclist.pack(fill="both", expand=True)
+    dec = ttk.Treeview(wdeclist, columns=("wires",), show="tree headings",
+                       selectmode="browse", height=4)
+    dec.heading("#0", text=_("Protocol"))
+    dec.heading("wires", text=_("Wires"))
+    # Widths are the user's to drag - a long protocol name or a wide
+    # wire list wants more, and the heading border is how ttk lets them
+    # say so.
+    dec.column("#0", width=120, minwidth=70, anchor="w")
+    dec.column("wires", width=64, minwidth=44, anchor="w")
+    decbar = ttk.Scrollbar(wdeclist, orient="vertical", command=dec.yview)
+    dec.configure(yscrollcommand=decbar.set)
+    dec.pack(side="left", fill="both", expand=True)
+    decbar.pack(side="right", fill="y")
+    wsplit.add(wdecf, weight=1)
+
     # Bound after both notes exist: a <Configure> can arrive during
     # construction, and a callback that names a widget not yet made
     # raises from inside Tk's own event loop.
     wleftf.bind("<Configure>", fit_notes)
-    wpanes.add(wleftf, weight=0)
+    wleftf.pack(side="left", fill="y", padx=(0, 8))
+    # Lambdas so the handlers (defined further down this builder) are
+    # resolved when they fire, not now; the scan is deferred to the event
+    # loop for the same reason and so the folder read is off the build path.
+    dec.bind("<<TreeviewSelect>>", lambda e: dec_build_controls())
+    relabel.append(lambda: dec_build_controls())
+    relabel.append(lambda: (dec.heading("#0", text=_("Protocol")),
+                            dec.heading("wires", text=_("Wires"))))
+    root.after(0, lambda: do_dec_scan())
 
     wrightf = ttk.Frame(wpanes)
-    # A strip above the plot showing the whole record with the part on
-    # the graticule marked out, which is what the instrument's own
-    # record view does. Without it, a zoomed-in trace gives no clue
-    # where in the capture it came from.
-    over = tk.Canvas(wrightf, height=44, highlightthickness=1,
+    # The plot and the decode panel share the right side through a
+    # vertical splitter, so the results table can be dragged taller when
+    # there is a lot to read and shrunk out of the way when there is not.
+    # No divider line and no handle: the sash is painted the panel's own
+    # background so it vanishes, and you resize by dragging the bottom edge
+    # of the waveform window itself - the cursor changes over the sash strip
+    # there, so the whole edge drags. A raised knob was tried and looked like
+    # a stray mark rather than part of the design.
+    _panebg = ttk.Style().lookup("TFrame", "background") or "#f0f0f0"
+    # Shared look for the two decode-area splitters: a thin sash, no relief,
+    # and no handle knob - painted the panel background (below) so the sash is
+    # invisible and is dragged by the edge alone.
+    _SASH = dict(sashwidth=7, sashrelief="flat", showhandle=False,
+                 borderwidth=0)
+    wrightsplit = tk.PanedWindow(wrightf, orient="vertical",
+                                 background=_panebg, **_SASH)
+    wrightsplit.pack(fill="both", expand=True)
+    wplotarea = ttk.Frame(wrightsplit)
+    # The zoom tools in a column down the left, spanning the full height -
+    # the same shape the Masks and Limits tabs use. A spacer holds them
+    # level with the plot rather than with the record strip above it. The
+    # strip, the plot and the read-out sit in their own column to the right,
+    # so the strip is only as wide as the plot - not stretched across the
+    # tool column.
+    wzoom = ttk.Frame(wplotarea)
+    wzoom.pack(side="left", fill="y", padx=(0, 3))
+    ttk.Frame(wzoom, height=48).pack()            # level the tools with the plot
+
+    def _zoombtn(key, cmd, tip):
+        btn = ttk.Button(wzoom, style="Toolbutton", padding=3, command=cmd)
+        btn.pack(pady=(0, 2))
+        hints(btn, tip)
+        state.setdefault("wzoombtn", {})[key] = btn
+        return btn
+
+    # Horizontal arrows for the time axis, vertical for amplitude; spread to
+    # zoom in, pinched to zoom out; a framed record for Whole record. The
+    # icons are drawn in main() from winicons, with a text fall-back if the
+    # drawing fails - the same path the mask tools take. do_zoom is
+    # unchanged: only the controls that call it have moved and become icons.
+    _zoombtn("timeout", lambda: do_zoom("time", -1), "Time: zoom out")
+    _zoombtn("timein", lambda: do_zoom("time", 1), "Time: zoom in")
+    ttk.Separator(wzoom, orient="horizontal").pack(fill="x", pady=5)
+    _zoombtn("ampout", lambda: do_zoom("volts", -1), "Amplitude: zoom out")
+    _zoombtn("ampin", lambda: do_zoom("volts", 1), "Amplitude: zoom in")
+    ttk.Separator(wzoom, orient="horizontal").pack(fill="x", pady=5)
+    _zoombtn("whole", lambda: do_zoom("reset", 0), "Whole record")
+
+    wplotcol = ttk.Frame(wplotarea)
+    wplotcol.pack(side="left", fill="both", expand=True)
+    # A strip above the plot showing the whole record with the part on the
+    # graticule marked out, which is what the instrument's own record view
+    # does. Without it, a zoomed-in trace gives no clue where in the capture
+    # it came from. In the plot's own column, so it is the plot's width.
+    over = tk.Canvas(wplotcol, height=44, highlightthickness=1,
                      background=tds_wfm.DEFAULT_COLOURS["background"],
                      highlightbackground=EDGE)
     over.pack(fill="x")
-    plot = tk.Canvas(wrightf, background=tds_wfm.DEFAULT_COLOURS["background"],
+    plot = tk.Canvas(wplotcol,
+                     background=tds_wfm.DEFAULT_COLOURS["background"],
                      highlightthickness=1, highlightbackground=EDGE)
     plot.pack(fill="both", expand=True, pady=(2, 0))
-    wscroll = ttk.Scrollbar(wrightf, orient="horizontal")
-    wscroll.pack(fill="x")
+    # The readout used to sit here, under the plot but inside the plot pane,
+    # which put a strip of grey between the plot's black edge and the resize
+    # sash - so the sash, not the plot edge, was what you had to grab. It is
+    # now the first thing in the decode pane instead, so the sash falls right
+    # on the plot's bottom edge (black meets grey) and that edge is the grab.
+    wrightsplit.add(wplotarea, stretch="always", minsize=160)
 
-    wzoom = ttk.Frame(wrightf)
-    wzoom.pack(fill="x", pady=(4, 0))
-    lbl_wtime = ttk.Label(wzoom, text=_("Time"))
-    says(lbl_wtime, "Time")
-    lbl_wtime.pack(side="left", padx=(0, 4))
-    btn_wtout = ttk.Button(wzoom, text="−", width=3,
-                           command=lambda: do_zoom("time", -1))
-    btn_wtout.pack(side="left")
-    btn_wtin = ttk.Button(wzoom, text="+", width=3,
-                          command=lambda: do_zoom("time", 1))
-    btn_wtin.pack(side="left", padx=(2, 12))
-    lbl_wamp = ttk.Label(wzoom, text=_("Amplitude"))
-    says(lbl_wamp, "Amplitude")
-    lbl_wamp.pack(side="left", padx=(0, 4))
-    btn_wvout = ttk.Button(wzoom, text="−", width=3,
-                           command=lambda: do_zoom("volts", -1))
-    btn_wvout.pack(side="left")
-    btn_wvin = ttk.Button(wzoom, text="+", width=3,
-                          command=lambda: do_zoom("volts", 1))
-    btn_wvin.pack(side="left", padx=(2, 12))
-    btn_wwhole = ttk.Button(wzoom, text=_("Whole record"), padding=(8, 1),
-                            command=lambda: do_zoom("reset", 0))
-    btn_wwhole.pack(side="left")
-    winfo = ttk.Label(wrightf, text="", anchor="w")
-    winfo.pack(fill="x", pady=(4, 0))
-    wpanes.add(wrightf, weight=3)
+    # ---- decode controls and results, under the plot
+    # Here rather than in the narrow left pane: a two-wire bus needs a
+    # source chosen per wire and the protocol its own settings, which is
+    # more than the source lists' column has room for. The strip that
+    # marks the decoded values on the trace itself is drawn on the plot
+    # above; this is where the same values are listed and read.
+    wdecpanel = ttk.Frame(wrightsplit, padding=(6, 4))
+    # The plot's readout, first thing in the decode pane so it sits just below
+    # the plot (the sash above it is the plot's own bottom edge).
+    winfo = ttk.Label(wdecpanel, text="", anchor="w")
+    winfo.pack(side="top", fill="x", pady=(0, 4))
+    # Controls on the left, the results table on the right, split by a
+    # horizontal sash. No handle and no line: you resize the table by
+    # dragging its left edge, where the cursor changes over the invisible
+    # sash strip. The table is half the section wide by default and the same
+    # width whatever decoder is chosen (dec_table_fit); the controls take the
+    # other half, wide enough to hold the source dropdowns on one line.
+    wdecsplit = tk.PanedWindow(wdecpanel, orient="horizontal",
+                               background=_panebg, **_SASH)
+    wdecsplit.pack(fill="both", expand=True)
+    # The left pane: the controls fill it. No fixed column any more - the
+    # pane is half the section, wide enough for a four-wire bus on one line.
+    wdecleftpane = ttk.Frame(wdecsplit)
+    wdecleft = ttk.Frame(wdecleftpane)
+    wdecleft.pack(side="left", fill="both", expand=True)
+    # Rebuilt whenever the chosen protocol changes: a source box per wire
+    # and a control per setting, from the decoder's own declaration, so a
+    # new protocol brings its own controls with it and nothing here needs
+    # to know what they are.
+    # Its contents are dynamic (destroyed and rebuilt per protocol), so
+    # they are never registered with says() - that list is for lasting
+    # furniture only, and a destroyed widget in it crashes retranslate.
+    # dec_build_controls fills this from _() each time, and a relabel hook
+    # (added below) re-runs it on a language change so it follows the
+    # setting like everything else.
+    wdecctl = ttk.Frame(wdecleft)
+    wdecctl.pack(fill="x")
+    wdecact = ttk.Frame(wdecleft)
+    wdecact.pack(fill="x", pady=(4, 0))
+    btn_decrun = ttk.Button(wdecact, text=_("Decode"), padding=(10, 2),
+                            command=lambda: do_dec_apply())
+    btn_decrun.pack(side="left")
+    says(btn_decrun, "Decode")
+    btn_decclear = ttk.Button(wdecact, text=_("Clear"), padding=(10, 2),
+                              command=lambda: do_dec_clear())
+    btn_decclear.pack(side="left", padx=(6, 0))
+    says(btn_decclear, "Clear")
+    state["decascii"] = tk.BooleanVar(value=True)
+    chk_decascii = ttk.Checkbutton(wdecact, variable=state["decascii"],
+                                   text=_("Show ASCII"),
+                                   command=lambda: dec_reformat())
+    chk_decascii.pack(side="left", padx=(12, 0))
+    says(chk_decascii, "Show ASCII")
+    # One line, the full width of the controls pane (to the table edge):
+    # wraplength 0 is no wrap, and fill="x" gives it the pane's width. A
+    # line shorter than when it wrapped, so the decode pane's minsize drops
+    # by a line to match (below).
+    lbl_decnote = ttk.Label(wdecleft, foreground="#555", anchor="w",
+                            wraplength=0, justify="left")
+    lbl_decnote.pack(fill="x", pady=(4, 0))
+    # The lister: one row per decoded event, its columns set by the protocol.
+    # It is the right pane of the horizontal split, kept at half the section
+    # width (dec_table_fit) so it is the same size whatever decoder is picked.
+    # The last column stretches to fill that width; grid_propagate off lets
+    # the pane, not the tree, set the frame size. Five rows tall, to keep the
+    # decode section short and the waveform window large.
+    wdectblf = ttk.Frame(wdecsplit, width=300, height=124)
+    wdectblf.grid_propagate(False)
+    wdectblf.pack_propagate(False)
+    dectree = ttk.Treeview(wdectblf, show="headings", height=5,
+                           selectmode="browse")
+    dectbar = ttk.Scrollbar(wdectblf, orient="vertical",
+                            command=dectree.yview)
+    dectree.configure(yscrollcommand=dectbar.set)
+    dectree.grid(row=0, column=0, sticky="nsew")
+    dectbar.grid(row=0, column=1, sticky="ns")
+    wdectblf.grid_rowconfigure(0, weight=1)
+    wdectblf.grid_columnconfigure(0, weight=1)
+    # Both panes hold a floor width: the controls' keeps the four source
+    # dropdowns on one line, the table's stops it being dragged away. The
+    # controls take spare width (stretch) so the table keeps the width
+    # dec_table_fit gave it as the window resizes.
+    wdecsplit.add(wdecleftpane, minsize=520, stretch="always")
+    wdecsplit.add(wdectblf, minsize=190, stretch="never")
+    # minsize covers the readout line plus the tallest controls (a four-wire,
+    # four-setting decoder like SPI: sources on one line, settings two to a
+    # row, then the buttons, then the one-line note) - so the section opens
+    # short and the waveform window takes the rest, but the buttons are never
+    # crushed. A line shorter than before, now the note no longer wraps.
+    wrightsplit.add(wdecpanel, stretch="never", minsize=160)
+    wrightf.pack(side="left", fill="both", expand=True)
+    # Place the sash once the window has a real width. dec_table_fit also
+    # sets the table frame's requested width, so even before this fires (the
+    # tab is behind another at startup) the pane opens at the fixed width.
+    root.after(400, lambda: dec_table_fit())
+
+    # ------------------------------------------------ protocol decode
+    def dec_folder():
+        """Where decoder plugins live on this computer. Topped up from the
+        bundled set every run (tds_decode.sync_folder), so a decoder added
+        in an update appears without reseeding, while a dropped-in <name>.py
+        of the user's own is left alone and picked up the same way."""
+        here = os.path.join(APPDIR, "decoders")
+        try:
+            return tds_decode.sync_folder(resource("decoders"), here)
+        except OSError as exc:
+            log_note("decode", "%s unusable (%s)" % (here, exc))
+            return None
+
+    def do_dec_scan():
+        """Re-read the decoders folder and fill the protocol list."""
+        folder = dec_folder()
+        state["decoders"] = {}
+        dec.delete(*dec.get_children())
+        for one in tds_decode.discover([folder] if folder else []):
+            state["decoders"][one.NAME] = one
+            wires = "+".join(r.rstrip("?") for r in one.SOURCES)
+            dec.insert("", "end", iid=one.NAME, text=one.NAME,
+                       values=(wires,))
+        dec_build_controls()
+
+    def dec_sources():
+        """Captured waveforms a decode can run on, by name: the channels
+        that were fetched and any file staged into a reference."""
+        pool = {}
+        pool.update(state.get("fetched") or {})
+        pool.update(state.get("staged") or {})
+        return pool
+
+    def dec_selected():
+        sel = dec.selection()
+        return state.get("decoders", {}).get(sel[0]) if sel else None
+
+    def _choice_label(param, value):
+        for val, lab in param.choices:
+            if val == value:
+                return lab
+        return param.choices[0][1] if param.choices else ""
+
+    def _choice_value(param, label):
+        for val, lab in param.choices:
+            if lab == label:
+                return val
+        return param.default
+
+    def dec_refresh_source_lists():
+        """Show the captured waveforms that exist right now in every source
+        dropdown. Bound to each list's postcommand, so it fires as the list
+        opens: enabling or forgetting a channel is picked up without
+        rebuilding the panel or disturbing the mappings already made."""
+        names = sorted(dec_sources().keys())
+        for box, optional in state.get("decsourceboxes", []):
+            box.config(values=(([""] if optional else []) + names))
+
+    def dec_build_controls(_evt=None):
+        """Rebuild the source boxes and settings for the chosen protocol,
+        each straight from the decoder's own declaration."""
+        for child in wdecctl.winfo_children():
+            child.destroy()
+        state["decmap"] = {}
+        state["decparams"] = {}
+        state["decsourceboxes"] = []
+        one = dec_selected()
+        if one is None:
+            ttk.Label(wdecctl, foreground="#555", text=_(
+                "Select a protocol from the list on the left.")).pack(
+                anchor="w")
+            btn_decrun.config(state="disabled")
+            dec_fill_table()
+            return
+        btn_decrun.config(state="normal")
+        names = sorted(dec_sources().keys())
+        # The source boxes all on one line: a "Source:" label, then a box per
+        # wire (SPI is CLK, MOSI, MISO and CS). The controls pane is half the
+        # section - wide enough that even a four-wire bus fits one line, which
+        # is where the earlier fixed-width column could not hold them. Each
+        # wire defaults to a different captured source, which a real bus wants.
+        srow = ttk.Frame(wdecctl)
+        srow.pack(fill="x")
+        state["decsrow"] = srow            # exposed for the layout self-check
+        ttk.Label(srow, text=_("Source:"), foreground="#555").pack(
+            side="left", padx=(0, 6))
+        si = 0
+        for i, role in enumerate(one.SOURCES):
+            optional = role.endswith("?")
+            key = role.rstrip("?")
+            cell = ttk.Frame(srow)
+            cell.pack(side="left", padx=(0, 10))
+            ttk.Label(cell, text=key + (" *" if optional else "")).pack(
+                side="left", padx=(0, 2))
+            var = tk.StringVar()
+            state["decmap"][key] = var
+            values = ([""] if optional else []) + names
+            box = ttk.Combobox(cell, textvariable=var, width=8,
+                               state="readonly", values=values,
+                               postcommand=dec_refresh_source_lists)
+            box.pack(side="left")
+            state["decsourceboxes"].append((box, optional))
+            if not optional and names:
+                var.set(names[min(si, len(names) - 1)])
+                si += 1
+        # The settings two to a row, so a four-setting decoder like SPI takes
+        # two lines rather than four and the whole section stays about five
+        # lines high. The controls pane is wide enough (half the section) that
+        # two auto-sized boxes sit side by side without clipping or spilling.
+        prow = ttk.Frame(wdecctl)
+        prow.pack(fill="x", pady=(4, 0))
+        state["decprow"] = prow            # exposed for the layout self-check
+        for i, param in enumerate(one.PARAMS):
+            cell = ttk.Frame(prow)
+            cell.grid(row=i // 2, column=i % 2, sticky="w", padx=(0, 10),
+                      pady=1)
+            ttk.Label(cell, text=_(param.label) + ":").pack(side="left",
+                                                            padx=(0, 2))
+            if param.kind == "bool":
+                var = tk.BooleanVar(value=bool(param.default))
+                ttk.Checkbutton(cell, variable=var).pack(side="left")
+            elif param.kind == "int":
+                var = tk.StringVar(value=str(param.default))
+                ttk.Spinbox(cell, textvariable=var, width=6,
+                            from_=param.lo or 0,
+                            to=param.hi or 100000).pack(side="left")
+            else:
+                labels = [lab for _v, lab in param.choices]
+                var = tk.StringVar(value=_choice_label(param, param.default))
+                # +2 so the dropdown arrow does not clip the last character.
+                width = max([8] + [len(lab) for lab in labels]) + 2
+                ttk.Combobox(cell, textvariable=var, width=width,
+                             state="readonly", values=labels).pack(
+                    side="left")
+            state["decparams"][param.key] = (param, var)
+        # Show this protocol's own columns and width straight away, so the
+        # empty table looks the same as it will once a decode has run.
+        dec_fill_table()
+
+    def _dec_params():
+        out = {}
+        for key, (param, var) in (state.get("decparams") or {}).items():
+            if param.kind == "bool":
+                out[key] = bool(var.get())
+            elif param.kind == "int":
+                try:
+                    out[key] = int(var.get())
+                except (TypeError, ValueError):
+                    out[key] = param.default
+            else:
+                out[key] = _choice_value(param, var.get())
+        return out
+
+    def do_dec_apply():
+        """Run the chosen decoder on the mapped sources and show it."""
+        one = dec_selected()
+        if one is None:
+            say(_("Pick a protocol first"))
+            return
+        pool = dec_sources()
+        signals = {}
+        missing = []
+        primary_dt = None
+        primary_name = ""
+        for role in one.SOURCES:
+            optional = role.endswith("?")
+            key = role.rstrip("?")
+            name = (state["decmap"][key].get() or "").strip()
+            wave = pool.get(name) if name else None
+            if wave is None:
+                if not optional:
+                    missing.append(key)
+                continue
+            sig = tds_decode.Signal.from_waveform(wave)
+            signals[key] = sig
+            if primary_dt is None:
+                primary_dt = sig.dt
+                primary_name = name
+        if missing:
+            messagebox.showwarning(_("Decode"), _(
+                "Choose a captured source for: %s") % ", ".join(missing))
+            return
+        try:
+            frames, note = one.decode(signals, _dec_params())
+        except Exception as exc:                  # noqa: BLE001
+            log_note("decode", "%s: %s" % (one.NAME, exc))
+            messagebox.showerror(_("Error"),
+                                 _("The decode failed: %s") % exc)
+            return
+        state["decresult"] = {"decoder": one, "frames": frames,
+                              "dt": primary_dt or 0.0,
+                              "source": primary_name}
+        lbl_decnote.config(text=("%s - %s" % (one.NAME, note)) if note
+                           else "")
+        dec_fill_table()
+        draw_plot()
+        say(_("Decoded %d event(s)") % len(frames))
+
+    def dec_set_columns(one):
+        """Give the table the columns a protocol declares, or clear them.
+        Called on selection as well as on decode, so the headers show the
+        moment a protocol is picked rather than only after it has run."""
+        if one is None:
+            dectree["columns"] = ()
+            return
+        cols = one.columns()
+        ids = ["c%d" % i for i in range(len(cols))]
+        dectree["columns"] = ids
+        last = len(cols) - 1
+        for j, (cid, (head, wide)) in enumerate(zip(ids, cols)):
+            dectree.heading(cid, text=head)
+            # The last column stretches so the columns fill the half-width
+            # table rather than leaving a gap on the right.
+            dectree.column(cid, width=wide, anchor="w", stretch=(j == last))
+
+    def dec_table_width():
+        """The one table width, in pixels: the widest decoder's own columns
+        plus the scrollbar and a little air. Constant across every decoder
+        (and with none chosen), so the table never changes size and the
+        controls beside it keep the same room - enough for four equal source
+        dropdowns on one line."""
+        ds = state.get("decoders") or {}
+        sums = [sum(w for _h, w in d.columns()) for d in ds.values()]
+        return (max(sums) if sums else 260) + 18 + 12
+
+    def dec_table_fit():
+        """Keep the table at dec_table_width() - the same for every decoder
+        and when none is chosen, never sized to the data. The controls take
+        the rest (with a floor that keeps the source dropdowns on one line).
+        The table frame's own requested width is set to that too, so before
+        the sash has ever been placed (the tab was behind another when the
+        window was built) the pane still opens at the full width rather than
+        the frame's placeholder - otherwise the empty table opened narrow and
+        jumped wider the moment a protocol was picked. The user can still drag
+        the sash; the next protocol change resets it."""
+        want = dec_table_width()
+        wdectblf.configure(width=want)          # req width: right before sash
+        try:
+            total = wdecsplit.winfo_width()
+        except tk.TclError:
+            total = 0
+        if total > 20:
+            left = max(520, total - want)      # controls floor first
+            wdecsplit.sash_place(0, int(left), 0)
+
+    def dec_fill_table():
+        res = state.get("decresult")
+        dectree.delete(*dectree.get_children())
+        if not res or not res["frames"]:
+            # No decode yet: show the picked protocol's headers over an
+            # empty table, at that protocol's own width, so the panel looks
+            # the same before a decode as after one - just without rows.
+            dec_set_columns(dec_selected())
+            dec_table_fit()
+            return
+        one = res["decoder"]
+        ascii_on = bool(state["decascii"].get())
+        dec_set_columns(one)
+        for k, frame in enumerate(res["frames"]):
+            cells = [tds_wfm.eng(frame.time, "s")] + list(
+                one.row(frame, ascii_on))
+            dectree.insert("", "end", iid=str(k), values=cells)
+        dec_table_fit()
+
+    def dec_reformat():
+        """Hex/ASCII changed: the same events, said the other way."""
+        if state.get("decresult"):
+            dec_fill_table()
+            draw_plot()
+
+    def do_dec_clear():
+        """Remove a decode: its strip off the plot, its table, its result,
+        and the band back to its resting place."""
+        state["decresult"] = None
+        state["decoffset"] = 0.0
+        dec_fill_table()
+        draw_plot()
+        say(_("Decode cleared"))
+
+    def draw_decode_strip(left, top, right, bottom):
+        """The decoded values marked on the trace itself: one box per event
+        at its own place in time, the way an instrument draws a bus line.
+        Each box is the protocol's colour (an error box is red); a marker
+        at the left slides the whole band up and down, as a channel's
+        marker moves its trace. Read alongside the table."""
+        state.pop("decmarkerbox", None)
+        res = state.get("decresult")
+        view = state.get("view")
+        if not res or view is None or not res["frames"]:
+            return
+        one = res["decoder"]
+        ascii_on = bool(state["decascii"].get())
+        dt = res.get("dt") or 0.0
+        band = 16
+        # Default just above the scale line; the marker drag moves it, and
+        # it is kept inside the graticule either way.
+        y1 = bottom - 2 - state.get("decoffset", 0.0)
+        y1 = min(bottom - 2, max(top + band, y1))
+        y0 = y1 - band
+        mid = (y0 + y1) / 2.0
+        # Every chevron's colour comes from the decoder itself: the app has
+        # no colour setting for decoders, so a plugin owns them completely -
+        # one colour for the protocol, or a colour per frame. See
+        # Decoder.colour. The marker tab takes the protocol's base colour.
+        marker_colour = getattr(one, "COLOUR", None) or "#39a0c0"
+        for frame in res["frames"]:
+            end_time = frame.time + max(0, frame.end_index - frame.index) * dt
+            x0 = view.x_of_time(frame.time, left, right)
+            x1 = view.x_of_time(end_time, left, right)
+            if x1 < left or x0 > right:
+                continue
+            x0 = max(left, x0)
+            x1 = min(right, x1)
+            if x1 - x0 < 2:
+                x1 = x0 + 2
+            colour = _dec_colour(one, frame)
+            notch = min(4.0, (x1 - x0) / 3.0)
+            spot = [x0, mid, x0 + notch, y0, x1 - notch, y0, x1, mid,
+                    x1 - notch, y1, x0 + notch, y1]
+            plot.create_polygon(*spot, outline=colour, fill="",
+                                width=1, tags="decode")
+            _decode_label(one.label(frame, ascii_on),
+                          (x0 + x1) / 2.0, mid, (x1 - x0) - 4, colour)
+        # The marker: a pointed flag at the band's level, drawn the same way
+        # a channel's marker is - the protocol's colour, the name on it in
+        # ink, horizontal and pointed at the graticule - but carrying the
+        # protocol in use rather than a channel name, so the band says what
+        # it is the way every other trace does. Grabbed to slide the band;
+        # its box is remembered so a press on it starts a vertical drag (see
+        # on_plot_press).
+        mlabel = getattr(one, "NAME", "") or "decode"
+        mfont = _decode_font(plot_font().actual("size"))
+        mwide = mfont.measure(mlabel) + 10 + 6
+        mx0 = tds_wfm.marker_place([], left, mid, mwide, 13, 2,
+                                   right=right, room=plot.winfo_width())
+        facing = tds_wfm.marker_facing(mx0, right)
+        spot = tds_wfm.marker_shape(mx0, mid, mwide, facing=facing)
+        plot.create_polygon(*spot, fill=marker_colour, outline=marker_colour,
+                            tags=("decode", "decmarker"))
+        plot.create_text(mx0 + 5 + (6 if facing < 0 else 0), mid, anchor="w",
+                         text=mlabel, fill=_ink(marker_colour), font=mfont,
+                         tags=("decode", "decmarker"))
+        state["decmarkerbox"] = (mx0 - 2, mid - 8, mx0 + mwide + 2, mid + 8)
+
+    def _dec_colour(one, frame):
+        """The chevron colour for a frame, from the decoder and nowhere else.
+        Guarded: a plugin whose colour() raises or returns something that is
+        not a "#rrggbb" must not take the strip down, so it falls back to a
+        readable default rather than to any app setting (there is none)."""
+        try:
+            c = one.colour(frame)
+        except Exception:                       # noqa: BLE001 - a bad plugin
+            c = None
+        return c if (isinstance(c, str) and c.startswith("#")) else "#39a0c0"
+
+    def _ink(hexcol):
+        """Black or white, whichever reads on `hexcol` - used for the marker
+        tab's text, so the source name stays legible on a light or a dark
+        protocol colour."""
+        try:
+            r = int(hexcol[1:3], 16)
+            g = int(hexcol[3:5], 16)
+            b = int(hexcol[5:7], 16)
+        except (ValueError, IndexError):
+            return "#000000"
+        # Rec. 601 luma; the usual mid-point split.
+        return "#000000" if (r * 299 + g * 587 + b * 114) / 1000 >= 140 \
+            else "#ffffff"
+
+    def _decode_font(size):
+        """A canvas font at a given size, cached - the strip asks for a few
+        sizes per repaint and making a Font each time is wasteful."""
+        cache = state.setdefault("decfonts", {})
+        got = cache.get(size)
+        if got is None:
+            got = tkfont.Font(family=plot_font().actual("family"), size=size)
+            cache[size] = got
+        return got
+
+    def _decode_label(text, cx, cy, room, colour):
+        """The value centred in its box, the font shrunk until it fits; when
+        even the smallest will not fit, a dot marks that data is there
+        rather than leaving the box blank."""
+        if room >= 3:
+            base = plot_font().actual("size")   # Tk: <0 is px, >0 is points
+            step = -1 if base < 0 else 1
+            size = base
+            for _ in range(6):
+                font = _decode_font(size)
+                if font.measure(text) <= room:
+                    plot.create_text(cx, cy, text=text, fill=colour,
+                                     font=font, tags="decode")
+                    return
+                nxt = size - step
+                if abs(nxt) < 6:                 # do not shrink past ~6
+                    break
+                size = nxt
+        plot.create_oval(cx - 1.5, cy - 1.5, cx + 1.5, cy + 1.5,
+                         fill=colour, outline=colour, tags="decode")
 
     def plot_font():
         """The font the canvas draws text in, for measuring it."""
@@ -5035,6 +6059,7 @@ def run_gui():
         plot.create_text((left + right) / 2.0, bottom + 4, anchor="n",
                          fill=pick["label"], text=wave_scales(wave),
                          tags="scales")
+        draw_decode_strip(left, top, right, bottom)
         draw_over()
         set_scroll()
 
@@ -5107,13 +6132,11 @@ def run_gui():
                                       tags="shade")
 
     def set_scroll():
-        """Point the scrollbar at the part of the record on show."""
-        view = state.get("view")
-        if view is None:
-            wscroll.set(0.0, 1.0)
-            return
-        start, end = view.fractions()
-        wscroll.set(start, end)
+        """No horizontal scrollbar any more - the record strip above the plot
+        is the one place the window's position in the record is shown. Kept as
+        a no-op so the handful of callers that redraw the view need not each
+        know the bar is gone."""
+        return
 
     plot.bind("<Configure>", draw_plot)
     over.bind("<Configure>", lambda e: (draw_over(), set_scroll()))
@@ -5165,8 +6188,16 @@ def run_gui():
         draw_plot()
 
     def on_plot_press(evt):
-        """Start a drag: a pan normally, a zoom window with Shift."""
+        """Start a drag: the decode band's marker moves the band, a pan
+        moves the view, Shift draws a zoom window."""
         if state.get("view") is None:
+            return
+        box = state.get("decmarkerbox")
+        if (box and box[0] - 2 <= evt.x <= box[2] + 2
+                and box[1] - 3 <= evt.y <= box[3] + 3):
+            # Grabbed the decode marker: this drag slides the band.
+            state["drag"] = {"decode": True, "y": evt.y,
+                             "start": state.get("decoffset", 0.0)}
             return
         state["drag"] = {"x": evt.x, "y": evt.y,
                          "from_time": time_at(evt.x),
@@ -5192,6 +6223,11 @@ def run_gui():
         drag = state.get("drag")
         view = state.get("view")
         if not drag or view is None:
+            return
+        if drag.get("decode"):
+            # Up is positive: dragging the marker up raises the band.
+            state["decoffset"] = drag["start"] + (drag["y"] - evt.y)
+            draw_plot()
             return
         if drag["box"]:
             plot.delete("band")
@@ -5240,8 +6276,10 @@ def run_gui():
         view = state.get("view")
         if not drag or view is None:
             return
+        if drag.get("decode"):
+            return                            # the band drag needs no finish
         plot.delete("band")
-        if not drag["box"]:
+        if not drag.get("box"):
             return
         # A drag of a pixel or two is a click that shook, not a window.
         if abs(evt.x - drag["x"]) < 6 and abs(evt.y - drag["y"]) < 6:
@@ -5321,21 +6359,6 @@ def run_gui():
               if view.span else 0.5)
         do_zoom("time", direction, at)
 
-    def on_scroll(*args):
-        """The scrollbar's own protocol, in the record's coordinates."""
-        view = state.get("view")
-        if view is None:
-            return
-        if args and args[0] == "moveto":
-            view.scroll_to(float(args[1]))
-        elif args and args[0] == "scroll":
-            step = float(args[1])
-            view.first += step * view.span * (1.0 if args[2] == "pages"
-                                              else 0.1)
-            view.clamp()
-        draw_plot()
-
-    wscroll.config(command=on_scroll)
     plot.bind("<ButtonPress-1>", on_plot_press)
     plot.bind("<B1-Motion>", on_plot_move)
     plot.bind("<ButtonRelease-1>", on_plot_release)
@@ -5579,7 +6602,10 @@ def run_gui():
         lim_flow()
         root.update_idletasks()
 
-    mpanes = ttk.PanedWindow(masktab, orient="horizontal")
+    # A plain frame, not a paned window, so the left column is a fixed width
+    # (LEFT_PANE) that does not resize - the same as the Limits and Waveforms
+    # tabs, for one look across all three.
+    mpanes = ttk.Frame(masktab)
     mpanes.pack(fill="both", expand=True, padx=2, pady=4)
 
     # Two lists down the left, because there are two places a mask can
@@ -5699,7 +6725,7 @@ def run_gui():
     # many rows as there are masks, so the spare height belongs to it.
     # The sash still moves if somebody wants it elsewhere.
     msplit.add(mlivef, weight=0)
-    mpanes.add(mleftf, weight=0)
+    mleftf.pack(side="left", fill="y", padx=(0, 8))
 
     mrightf = ttk.Frame(mpanes)
     # What can be done to a mask, above the drawing: undoing comes
@@ -5838,7 +6864,7 @@ def run_gui():
     # instrument's mask subsystem, because there is not one.
     minfo = ttk.Label(mrightf, anchor="w", foreground="#555")
     minfo.pack(fill="x", pady=(2, 0))
-    mpanes.add(mrightf, weight=4)
+    mrightf.pack(side="left", fill="both", expand=True)
 
     # ------------------------------------------- one editor, two drawings
     # The masks tab and the limits tab draw with the same tools, and the
@@ -7752,27 +8778,22 @@ def run_gui():
         Beside the program rather than in a place chosen by a dialog:
         the point of a library is that it is always the same place.
 
-        The shipped masks are copied in the first time, because the exe
-        unpacks its bundled files to a temporary folder that is deleted
-        on exit - a library there would be gone by the next run, and one
-        that cannot be added to is not a library. Copied rather than
-        read from both places so that renaming or deleting one works
-        the same as for a mask somebody drew.
+        Topped up from the bundled set every run (tds_decode.sync_folder,
+        shared with the decoder library), because the exe unpacks its
+        bundled files to a temporary folder that is deleted on exit - a
+        library there would be gone by the next run, and one that cannot be
+        added to is not a library. Copied rather than read from both places
+        so renaming or deleting one works the same as for a mask somebody
+        drew; copy-missing rather than seed-once so a mask shipped in an
+        update appears without the user reseeding, while their own is left
+        untouched.
         """
         here = os.path.join(APPDIR, "masks")
         try:
-            if not os.path.isdir(here):
-                os.makedirs(here)
-                came = resource("masks")
-                if os.path.isdir(came) and came != here:
-                    for name in os.listdir(came):
-                        one = os.path.join(came, name)
-                        if os.path.isfile(one):
-                            shutil.copy2(one, os.path.join(here, name))
+            return tds_decode.sync_folder(resource("masks"), here)
         except OSError as exc:
             log_note("masks", "%s unusable (%s)" % (here, exc))
             return None
-        return here
 
     def msk_signal(name, path=None):
         """What the list says a mask is for, in a column's worth.
@@ -10289,13 +11310,13 @@ def run_gui():
 
     sview = ttk.Frame(sbody)
     sview.pack(side="left", fill="both", expand=True)
+    # No scrollbars: a scope screen is 640 x 480 (or turned, 480 x 640) and
+    # the pane is larger than that at any normal window size, so the picture
+    # is shown whole and centred rather than offered scrollbars that scroll
+    # nowhere. draw_shot centres it; if the window is dragged smaller than
+    # the picture the edges simply clip, which is nicer than a scrollbar.
     shot = tk.Canvas(sview, background="#3a3a3a", highlightthickness=1,
                      highlightbackground=EDGE)
-    shsb = ttk.Scrollbar(sview, orient="horizontal", command=shot.xview)
-    shvsb = ttk.Scrollbar(sview, orient="vertical", command=shot.yview)
-    shot.configure(xscrollcommand=shsb.set, yscrollcommand=shvsb.set)
-    shvsb.pack(side="right", fill="y")
-    shsb.pack(side="bottom", fill="x")
     shot.pack(side="left", fill="both", expand=True)
     sinfo = ttk.Label(scrtab, text="", anchor="w")
     sinfo.pack(fill="x", padx=2, pady=(0, 2))
@@ -10654,6 +11675,15 @@ def run_gui():
     state["sysport"] = tk.StringVar()
     state["sysformat"] = tk.StringVar()
     state["syslayout"] = tk.StringVar()
+    # Tooltips for the hardcopy and RS-232 dropdowns, keyed like the loops
+    # that build them, so both loops label their boxes from one place.
+    _systips = {
+        "sysport": "Which port hardcopy output is sent to",
+        "sysformat": "The image format the instrument writes for hardcopy",
+        "syslayout": "The page orientation of the hardcopy",
+        "sysbaud": "RS-232 speed in bits per second (Option 13 only)",
+        "sysparity": "RS-232 parity (Option 13 only)",
+        "sysstop": "RS-232 stop bits (Option 13 only)"}
     for label, key in (("Port", "sysport"), ("Format", "sysformat"),
                        ("Layout", "syslayout")):
         values = SYS_CHOICES[key]
@@ -10662,8 +11692,10 @@ def run_gui():
         one = ttk.Label(line, text=_(label), width=8)
         one.pack(side="left")
         says(one, label)
-        ttk.Combobox(line, textvariable=state[key], values=values,
-                     width=14, state="readonly").pack(side="left")
+        _cb = ttk.Combobox(line, textvariable=state[key], values=values,
+                           width=14, state="readonly")
+        _cb.pack(side="left")
+        hints(_cb, _systips[key])
     lbl_sysrs = ttk.Label(sysbox3, foreground="#555", wraplength=300,
                           justify="left")
     says(lbl_sysrs, "The RS-232 settings below are Option 13 only. If not "
@@ -10681,8 +11713,10 @@ def run_gui():
         one = ttk.Label(line, text=_(label), width=8)
         one.pack(side="left")
         says(one, label)
-        ttk.Combobox(line, textvariable=state[key], values=values,
-                     width=14, state="readonly").pack(side="left")
+        _cb = ttk.Combobox(line, textvariable=state[key], values=values,
+                           width=14, state="readonly")
+        _cb.pack(side="left")
+        hints(_cb, _systips[key])
     btn_sysports = ttk.Button(sysbox3, text=_("Apply"), padding=(10, 2),
                               command=lambda: do_sys_ports())
     btn_sysports.pack(anchor="w", pady=(8, 0))
@@ -10715,9 +11749,11 @@ def run_gui():
     # memory array, then the rest. The keywords are what the manual and
     # the instrument's own Utility menu say, so they are not
     # translated; the line underneath says what each one covers and is.
-    ttk.Combobox(sysrow4, textvariable=state["sysdiag"], width=14,
-                 state="readonly",
-                 values=list(DIAG_AREAS)).pack(side="left")
+    cmb_sysdiag = ttk.Combobox(sysrow4, textvariable=state["sysdiag"],
+                               width=14, state="readonly",
+                               values=list(DIAG_AREAS))
+    cmb_sysdiag.pack(side="left")
+    hints(cmb_sysdiag, "Which area of the instrument the self test checks")
     btn_sysdiag = ttk.Button(sysrow4, text=_("Run"), padding=(10, 2),
                              command=lambda: do_sys_diag())
     btn_sysdiag.pack(side="left", padx=4)
@@ -11473,11 +12509,22 @@ def run_gui():
     lbl_fwlen = ttk.Label(fwbox3, foreground="#555", text="-")
     lbl_fwlen.pack(anchor="w", pady=(6, 0))
 
-    btn_fwstart = ttk.Button(fwbox3, text=_("Write firmware"),
+    fwbtns = ttk.Frame(fwbox3)
+    fwbtns.pack(anchor="w", pady=(10, 0))
+    btn_fwstart = ttk.Button(fwbtns, text=_("Write firmware"),
                              padding=(10, 3),
                              command=lambda: do_fw_start())
-    btn_fwstart.pack(anchor="w", pady=(10, 0))
+    btn_fwstart.pack(side="left")
     says(btn_fwstart, "Write firmware")
+    # Backing up on its own, without a write to follow: no image need be
+    # chosen and nothing is ever erased or programmed. It reads the same
+    # two regions a write would keep first, through the same fw_keep, so
+    # it is the write's own safety net offered by itself.
+    btn_fwbackup = ttk.Button(fwbtns, text=_("Back up firmware"),
+                              padding=(10, 3),
+                              command=lambda: do_fw_backup())
+    btn_fwbackup.pack(side="left", padx=(8, 0))
+    says(btn_fwbackup, "Back up firmware")
 
     # ------------------------------------------------ the tab's own logic
     def fw_backup_len():
@@ -11545,10 +12592,16 @@ def run_gui():
         # backups go: Write stays greyed until there is somewhere to put
         # them, rather than being offered and then refusing.
         where = state.get("fwbackups") or ""
-        ready = (bool(state.get("fwmonitor")) and fw_current() is not None
-                 and bool(where) and os.path.isdir(where))
-        btn_fwstart.config(state="normal" if ready and not state.get("busy")
-                           else "disabled")
+        have_where = bool(where) and os.path.isdir(where)
+        mon = bool(state.get("fwmonitor"))
+        idle = not state.get("busy")
+        ready = mon and fw_current() is not None and have_where
+        btn_fwstart.config(state="normal" if ready and idle else "disabled")
+        # The backup button asks less of the tab than Write does: a
+        # monitor and somewhere to put the files, but no image chosen,
+        # because it never writes one.
+        btn_fwbackup.config(state="normal" if mon and have_where and idle
+                            else "disabled")
 
     def fw_say_told():
         """The version the instrument reported, beside the model box."""
@@ -11758,6 +12811,34 @@ def run_gui():
         say(_("Backing up before anything is written ..."))
         w.submit("fw_run", lambda k: k.fw_run(plan), needs_fs=False)
 
+    def do_fw_backup():
+        """Read the NVRAM and firmware out to files and stop there. No image
+        is chosen and nothing is written to the instrument - this is the
+        backup a write would take, taken on its own."""
+        got = state.get("fwmonitor")
+        if not got:
+            return
+        where = state.get("fwbackups") or APPDIR
+        if not os.path.isdir(where):
+            messagebox.showerror(_("Error"), _(
+                "Choose a folder for the backups first."))
+            return
+        if not messagebox.askyesno(_("Back up firmware?"), _(
+                "This reads the instrument's NVRAM and firmware into "
+                "%(where)s, to two files. Nothing is erased and nothing is "
+                "written to the instrument.\n\nProceed?") % {"where": where},
+                default="yes"):
+            return
+        plan = {"resource": got["resource"],
+                "normal": state.get("addr") or DEFAULT_ADDR,
+                "backup_dir": where, "backup_len": fw_backup_len(),
+                "check_backup": bool(state["fwcheck"].get()),
+                "model": fw_model() or "TDS",
+                "stamp": time.strftime("%Y%m%d-%H%M%S")}
+        busy(True, "steps")
+        say(_("Backing up the firmware and NVRAM ..."))
+        w.submit("fw_backup", lambda k: k.fw_backup(plan), needs_fs=False)
+
     def fw_first_look(_event=None):
         """Fill the tab in the first time it is looked at."""
         try:
@@ -11828,6 +12909,24 @@ def run_gui():
                        "on again."))
         say(_("Firmware written and verified"))
         messagebox.showinfo(_("Firmware written"), "\n".join(lines))
+
+    def fw_backup_report(got):
+        """Say what was saved, once - a backup on its own, with no write to
+        report after it."""
+        lines = []
+        for one in got["backups"]:
+            lines.append(_("%(what)s backed up: %(path)s (%(size)s)")
+                         % {"what": one["what"],
+                            "path": os.path.basename(one["path"]),
+                            "size": tds_fw._size(one["bytes"])})
+        if got.get("ticked"):
+            lines.append("")
+            lines.append(_("The clock moved while the NVRAM was read, which "
+                           "is the instrument keeping time and not a fault."))
+        lines.append("")
+        lines.append(_("Nothing was written to the instrument."))
+        say(_("Firmware and NVRAM backed up"))
+        messagebox.showinfo(_("Backed up"), "\n".join(lines))
     # --------------------------------------------------- the backup tab
     # Everything that can be copied off this instrument and put back, in
     # one file. A zip and not a disk image: no command in this firmware
@@ -12542,17 +13641,20 @@ def run_gui():
 
     setgrid = ttk.Frame(setbox1)
     setgrid.pack(fill="x")
+    # Two columns, split down the middle however many roles there are, so a
+    # long list of colours does not overflow a fixed six-row column.
+    set_half = (len(SET_LABELS) + 1) // 2
     for row, (key, label) in enumerate(SET_LABELS):
         one = ttk.Label(setgrid, text=_(label))
-        one.grid(row=row % 6, column=0 if row < 6 else 2, sticky="w",
-                 pady=2, padx=(0, 6))
+        one.grid(row=row % set_half, column=0 if row < set_half else 2,
+                 sticky="w", pady=2, padx=(0, 6))
         says(one, label)
         # A plain tk button, not ttk: a themed button will not take a
         # background colour on Windows, which is the one thing this
         # button exists to show.
         swatch = tk.Button(setgrid, width=6, relief="ridge")
-        swatch.grid(row=row % 6, column=1 if row < 6 else 3, sticky="w",
-                    pady=2, padx=(0, 16))
+        swatch.grid(row=row % set_half, column=1 if row < set_half else 3,
+                    sticky="w", pady=2, padx=(0, 16))
         set_swatches[key] = swatch
         hints(swatch, "Click to choose this colour")
 
@@ -15558,8 +16660,7 @@ def run_gui():
     labelled += [(btn_wget, "Get waveform"), (btn_wsave, "Save waveform"),
                  (btn_wload, "Load waveform..."),
                  (btn_wsend, "Send to instrument..."),
-                 (btn_wdel, "Delete waveform"), (btn_wscan, "Refresh"),
-                 (btn_wwhole, "Whole record")]
+                 (btn_wdel, "Delete waveform"), (btn_wscan, "Refresh")]
     # What each button is for, in a tooltip. Written where the whole set
     # can be seen at once rather than beside each button: they have to
     # read as one voice, and half of them are an arrow or a symbol with
@@ -15585,11 +16686,6 @@ def run_gui():
                         "reference memories"),
             (btn_wdel, "Empty the selected reference on the instrument"),
             (btn_wscan, "Ask the instrument which sources it has"),
-            (btn_wtout, "Zoom out in time"),
-            (btn_wtin, "Zoom in on time"),
-            (btn_wvout, "Zoom out in amplitude"),
-            (btn_wvin, "Zoom in on amplitude"),
-            (btn_wwhole, "Put the whole record back on the graticule"),
             (btn_mnew, "Start an empty mask"),
             (btn_msave, "Save this mask on this computer, under a name "
                         "you choose"),
@@ -15792,6 +16888,12 @@ def run_gui():
             (cmb_lsource, "The channel the template is built for and "
                           "judged against"),
             (ent_lgrid, "Grid spacing, in divisions of the graticule"),
+            # Waveforms tab - protocol decode
+            (btn_decrun, "Decode the mapped sources with the chosen "
+                         "protocol"),
+            (btn_decclear, "Clear the decode from the table and the plot"),
+            (chk_decascii, "Show the decoded bytes as ASCII text where a "
+                           "column allows it"),
             # System tab
             (btn_sysread, "Read the front-panel lock state from the "
                           "instrument"),
@@ -15821,6 +16923,8 @@ def run_gui():
             (btn_fwback, "Choose the folder the backups are written to"),
             (btn_fwstart, "Back up, then erase the flash and write the "
                           "chosen firmware image"),
+            (btn_fwbackup, "Read the instrument's firmware and NVRAM out to "
+                           "backup files, without writing anything"),
             (cbo_fwmodel, "The instrument model this firmware image is "
                           "for"),
             (chk_fwall, "List every firmware image, not just those for "
@@ -15975,6 +17079,16 @@ def run_gui():
                     if label in BAK_JOBS:
                         bak_note(_("Failed - %s") % payload)
                     if label == "connect":
+                        if "Another copy of TDS Toolkit" in (payload or ""):
+                            # The bus is held by another copy of this
+                            # program, not an absent instrument. Say so and
+                            # do not open the picker - there is nothing to
+                            # pick, and scanning the bus is the very thing
+                            # one program at a time exists to prevent.
+                            say(payload)
+                            root.title("TDS Toolkit %s - %s"
+                                       % (__version__, _("not connected")))
+                            continue
                         # Not an error. The scope being somewhere else, or
                         # switched off, is the ordinary first experience of
                         # anyone whose bus is not the author's, and raising
@@ -16090,6 +17204,10 @@ def run_gui():
                 if label == "fw_run":
                     busy(False)
                     fw_report(payload)
+                    continue
+                if label == "fw_backup":
+                    busy(False)
+                    fw_backup_report(payload)
                     continue
                 if label == "connect":
                     state["addr"] = payload.get("addr") or state["addr"]
@@ -17229,6 +18347,20 @@ def run_gui():
                     navigate(state["cwd"], force=True)
                 elif label == "uploads":
                     busy(False)
+                    if payload.get("blocked"):
+                        # Nothing was written - the pre-flight health check
+                        # refused. Safe to retry once the instrument is well;
+                        # no override needed.
+                        messagebox.showwarning(
+                            _("Upload"),
+                            _("Nothing was written. The instrument's file "
+                              "system was checked first and did not answer "
+                              "normally:\n\n%s\n\nThis is usually a wedged "
+                              "file system. Power cycle the instrument, "
+                              "confirm it lists its files, then try again.")
+                            % payload["blocked"])
+                        navigate(state["cwd"], force=True)
+                        continue
                     for dest, n in payload["done"]:
                         # Only rows in the folder on screen. A dropped
                         # folder writes into subfolders as well, and
@@ -17266,6 +18398,26 @@ def run_gui():
                               "try again.")
                             % {"failed": len(payload["failed"]),
                                "skipped": len(payload["skipped"])})
+                    if payload.get("unchanged"):
+                        # Files already on the instrument, byte for byte,
+                        # were left alone rather than rewritten.
+                        say(_("%(done)d uploaded, %(same)d already there "
+                              "and left unchanged")
+                            % {"done": len(payload["done"]),
+                               "same": len(payload["unchanged"])})
+                    if payload.get("unhealthy"):
+                        # Post-flight failure: the files verified, but the
+                        # root no longer lists. This is the state that
+                        # precedes a lost disk - say so plainly.
+                        messagebox.showerror(
+                            _("Error"),
+                            _("The files were written and verified, but "
+                              "afterwards the instrument's file system no "
+                              "longer lists normally:\n\n%s\n\nThis is the "
+                              "state that precedes a lost disk. Do not write "
+                              "to it again - power cycle the instrument and "
+                              "check its files before doing anything else.")
+                            % payload["unhealthy"])
                     navigate(state["cwd"], force=True)
                 elif label == "format":
                     busy(False)
@@ -17371,11 +18523,15 @@ def run_gui():
              "cut": "scissors", "union": "union",
              "intersect": "intersect", "subtract": "subtract",
              "fliph": "fliph", "flipv": "flipv",
-             "undo": "undo", "redo": "redo"}
+             "undo": "undo", "redo": "redo",
+             # the waveform tab's zoom column
+             "timein": "timein", "timeout": "timeout",
+             "ampin": "ampin", "ampout": "ampout", "whole": "whole"}
     try:
         state["micons"] = {k: winicons.tool(tk, v)
                            for k, v in DRAWN.items()}
-        for held in ("mtoolbtn", "mboolbtn", "ltoolbtn", "lboolbtn"):
+        for held in ("mtoolbtn", "mboolbtn", "ltoolbtn", "lboolbtn",
+                     "wzoombtn"):
             for key, btn in (state.get(held) or {}).items():
                 btn.config(image=state["micons"][key])
         for key, btn in (state.get("undobtn") or {}).items():
@@ -17383,8 +18539,11 @@ def run_gui():
     except Exception:                        # words, if the drawing fails
         words = {"pen": "✎", "move": "✥", "eraser": "⌫", "cut": "✂",
                  "union": "∪", "intersect": "∩", "subtract": "∖",
-                 "fliph": "↔", "flipv": "↕"}
-        for held in ("mtoolbtn", "mboolbtn", "ltoolbtn", "lboolbtn"):
+                 "fliph": "↔", "flipv": "↕",
+                 "timein": "↔", "timeout": "→←", "ampin": "↕",
+                 "ampout": "↓↑", "whole": "▭"}
+        for held in ("mtoolbtn", "mboolbtn", "ltoolbtn", "lboolbtn",
+                     "wzoombtn"):
             for key, btn in (state.get(held) or {}).items():
                 btn.config(text=words[key])
         for key, btn in (state.get("undobtn") or {}).items():

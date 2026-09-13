@@ -370,6 +370,17 @@
       "options": ["1M", "05", "13", "2F", "1F"]
     },
     {
+      "model": "TDS 694C",
+      "firmware": "v6.4e",
+      "reader": "READFILE",
+      "can_write": true,
+      "filesystem": true,
+      "evidence": "firmware",
+      "image": "35e7aff853",
+      "note": "Read out of the image: options from the option getters, reader/can_write from the SCPI keyword table (577 keywords, READFILE and WRITEFILE both present). Not yet measured on a 694C instrument, but the ROM is definitive.",
+      "options": ["1M", "05", "13", "2F", "1F", "2C", "3C", "4C", "1G"]
+    },
+    {
       "model": "TDS 714L",
       "firmware": "v7.1.1e",
       "reader": "READFILE",

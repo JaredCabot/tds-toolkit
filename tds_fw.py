@@ -759,8 +759,8 @@ RTC_LEN = 14
 #: holds the block's NVRAM address and its size, with the size repeated
 #: at +0x18. That doubled size beside an 0x0400xxxx address is a
 #: signature no relocation moves, so scratch/_nvgen.py finds them in an
-#: image without needing to know where it loads. Every one of the 31
-#: images in the collection gives a table; fifteen are distinct.
+#: image without needing to know where it loads. Every one of the 32
+#: images in the collection gives a table; sixteen are distinct.
 #:
 #: Checked before it was believed. Where TDSNvrCV_2_1 - the verifier
 #: that ships with the tdsNvramFloppyTool scripts - has a prototype for
@@ -769,7 +769,10 @@ RTC_LEN = 14
 #: dumps taken here: a TDS784D and a TDS714L both 5/5 on the v6.3e-v8.0e
 #: table (right, since a 714L runs the 784D's firmware), a TDS680B 5/5
 #: on v4.2e/v4.4.1e, and a **TDS640A 4/6 on v3.8.5e/v3.8.8e - its own
-#: firmware, which no borrowed table had at all.**
+#: firmware, which no borrowed table had at all.** And a **TDS694C 5/5
+#: on its own v6.4e table (image 35e7aff8)**, extracted from the image
+#: and confirmed against that instrument's DS1486 dump - a table no
+#: other model shares.
 #:
 #: Two things it does not have. `PFCal` has a descriptor of another
 #: shape and is missing here, so a v7.4e dump checks five sections
@@ -828,6 +831,13 @@ NVRAM_PROTOS = (
     ('v6.3e v6.4e v6.6e v7.1.1e v7.2e v7.4e v8.0e',
      ((0x806, 50), (0x2806, 20), (0x2838, 300), (0x2C20, 8618),
       (0x5330, 4580))),
+    # The TDS694C's v6.4e is a separate image from the 754D/784D/794D
+    # v6.4e above and carries its own table: the v6.0e-era State address
+    # with sizes of its own. Extracted from image 35e7aff8 and confirmed
+    # 5/5 against that instrument's own DS1486 dump.
+    ('v6.4e 35e7aff8',
+     ((0x806, 50), (0x2806, 20), (0x2838, 304), (0x2C20, 4274),
+      (0x3DB4, 2494))),
 )
 
 #: What the librarian calls each block, by where it keeps it. Read off

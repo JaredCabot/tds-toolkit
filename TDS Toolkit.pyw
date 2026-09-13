@@ -1,4 +1,4 @@
-"""Double-click this to open the file explorer with no console window.
+"""Double-click this to open TDS Toolkit with no console window.
 
 Windows runs a .pyw with pythonw.exe, which has no console attached, so
 there is no black window behind the app and none flashing up first. The
