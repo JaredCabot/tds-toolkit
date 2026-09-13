@@ -5,6 +5,18 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.1] - 2026-09-14
+
+### Fixed
+
+- **Completed the interface translations.** Fourteen strings were left in
+  English in every non-English catalogue: the firmware backup feature (the
+  **Back up firmware** button, its confirmation dialog, and its progress and
+  result messages) and the decode and self-test tooltips. They are now
+  translated in all seven languages - German, Spanish, French, Italian,
+  Russian, Japanese and Simplified Chinese - so those interfaces no longer
+  fall back to English.
+
 ## [1.2.0] - 2026-09-12
 
 Adds host-side **protocol decode** to the Waveform tab: decoding a captured
