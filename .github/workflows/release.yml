@@ -133,12 +133,17 @@ jobs:
 
       # So a download can be told apart from a download that went wrong,
       # and so a bug report can say which binary it is about.
-      - name: Checksums
+      # The firmware library ships with each release too, taken straight
+      # from the repository checkout. The app reads firmware from this
+      # zip (see firmware/README.md), so a release carries it alongside
+      # the binaries rather than making a user clone the repo for it.
+      - name: Bundle the firmware library and checksum everything
         run: |
+          cp firmware/TDS-firmware-images.zip built/
           cd built
           # Named rather than globbed with *, which would be a race
           # with the file being written.
-          sha256sum TDS-Toolkit-* tds-toolkit-* > SHA256SUMS.txt
+          sha256sum TDS-Toolkit-* tds-toolkit-* TDS-firmware-images.zip > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
       # Free, and worth more than the checksums: this ties each binary

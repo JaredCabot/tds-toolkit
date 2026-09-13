@@ -77,13 +77,15 @@ Each protocol is a small Python file in a `decoders/` folder beside the
 program's settings, autopopulated the way the masks library is: drop a
 `<name>.py` in and it appears in the list the next time the tab is opened, and
 an update's new decoders are copied in without overwriting one you wrote. The
-contract is the `Decoder` base class in `tds_decode.py`; see
-`decoders/_template.py` and `decoders/README.txt` to write your own.
+contract is the `Decoder` base class in `tds_decode.py`;
+`decoders/_template.py`, `decoders/README.txt` and the
+[decoder-writing guide](docs/TDS%20Toolkit%20-%20Writing%20a%20Protocol%20Decoder.pdf)
+show how to write your own.
 
 ## What your instrument can do
 
 Firmware decides what is possible, and the difference across the range is
-large. The table below was read out of 66 firmware images.
+large. The table below was read out of 67 firmware images.
 
 | Generation | Browse | Download | Upload |
 |---|---|---|---|
@@ -96,7 +98,7 @@ send a file to them over GPIB. They browse and download normally.
 
 Waveform transfer works on every instrument in the range, including the v2.x
 models with no filesystem: `CURVe`, `WFMPre`, `DATa:SOURce` and
-`DATa:DESTination` are present in all 34 firmware images examined.
+`DATa:DESTination` are present in all 35 firmware images examined.
 
 What each known instrument can do is listed in `capabilities.json`. An
 instrument that is not listed is asked directly when it connects, so it works
@@ -112,7 +114,7 @@ without unpacking. You can equally point the tab at a folder of your own, and
 it lists what is there.
 
 Tektronix shipped one binary for a whole family, so the same image arrives
-under several model names - of 67 files in one collection, 47 were copies of
+under several model names - of 68 files in one collection, 47 were copies of
 another, and naming the survivor after one member of its family says
 something untrue about the other four. `FIRMWARE-INDEX.txt` records which
 instruments each image is for, so the filename does not have to.
@@ -167,7 +169,7 @@ taken from the `$VersionString: FV:v...` tag inside it. Images also carry
 `FV:3.8eSparc10.atria1`, which is the machine the firmware was built on
 rather than a version of anything.
 
-The images carry no Tektronix part number - searching all 31 for one finds
+The images carry no Tektronix part number - searching all 32 for one finds
 nothing in that shape - so the index does not list one.
 
 ## Requirements
@@ -278,7 +280,8 @@ the version resource from `version_info.txt`.
 The released binaries are not built by hand. Tagging a commit `v*` runs
 [`.github/workflows/release.yml`](.github/workflows/release.yml), which builds
 each one on the system it is for - PyInstaller cannot cross-compile - and
-attaches all four to the release. The Linux build runs on Ubuntu 22.04 rather
+attaches all four, plus the `TDS-firmware-images.zip` archive, to the release.
+The Linux build runs on Ubuntu 22.04 rather
 than the newest runner, because a binary built against an older glibc runs on
 newer distributions and the reverse is not true.
 
@@ -287,6 +290,8 @@ newer distributions and the reverse is not true.
 New in **1.2.0**:
 
 - **Protocol decode** on the Waveform tab - twenty-six decoders (RS-232/UART, I2C, SPI, CAN, IR remote and more) plus drop-in plugins, run entirely on the PC against a captured waveform. See [Protocol decode](#protocol-decode) above.
+- **TDS694C support** - firmware image, capabilities and a validated NVRAM checksum table.
+- **Firmware images ship with every release** as `TDS-firmware-images.zip`, read by the Firmware tab without unpacking.
 
 New in **1.1.0**:
 

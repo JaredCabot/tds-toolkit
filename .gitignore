@@ -51,14 +51,11 @@ sample.wfm
 limits/
 
 # --- Internal/dev docs: kept on disk, deliberately not published ---
-# Design and reverse-engineering notes, the maintainer guide, the 68k
-# helper source (its assembled bytes are embedded in tds_fw.py), and the
-# decoder-authoring aids. None are needed to use the app. See the private
-# tools/ and notes/ for the rest of the maintainer-only material.
+# Design and reverse-engineering notes, the maintainer guide, and the 68k
+# helper source (its assembled bytes are embedded in tds_fw.py). None are
+# needed to use the app. See the private tools/ and notes/ for the rest of
+# the maintainer-only material.
 /CLAUDE.md
 /FILE-TRANSFER-AUDIT.md
 /FILE-TRANSFER-HARDENING.md
 /fwhelper.S
-/docs/TDS Toolkit - Writing a Protocol Decoder.pdf
-/decoders/_template.py
-/decoders/README.txt
