@@ -974,30 +974,25 @@ def nvram_check(blob):
 
 
 # ----------------------------------------------------------- the catalogue
-#: Two shapes of filename. The first carries a model, which is how
-#: these arrive from Tektronix and how a collection that has never been
-#: tidied still reads. The second deliberately does not: one image
-#: serves a whole family, so naming it after one member of that family
-#: says something untrue about the other four, and which instruments it
-#: is for belongs in the index instead. The eight hex digits are the
-#: start of the image's SHA-256, and they are there because a version
-#: alone is not unique - v2.16e is one image for a TDS520 and a
-#: different one for a TDS540.
-NAMES = (
-    re.compile(r"^(TDS\d+[A-Z]?)_v([0-9][0-9.]*[a-z]?)_Firmware\.bin$",
-               re.IGNORECASE),
-    re.compile(r"^TDS()_v([0-9][0-9.]*[a-z]?)_[0-9a-f]{8}\.bin$",
-               re.IGNORECASE),
-)
+#: The one filename shape read for a version: the library's own, which
+#: deliberately carries no model. One image serves a whole family, so
+#: naming it after one member says something untrue about the other
+#: four; which instruments it is for belongs in the index instead. The
+#: version is followed by the first eight hex digits of the image's
+#: SHA-256, there because a version alone is not unique - v2.16e is one
+#: image for a TDS520 and a different one for a TDS540. Any other name
+#: is read for its bytes alone: the image is identified by a SHA-256
+#: match against the catalogue (or is simply a file the user points at),
+#: the models come from the index, and the version from the FV string
+#: inside the image.
+NAME = re.compile(r"^TDS_v([0-9][0-9.]*[a-z]?)_[0-9a-f]{8}\.bin$",
+                  re.IGNORECASE)
 
 
 def named(leaf):
-    """(model, version) out of a filename. Either may be empty."""
-    for one in NAMES:
-        got = one.match(leaf)
-        if got:
-            return got.group(1).upper(), got.group(2).lower()
-    return "", ""
+    """The version a library filename carries, or "" for any other name."""
+    got = NAME.match(leaf)
+    return got.group(1).lower() if got else ""
 
 
 #: The version the image says it is, which is not always what it is
@@ -1101,13 +1096,13 @@ def fv_strings(blob):
 
 
 class Image(object):
-    """One firmware binary, and every name it is shipped under.
+    """One firmware binary, and every path it was found under.
 
-    Tektronix shipped one binary for a whole family: of 67 files in the
-    folder here, 47 are copies of another under a different model's name.
-    So which instruments an image suits is not guessed from strings inside
-    it - the strings disagree with the filenames in both directions - it is
-    read off which filenames carry these exact bytes.
+    Tektronix shipped one binary for a whole family, so which instruments
+    an image suits is not guessed from strings inside it - the strings
+    disagree in both directions - nor from its filename. It is identified
+    by its SHA-256 against the catalogue, and which models it suits comes
+    from the index (set by catalogue()).
     """
 
     def __init__(self, path, blob, archive=""):
@@ -1121,16 +1116,18 @@ class Image(object):
         self.sha = hashlib.sha256(blob).hexdigest()
         self.head = blob[:4]
         self.fv = fv_strings(blob)
-        model, self.version = named(os.path.basename(path))
-        self.models = [model] if model else []
+        # The version off a library filename if it carries one, else the
+        # one the image claims for itself. Which instruments it suits is
+        # never taken from the name - it comes from the index, set by
+        # catalogue().
+        self.version = named(os.path.basename(path))
+        if not self.version and self.fv:
+            self.version = max(self.fv, key=version_key)
+        self.models = []
 
     def add(self, path):
         self.paths.append(path)
-        model, version = named(os.path.basename(path))
-        self.version = self.version or version
-        if model and model not in self.models:
-            self.models.append(model)
-            self.models.sort()
+        self.version = self.version or named(os.path.basename(path))
 
     @property
     def path(self):

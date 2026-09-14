@@ -14,7 +14,7 @@ limit-test subsystem over the bus, but ship with no tool to reach any of it
 from a PC. This is that tool.
 
 Full documentation is in
-[TDS Toolkit User Manual.pdf](docs/TDS%20Toolkit%20User%20Manual.pdf).
+[TDS Toolkit User Manual (en).pdf](docs/TDS%20Toolkit%20User%20Manual%20%28en%29.pdf).
 
 ## Capabilities
 
@@ -113,23 +113,22 @@ Download it and point the Firmware tab straight at the zip - it is read
 without unpacking. You can equally point the tab at a folder of your own, and
 it lists what is there.
 
-Tektronix shipped one binary for a whole family, so the same image arrives
-under several model names - of 68 files in one collection, 47 were copies of
-another, and naming the survivor after one member of its family says
-something untrue about the other four. `FIRMWARE-INDEX.txt` records which
-instruments each image is for, so the filename does not have to.
-
-Two filename shapes are read:
+Tektronix shipped one binary for a whole family, so naming an image after
+one member of its family says something untrue about the other four.
+`FIRMWARE-INDEX.txt` records which instruments each image is for, so the
+filename does not have to, and the images in the shipped archive are named
+model-free:
 
 ```
-TDS784D_v7.4e_Firmware.bin     as Tektronix' images are usually named
-TDS_v7.4e_7e80aad5.bin         model-free: version, then eight digits
-                               of the image's SHA-256
+TDS_v7.4e_7e80aad5.bin     version, then the first eight digits of the
+                           image's SHA-256
 ```
 
-The eight digits are what make the second shape unique - a version alone is
-not, since `v2.16e` is one image for a TDS520 and a different one for a
-TDS540.
+The eight digits are what make the name unique - a version alone is not,
+since `v2.16e` is one image for a TDS520 and a different one for a TDS540.
+A file named any other way is read for its bytes alone: the program
+identifies it by its SHA-256 against the catalogue and takes its version
+from the string inside the image.
 
 The index is a plain text table, and only its `FITS` rows are read:
 
@@ -147,8 +146,8 @@ that does not fit that shape is ignored, so the rest of the file can say
 whatever is useful.
 
 The program reads the index in the folder you point at, falls back to the
-copy shipped beside it, and falls back again to whatever the filename
-itself says. Adding a newly found image is a line in the index.
+copy shipped beside it, and identifies anything not listed by its SHA-256.
+Adding a newly found image is a line in the index.
 
 ### Images in an archive
 

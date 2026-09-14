@@ -5,6 +5,26 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.2] - 2026-09-14
+
+### Changed
+
+- **Firmware images are identified by their contents, not by a made-up
+  filename.** The app no longer reads a model or version from a
+  `Model_vVer_Firmware.bin` filename - that shape was never a Tektronix
+  convention. An image is identified by its SHA-256 against the catalogue
+  (or is simply a file you point at); the instruments it suits come from
+  `FIRMWARE-INDEX.txt`; and its version is read from the library filename,
+  or, failing that, from the version string inside the image.
+
+### Added
+
+- **The manuals now ship in eight languages.** Both the user manual and the
+  "Writing a Protocol Decoder" technical reference are available in English
+  plus German, Spanish, French, Italian, Russian, Japanese and Simplified
+  Chinese. Every edition is named with its two-letter language code, English
+  (`(en)`) included.
+
 ## [1.2.1] - 2026-09-14
 
 ### Fixed
