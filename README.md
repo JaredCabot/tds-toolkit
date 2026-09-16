@@ -6,8 +6,9 @@
 
 An application for using Tektronix TDS500, TDS600 and TDS700 series digitizing
 oscilloscopes over GPIB. It browses and transfers the instrument's files,
-captures waveforms and screens, draws and sends masks, runs limit tests, reads
-the service error log, and manages the instrument's system settings.
+captures waveforms and screens, decodes captured waveforms against serial and
+parallel protocols, draws and sends masks, runs limit tests, reads the service
+error log, and manages the instrument's system settings.
 
 These instruments expose a filesystem, a hardcopy port, a mask subsystem and a
 limit-test subsystem over the bus, but ship with no tool to reach any of it
