@@ -5,6 +5,51 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.3] - 2026-09-25
+
+### Changed
+
+- **The user manuals read more plainly.** The wording of both manuals was
+  gone over in all eight languages, in the voice of a technical manual for
+  the bench, without moving a page break. Every control name and message
+  the translated manuals quote now matches what the program shows, and
+  their screenshots were retaken from the corrected program.
+
+### Fixed
+
+- **More of the interface is translated.** Progress lines, error messages,
+  several dialogs, the zoom buttons' tooltips and the messages from the
+  lower-level modules (firmware, calibration, file transfer, screen capture)
+  were shown in English whatever the language setting. They are now
+  translated in all seven languages. A second copy of the program is still
+  recognised whatever language the first one is in.
+- **Corrected the seven translations.** Each catalogue was reviewed against
+  the English: broken and truncated text (the calibration-restore warning
+  in every language), mistranslations, messages that named a button by the
+  wrong label, and inconsistent terms. Labels whose translation changed are
+  matched in the translated user manuals.
+- The PASS/FAIL stamp on the Masks and Limits plots is as wide as its
+  word. It was a fixed 70 pixels, which cut longer verdicts such as
+  BESTANDEN and CONFORME off at both ends.
+- **Simplified Chinese is drawn in a Chinese font.** Windows filled in the
+  characters from its first CJK font, a Japanese one on most systems, so
+  Chinese came out in Japanese glyph shapes. The program now uses
+  Microsoft YaHei UI for Chinese and Meiryo UI for Japanese.
+- **Chinese and Japanese text breaks into lines properly.** Tk breaks a
+  line only at a space, so a numbered step's "3." was left alone above its
+  sentence and lines began with "。" or "，". Explanatory text in both
+  languages is now broken between characters by the usual rules: no line
+  starts with a closing mark or ends with an opening one, and Latin words
+  and numbers are kept whole.
+- **Nothing runs off the window at 1280 x 800 any more.** The row of boxes
+  under the Masks and Limits editors wraps onto a second line when it runs
+  out of room, instead of losing its last box. The Backup tab's left column
+  is wider, so its NVRAM buttons are no longer cut off at the bottom. On the
+  System tab, the notes wrap wider, so the Options button stays in view, and
+  the labels beside the hardcopy settings are no longer cut short.
+- A message about restoring NVRAM named a **Back up NVRAM...** button that
+  does not exist; it now says **Back up...** in the NVRAM box.
+
 ## [1.2.2] - 2026-09-14
 
 ### Changed

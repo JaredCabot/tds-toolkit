@@ -65,7 +65,7 @@ import winicons
 import i18n
 from i18n import gettext as _
 
-__version__ = "1.2.2"
+__version__ = "1.2.3"
 __author__ = "Jared Cabot"
 __email__ = "jetstreamtechnology@protonmail.com"
 __licence__ = "MIT"
@@ -399,6 +399,133 @@ def save_settings(data):
         return False
 
 
+def N_(text):
+    """Mark `text` for translation without translating it. See localise()."""
+    return text
+
+
+#: What the modules below the window say that reaches a user. They have
+#: no gettext and should not have one (see tds_wfm.plot_png), so their
+#: words arrive already formatted, in English. Each is matched back to
+#: its template here by localise() and shown in the user's language. A
+#: sentence reworded in its module simply stops matching and appears in
+#: English, as everything from the modules did before; one added there
+#: is added here when it matters to someone reading it.
+LIBRARY_SAYS = (
+    # tds_wfm.py
+    N_('%s has no waveform that can be read. A channel has to be displayed on the instrument before it can be read; a reference has to have something stored in it.'),
+    N_('fewer than two numeric rows - is this a CSV of time and amplitude?'),
+    N_('This is a waveform file from a TDS5000/6000/7000 or a DPO/MSO - a different and much later format from the one the TDS500/600/700 write. It is not handled here.'),
+    N_('Waveform capture is not supported in DPO mode.\nDisable DPO and try again or perform a screen capture.'),
+    N_('Only a stored reference can be deleted; %s is a live source.'),
+    N_('%s is empty, and an empty reference cannot be written to. A live channel is needed once to bring it into being.'),
+    # tds_scr.py
+    N_('This instrument offers no image format that can be decoded here.'),
+    N_('The instrument would not send its screen to the bus: HARDCOPY:PORT is %s.'),
+    # tds_fs.py
+    N_("This instrument's firmware has no command for reading a file's contents over GPIB."),
+    N_('The instrument did not answer a read of %s.'),
+    N_("%s could not be read: %s (tried twice; not trying again, because repeated failures put this instrument's filesystem out of action until it is power cycled)."),
+    N_("This instrument's firmware has no FILESYSTEM:WRITEFILE command, so files cannot be uploaded to it over GPIB."),
+    # tds_err.py
+    N_('This firmware has no ERRLOG subsystem.'),
+    # tds_bak.py
+    N_('%s is a zip file, but not a backup made by this program - there is no %s inside it.'),
+    N_('%s holds an entry this will not write: %s'),
+    # tds_fw.py
+    N_('erase abandoned part way through - the flash is part erased and has to be programmed again'),
+    N_('the flash did not finish erasing within %d seconds; status 0x%08X'),
+    N_('Erasing the flash ... %d s'),
+    N_('the flash reported an erase failure at 0x%08X (status 0x%08X). The part is not taking the erase; nothing has been written.'),
+    N_('the flash reported its programming voltage low at 0x%08X (status 0x%08X). Nothing has been written.'),
+    N_('read abandoned part way through'),
+    N_('Reading %s of %s'),
+    N_('the NVRAM did not take a write at 0x%X - it read back as it was. Nothing has been changed. On this family that is the memory protection switch: it has to be moved to unprotected before anything can be written.'),
+    N_('the write was abandoned %s in - what is in the instrument now is part the backup and part what was there before'),
+    N_('Writing %s of %s'),
+    N_('programming abandoned after %d of %d pages - the flash is part written and has to be programmed again'),
+    N_('verify abandoned part way through'),
+    N_('Checking %s of %s'),
+    N_('Reading %s (%d of %d)'),
+    # tds_cal.py
+    N_('reading the calibration constants was abandoned part way through'),
+    N_('Reading the calibration constants - word %d of %d'),
+    # tds_msk.py
+    N_('this mask was written by a later version of the program (%d, and this reads %d)'),
+    # tdstoolkit.py
+    N_("Another copy of TDS Toolkit (process %d) is using the instrument. Only one may at a time - a second program's commands would land inside a file being transferred. Close the other copy, then connect again."),
+    # tds_cal.py
+    N_('word %d of %d'),
+)
+
+
+def localise(text):
+    """`text` in the current language, including the modules' words.
+
+    A string the catalogue knows is translated as _() would. One of
+    LIBRARY_SAYS with its values filled in is matched to that template,
+    and the same values are put into the translation - by position,
+    which --check-translations already holds every language to.
+    Anything else comes back unchanged.
+    """
+    if not isinstance(text, str):
+        return text
+    got = _(text)
+    if got != text:
+        return got
+    for english in LIBRARY_SAYS:
+        parts = i18n._PLACEHOLDER.split(english)
+        if len(parts) < 2:
+            continue
+        found = re.match("(?s)" + "(.*?)".join(map(re.escape, parts))
+                         + r"\Z", text)
+        if found:
+            values = iter(found.groups())
+            return i18n._PLACEHOLDER.sub(lambda _m: next(values),
+                                         _(english))
+    return text
+
+
+#: Chinese and Japanese marks that may not begin a line, and those that
+#: may not end one - the core of the kinsoku rules both languages set by.
+NO_LINE_START = set("。，、．：；！？）」』】〕〉》”’…ー々～ぁぃぅぇぉっゃゅょ"
+                    "ゎァィゥェォッャュョヮヵヶ%),.:;!?]}")
+NO_LINE_END = set("（「『【〔〈《“‘([{")
+
+
+def cjk_break(text, measure, room):
+    """Break Chinese or Japanese into lines no wider than `room`.
+
+    Tk breaks a line only at a space. In text with no spaces that leaves
+    it to cut wherever the width runs out, which put "。" and "，" at the
+    start of lines; and where there is one space it breaks there, which
+    left a numbered step's "3." on a line of its own above its sentence.
+    Here a line may break between any two characters, but not inside a
+    run of Latin letters or digits, not before a closing mark and not
+    after an opening one: the character before a closing mark goes down
+    with it. `measure` gives a string's width in the units of `room`.
+    """
+    out = []
+    for para in text.split("\n"):
+        units = re.findall(r"[!-~]+ *| +|.", para)
+        lines, cur = [], []
+        for unit in units:
+            if not cur and unit.isspace():
+                continue
+            if cur and measure("".join(cur) + unit.rstrip()) > room:
+                carry = []
+                if unit[0] in NO_LINE_START and len(cur) > 1:
+                    carry.append(cur.pop())
+                while len(cur) > 1 and cur[-1][-1] in NO_LINE_END:
+                    carry.insert(0, cur.pop())
+                lines.append("".join(cur).rstrip())
+                cur = carry
+            cur.append(unit)
+        lines.append("".join(cur).rstrip())
+        out.append("\n".join(lines))
+    return "\n".join(out)
+
+
 def describe_visa_error(exc):
     """Turn a VISA exception into something a person can act on.
 
@@ -479,12 +606,12 @@ NAME_PUNCT = "$%'-_@~`!(){}^#&"
 
 def _describe_char(ch):
     """Name a character the way a person would say it aloud."""
-    return {" ": "space", "\t": "tab", ".": "extra dot", "/": "slash",
-            "\\": "backslash", ":": "colon", "*": "asterisk",
-            "?": "question mark", '"': "double quote", "<": "less than",
-            ">": "greater than", "|": "vertical bar", ",": "comma",
-            ";": "semicolon", "+": "plus", "=": "equals",
-            "[": "left bracket", "]": "right bracket"}.get(
+    return {" ": _("space"), "\t": _("tab"), ".": _("extra dot"), "/": _("slash"),
+            "\\": _("backslash"), ":": _("colon"), "*": _("asterisk"),
+            "?": _("question mark"), '"': _("double quote"), "<": _("less than"),
+            ">": _("greater than"), "|": _("vertical bar"), ",": _("comma"),
+            ";": _("semicolon"), "+": _("plus"), "=": _("equals"),
+            "[": _("left bracket"), "]": _("right bracket")}.get(
                 ch, "'%s'" % ch if ch.isprintable() else
                 "character code %d" % ord(ch))
 
@@ -519,11 +646,11 @@ def check_83(name):
         return _("A name is required.")
     problems = []
     if name != name.strip():
-        problems.append("The name starts or ends with a space.")
+        problems.append(_("The name starts or ends with a space."))
 
     stem, dot, ext = name.partition(".")
     if name.count(".") > 1:
-        problems.append("A name may contain only one dot.")
+        problems.append(_("A name may contain only one dot."))
         ext = ext.replace(".", "")
 
     bad = []
@@ -535,27 +662,27 @@ def check_83(name):
             if d not in bad:
                 bad.append(d)
     if bad:
-        problems.append("These characters are not allowed: %s"
+        problems.append(_("These characters are not allowed: %s")
                         % ", ".join(bad))
 
     if len(stem) > 8:
-        problems.append("The part before the dot is %d characters long; "
-                        "8 is the most that will fit." % len(stem))
+        problems.append(_("The part before the dot is %d characters long; "
+                        "8 is the most that will fit.") % len(stem))
     if not stem:
-        problems.append("There is nothing before the dot.")
+        problems.append(_("There is nothing before the dot."))
     if dot and len(ext) > 3:
-        problems.append("The part after the dot is %d characters long; "
-                        "3 is the most that will fit." % len(ext))
+        problems.append(_("The part after the dot is %d characters long; "
+                        "3 is the most that will fit.") % len(ext))
     if dot and not ext:
-        problems.append("There is a dot with nothing after it.")
+        problems.append(_("There is a dot with nothing after it."))
 
     if not problems:
         return None
-    return ("'%s' cannot be used as a name on the instrument.\n\n"
+    return (_("'%s' cannot be used as a name on the instrument.\n\n"
             "%s\n\n"
             "Names follow the DOS 8.3 rule: up to 8 characters, then "
             "optionally a dot and up to 3 more. Letters, digits and "
-            "%s may be used, and the name is stored in capitals."
+            "%s may be used, and the name is stored in capitals.")
             % (name, "\n".join("  -  " + p for p in problems),
                " ".join(NAME_PUNCT)))
 
@@ -865,7 +992,7 @@ class _WorkerFilesystem(object):
         self.fs.set_cwd(parent)
         if leaf not in [n.upper() for n in real_names(self.fs.dir())]:
             self.fs.errors()
-            raise IOError("%s does not exist on the instrument." % path)
+            raise IOError(_("%s does not exist on the instrument.") % path)
         self.fs.errors()
         t = time.time()
         try:
@@ -937,8 +1064,8 @@ class _WorkerFilesystem(object):
             pass
         if back != data:
             raise RuntimeError(
-                "staged rename is unsupported and the direct rewrite of "
-                "%s did not verify" % real)
+                _("staged rename is unsupported and the direct rewrite of "
+                "%s did not verify") % real)
 
     def write_verified(self, path, data, base=0.0, span=1.0):
         """Write, read back, compare. Never reports success on a guess.
@@ -975,9 +1102,9 @@ class _WorkerFilesystem(object):
         for attempt in range(1, ATTEMPTS + 1):
             step = span / ATTEMPTS
             here = base + span * (attempt - 1.0) / ATTEMPTS
-            suffix = "" if attempt == 1 else " (attempt %d of %d)" % (
+            suffix = "" if attempt == 1 else _(" (attempt %d of %d)") % (
                 attempt, ATTEMPTS)
-            self._progress("Preparing %s%s" % (leaf, suffix), here)
+            self._progress(_("Preparing %s%s") % (leaf, suffix), here)
             # Only on a firmware that cannot overwrite. This delete used
             # to happen before every write, unconditionally, and it is
             # the single most expensive thing this program did to an
@@ -995,7 +1122,7 @@ class _WorkerFilesystem(object):
                 except Exception:
                     pass
                 self.fs.wait_done()
-            self._progress("Sending %s, %s bytes%s"
+            self._progress(_("Sending %s, %s bytes%s")
                            % (leaf, format(len(data), ","), suffix),
                            here + step / 3)
             try:
@@ -1026,8 +1153,8 @@ class _WorkerFilesystem(object):
             self.fs.errors()
             wrote = getattr(self.fs, "last_messages", []) or []
             if NO_MEDIA in [c for c, _t in wrote]:
-                raise IOError("There is no disk in the drive, so nothing "
-                              "can be written to it.")
+                raise IOError(_("There is no disk in the drive, so nothing "
+                              "can be written to it."))
             # Then look for it. A write that landed shows up in the
             # directory immediately; one the instrument accepted and
             # discarded does not, and reading back a file that was never
@@ -1060,7 +1187,7 @@ class _WorkerFilesystem(object):
                 self.fs.clear()
                 last = "the file never appeared in %s after writing" % parent
                 continue
-            self._progress("Reading %s back to verify it%s" % (leaf, suffix),
+            self._progress(_("Reading %s back to verify it%s") % (leaf, suffix),
                            here + 2 * step / 3)
             try:
                 # Sized to the file, not flat. TRANSFER_TIMEOUT alone is
@@ -1091,7 +1218,7 @@ class _WorkerFilesystem(object):
             nz = sum(1 for b in back if b)
             last = ("mismatch: %d bytes back, %d non-zero"
                     % (len(back), nz))
-        raise RuntimeError("upload not verified after %d attempts (%s)"
+        raise RuntimeError(_("upload not verified after %d attempts (%s)")
                            % (ATTEMPTS, last))
 
     def delete(self, path):
@@ -1109,7 +1236,7 @@ class _WorkerFilesystem(object):
         gone = leaf not in [n.upper() for n in self.fs.dir()]
         self.fs.errors()
         if not gone:
-            raise RuntimeError("%s was not deleted (events %s)"
+            raise RuntimeError(_("%s was not deleted (events %s)")
                                % (path, events))
         return {"path": path, "events": events, "removed": True}
 
@@ -1171,7 +1298,7 @@ class _WorkerFilesystem(object):
         folder = paths[0].rsplit("/", 1)[0] if paths else None
         before = self._folder_names(folder) if folder else []
         for i, p in enumerate(paths, 1):
-            self._progress("Deleting %d of %d: %s"
+            self._progress(_("Deleting %d of %d: %s")
                            % (i, len(paths), p.rsplit("/", 1)[-1]),
                            (i - 1.0) / len(paths))
             try:
@@ -1229,7 +1356,7 @@ class _WorkerFilesystem(object):
                             seen[parent] = None     # cannot tell - do not skip
                     there = seen[parent]
                     if there is not None and leaf in there:
-                        self._progress("%s is already there, unchanged"
+                        self._progress(_("%s is already there, unchanged")
                                        % dest.rsplit("/", 1)[-1], i * share)
                         unchanged.append(dest)
                         running = 0
@@ -1285,7 +1412,7 @@ class _WorkerFilesystem(object):
 
         def walk(remote, local):
             folders.append(local)
-            self._progress("Looking in %s ..." % remote, None)
+            self._progress(_("Looking in %s ...") % remote, None)
             listing = self.listdir_split(remote)
             for f in listing["files"]:
                 want.append(("%s/%s" % (remote, f), os.path.join(local, f)))
@@ -1297,11 +1424,11 @@ class _WorkerFilesystem(object):
             try:
                 os.makedirs(d, exist_ok=True)
             except Exception as exc:
-                raise RuntimeError("cannot create %s: %s" % (d, exc))
+                raise RuntimeError(_("cannot create %s: %s") % (d, exc))
 
         done, failed = [], []
         for i, (remote, local) in enumerate(want, 1):
-            self._progress("Downloading %d of %d: %s"
+            self._progress(_("Downloading %d of %d: %s")
                            % (i, len(want), remote.rsplit("/", 1)[-1]),
                            (i - 1.0) / max(len(want), 1))
             try:
@@ -1325,7 +1452,7 @@ class _WorkerFilesystem(object):
         done, failed = [], []
         for i, p in enumerate(paths, 1):
             leaf = p.rsplit("/", 1)[-1]
-            self._progress("Downloading %d of %d: %s" % (i, len(paths), leaf),
+            self._progress(_("Downloading %d of %d: %s") % (i, len(paths), leaf),
                            (i - 1.0) / len(paths))
             try:
                 data = self.read(p)["data"]
@@ -1347,14 +1474,14 @@ class _WorkerFilesystem(object):
         p = path.rstrip("/")
         leaf = p.rsplit("/", 1)[-1].upper()
         if "/" not in p:
-            return "'%s' is a drive, not a file or folder." % p
+            return _("'%s' is a drive, not a file or folder.") % p
         if is_phantom(leaf):
             # Should be unreachable - these never reach the UI - but a
             # DELETE aimed at one would strip the long name off the real
             # file that follows it in the directory table.
-            return ("'%s' is not a file. It is part of how a long file "
+            return (_("'%s' is not a file. It is part of how a long file "
                     "name is stored on the card, and deleting it would "
-                    "damage the file it belongs to." % leaf)
+                    "damage the file it belongs to.") % leaf)
         return None
 
     @classmethod
@@ -1392,12 +1519,12 @@ class _WorkerFilesystem(object):
         """
         drive = plan["drive"]
         self.context = "format %s" % drive
-        self._progress("Formatting %s ..." % drive, None)
+        self._progress(_("Formatting %s ...") % drive, None)
         self.fs.set_cwd(drive)
         self.fs.format_drive(drive)
         self.fs.wait_done()
         events = self.fs.errors()
-        self._progress("Checking what is left on %s" % drive, None)
+        self._progress(_("Checking what is left on %s") % drive, None)
         self.fs.set_cwd(drive)
         left = real_names(self.fs.dir())
         self.fs.errors()
@@ -1460,7 +1587,7 @@ class _WorkerFilesystem(object):
         tree = []
 
         def walk(where):
-            self._progress("Looking in %s ..." % where, None)
+            self._progress(_("Looking in %s ...") % where, None)
             listing = self.listdir_split(where)
             for one in listing["dirs"]:
                 walk("%s/%s" % (where, one))
@@ -1474,7 +1601,7 @@ class _WorkerFilesystem(object):
             # wedged the filesystem subsystem badly enough to need a
             # reimage. listdir_split above left the cwd inside the tree,
             # so this is not optional.
-            self._progress("Emptying %s (%d of %d)"
+            self._progress(_("Emptying %s (%d of %d)")
                            % (where.rsplit("/", 1)[-1], i, len(tree)),
                            (i - 1.0) / len(tree))
             if files:
@@ -1520,9 +1647,9 @@ class _WorkerFilesystem(object):
         still = self._folder_names(parent)
         gone = leaf not in [n.upper() for n in still]
         if not gone:
-            raise RuntimeError("%s is still there after removing the %d "
+            raise RuntimeError(_("%s is still there after removing the %d "
                                "folder(s) inside it (events %s). Running "
-                               "it again will carry on from here."
+                               "it again will carry on from here.")
                                % (path, len(tree), events))
         lost = [n for n in beside
                 if n.upper() != leaf
@@ -1550,7 +1677,7 @@ class _WorkerFilesystem(object):
         volume = dest.split("/")[0]
         self.context = "copy %s to %s" % (source, dest)
         if not is_dir:
-            self._progress("Copying %s ..." % source.rsplit("/", 1)[-1], None)
+            self._progress(_("Copying %s ...") % source.rsplit("/", 1)[-1], None)
             self.fs.set_cwd(volume)
             self.fs.copy(source, dest)
             self.fs.wait_done()
@@ -1561,7 +1688,7 @@ class _WorkerFilesystem(object):
         tree = []
 
         def walk(where, under):
-            self._progress("Looking in %s ..." % where, None)
+            self._progress(_("Looking in %s ...") % where, None)
             listing = self.listdir_split(where)
             tree.append((where, under, listing["files"]))
             for one in listing["dirs"]:
@@ -1569,7 +1696,7 @@ class _WorkerFilesystem(object):
 
         walk(source, dest)
         for i, (where, under, files) in enumerate(tree, 1):
-            self._progress("Copying %s (%d of %d)"
+            self._progress(_("Copying %s (%d of %d)")
                            % (under.rsplit("/", 1)[-1], i, len(tree)),
                            (i - 1.0) / len(tree))
             self.fs.set_cwd(volume)
@@ -1591,7 +1718,7 @@ class _WorkerFilesystem(object):
         there = leaf in [n.upper() for n in self.fs.dir()]
         self.fs.errors()
         if not there:
-            raise RuntimeError("%s is not there after the copy." % dest)
+            raise RuntimeError(_("%s is not there after the copy.") % dest)
         return {"dest": dest, "folders": folders, "copied": True}
 
 
@@ -1647,7 +1774,7 @@ class _WorkerWaveform(object):
         t = time.time()
         waves, refused, how = self.wfm.capture(
             list(live), list(refs),
-            note=lambda name, done: self._progress("Reading %s" % name,
+            note=lambda name, done: self._progress(_("Reading %s") % name,
                                                    done))
         if not waves:
             raise IOError(refused[0][1] if refused else "nothing was read")
@@ -1665,9 +1792,9 @@ class _WorkerWaveform(object):
         out = self.wfm.send_to_ref(wave, dest, allocate_from)
         out["verified"] = self.wfm.verify_ref(wave, dest)
         if not out["verified"]:
-            raise IOError("%s was written but reading it back gave "
+            raise IOError(_("%s was written but reading it back gave "
                           "something else - the instrument did not keep "
-                          "what was sent." % dest)
+                          "what was sent.") % dest)
         return out
 
     def wfm_send_many(self, items, allocate_from=None):
@@ -1680,12 +1807,12 @@ class _WorkerWaveform(object):
         """
         done = []
         for i, (dest, wave) in enumerate(items):
-            self._progress("Sending %s" % dest, i / float(len(items)))
+            self._progress(_("Sending %s") % dest, i / float(len(items)))
             out = self.wfm.send_to_ref(wave, dest, allocate_from)
             if not self.wfm.verify_ref(wave, dest):
-                raise IOError("%s was written but reading it back gave "
+                raise IOError(_("%s was written but reading it back gave "
                               "something else - the instrument did not "
-                              "keep what was sent." % dest)
+                              "keep what was sent.") % dest)
             out["verified"] = True
             done.append(out)
         return {"sent": done}
@@ -1716,7 +1843,7 @@ class _WorkerWaveform(object):
         # not there, and the read-back would report it as a bad bus.
         self.fs.set_cwd(folder)
         if (self.fs.get_cwd() or "").rstrip("/").upper() != folder.upper():
-            raise RuntimeError("%s could not be made on the instrument"
+            raise RuntimeError(_("%s could not be made on the instrument")
                                % folder)
         taken = {n.upper() for n in real_names(self.fs.dir())}
         self.fs.errors()
@@ -1727,7 +1854,7 @@ class _WorkerWaveform(object):
             if name not in taken:
                 break
         else:
-            raise RuntimeError("%s already holds every %s name there is"
+            raise RuntimeError(_("%s already holds every %s name there is")
                                % (folder, head))
         return self.write_verified("%s/%s" % (folder, name), data)
 
@@ -1754,10 +1881,10 @@ class _WorkerErrorLog(object):
         events = self.err.clear()
         left = self.err.entries()
         if left:
-            raise IOError("The instrument still reports %d entries after "
-                          "being told to clear the log.%s"
+            raise IOError(_("The instrument still reports %d entries after "
+                          "being told to clear the log.%s")
                           % (len(left),
-                             ("  It said: " + "; ".join(events))
+                             (_("  It said: ") + "; ".join(events))
                              if events else ""))
         return {"cleared": True}
 
@@ -2525,9 +2652,9 @@ class _WorkerMask(object):
             live = self.wfm.sources()
         if not live:
             raise tds_wfm.NotReadable(None,
-                                      "No source is displayed on the "
+                                      _("No source is displayed on the "
                                       "instrument, so there is nothing "
-                                      "to capture.")
+                                      "to capture."))
         # The tally is read *before* the capture, not after it. A
         # capture stops the acquisition to read the record out, so a
         # count taken afterwards is a count over nothing - measured:
@@ -3066,8 +3193,8 @@ class _WorkerSystem(object):
                 time.sleep(min(step, settle - waited))
                 waited += step
                 self._progress(
-                    "Letting the instrument restart undisturbed "
-                    "(%d of %d seconds)" % (min(int(waited), int(settle)),
+                    _("Letting the instrument restart undisturbed "
+                    "(%d of %d seconds)") % (min(int(waited), int(settle)),
                                             int(settle)),
                     waited / settle)
             # Short, so each attempt while it is still down fails
@@ -3088,7 +3215,7 @@ class _WorkerSystem(object):
                     pass
                 if time.time() >= end:
                     break
-                self._progress("Asking whether it is back yet", None)
+                self._progress(_("Asking whether it is back yet"), None)
                 time.sleep(poll)
             if not back:
                 return {"area": area, "flag": "", "log": "", "found": [],
@@ -3221,7 +3348,7 @@ class _WorkerCalibration(object):
         # pressing Back up... on a TDS 754D with an empty floppy drive
         # produced "cal_read 252 Missing media" about a read that never
         # touches the filesystem at all.
-        self._progress("Clearing the bus of anything left over", 0.0)
+        self._progress(_("Clearing the bus of anything left over"), 0.0)
         self._quiet_drain()
         # On a short leash, and that is the whole point of it. This one
         # query is asked to find out whether the service unlock is
@@ -3230,14 +3357,14 @@ class _WorkerCalibration(object):
         # there for the better part of a minute before the first word
         # was read, with nothing on screen to say why. A word that is
         # going to arrive arrives in milliseconds.
-        self._progress("Asking whether the constants are locked", 0.0)
+        self._progress(_("Asking whether the constants are locked"), 0.0)
         was = self.fs.inst.timeout
         try:
             self.fs.inst.timeout = 3000
             tds_cal.word(self.wfm.q, 0, base)
         except Exception:
             self.fs.inst.timeout = was
-            self._progress("Sending the service unlock", 0.0)
+            self._progress(_("Sending the service unlock"), 0.0)
             self.fs.inst.write(tds_cal.UNLOCK)
             tds_cal.word(self.wfm.q, 0, base)      # still refused: raise
         finally:
@@ -3245,23 +3372,23 @@ class _WorkerCalibration(object):
         got = tds_cal.read(self.wfm.q, base, note=self._progress,
                            stop=self.cancelled.is_set)
         if check:
-            self._progress("Checking the calibration constants", 0.0)
+            self._progress(_("Checking the calibration constants"), 0.0)
             # Reported like the first pass. Both are 252 queries, so a
             # silent second one is half the operation with nothing to
             # watch - which reads as a hang rather than as care.
             if tds_cal.read(self.wfm.q, base,
                             note=lambda t, f: self._progress(
-                                "Checking the calibration constants - %s"
-                                % t.split(" - ")[-1], f),
+                                _("Checking the calibration constants - %s")
+                                % localise(t.split(" - ")[-1]), f),
                             stop=self.cancelled.is_set) != got:
                 raise RuntimeError(
-                    "The calibration constants read differently the "
+                    _("The calibration constants read differently the "
                     "second time. That is the bus, not the instrument. "
                     "Nothing has been written and nothing is lost, but "
                     "the backup cannot be trusted, so this stopped "
-                    "here.")
-        self._progress("Adding the words up to check them against "
-                       "word 0", 1.0)
+                    "here."))
+        self._progress(_("Adding the words up to check them against "
+                       "word 0"), 1.0)
         held = tds_cal.words(got)
         return {"data": got, "base": base,
                 "flat": tds_cal.looks_empty(got),
@@ -3342,7 +3469,7 @@ class _WorkerCalibration(object):
         base = plan.get("base") or tds_cal.BASE
         want = tds_cal.words(plan["data"])
         self.fs.errors()
-        self._progress("Sending the service unlock", 0.0)
+        self._progress(_("Sending the service unlock"), 0.0)
         self.fs.inst.write(tds_cal.UNLOCK)
         self.wfm.q("*OPC?")
         report = {"base": base, "wrote": 0, "words": tds_cal.WORDS}
@@ -3362,11 +3489,11 @@ class _WorkerCalibration(object):
                 break
             report["wrote"] += 1
             if not n % 8:
-                self._progress("Writing the calibration constants - word "
-                               "%d of %d" % (n + 1, tds_cal.WORDS),
+                self._progress(_("Writing the calibration constants - word "
+                               "%d of %d") % (n + 1, tds_cal.WORDS),
                                n / float(tds_cal.WORDS))
         if report["wrote"] == tds_cal.WORDS:
-            self._progress("Storing them on the acquisition board", 1.0)
+            self._progress(_("Storing them on the acquisition board"), 1.0)
             report["check"] = want[0]
             report["sum"] = tds_cal.checksum(want)
             report.update(self._cal_store())
@@ -3471,7 +3598,7 @@ class _WorkerBackup(object):
                 self.bak_setup_read()["text"].encode("ascii", "replace")))
             part("refs", lambda: self._bak_refs(plan.get("refs") or [], keep))
             part("cal", lambda: keep(tds_bak.CAL, self.cal_read()["data"]))
-            self._progress("Writing the backup file", None)
+            self._progress(_("Writing the backup file"), None)
             manifest = tds_bak.pack(work, plan["path"], about)
         finally:
             shutil.rmtree(work, ignore_errors=True)
@@ -3483,10 +3610,10 @@ class _WorkerBackup(object):
     def _bak_refs(self, names, keep):
         """The stored references, each as the .wfm this program writes."""
         if not names:
-            raise IOError("no reference holds a waveform")
+            raise IOError(_("no reference holds a waveform"))
         waves, refused, _how = self.wfm.capture(
             [], list(names),
-            note=lambda name, done: self._progress("Reading %s" % name, done))
+            note=lambda name, done: self._progress(_("Reading %s") % name, done))
         for wave in waves:
             keep("%s/%s.wfm" % (tds_bak.REFS, wave.source), wave.to_wfm())
         if refused:
@@ -3514,10 +3641,10 @@ class _WorkerBackup(object):
         try:
             listed = self.fs.dir(volume)
         except Exception as exc:
-            return "%s did not list (%s)" % (volume, exc)
+            return _("%s did not list (%s)") % (volume, exc)
         if not listed:
-            return ("%s listed nothing - on this instrument an empty root is "
-                    "the wedged-filesystem signature, not an empty disk"
+            return (_("%s listed nothing - on this instrument an empty root is "
+                    "the wedged-filesystem signature, not an empty disk")
                     % volume)
         return None
 
@@ -3592,7 +3719,7 @@ class _WorkerBackup(object):
                         "skipped": [d for _s, d in items],
                         "folders": 0, "blocked": wrong}
         for i, one in enumerate(made):
-            self._progress("Making folder %d of %d" % (i + 1, len(made)),
+            self._progress(_("Making folder %d of %d") % (i + 1, len(made)),
                            None)
             try:
                 self.mkdir(one)
@@ -3657,7 +3784,7 @@ class _WorkerBackup(object):
                 tds_bak.unpack(plan["path"], work, where + "/")
                 got = self.upload_tree(os.path.join(work, where), drive)
                 if got["failed"]:
-                    raise IOError("%d file(s) would not write"
+                    raise IOError(_("%d file(s) would not write")
                                   % len(got["failed"]))
                 return "%d file(s)" % len(got["done"])
 
@@ -3669,7 +3796,7 @@ class _WorkerBackup(object):
                     tds_set.contents(os.path.join(work, tds_bak.SETUP)))
                 said = self.set_send(lines)
                 if said["refused"]:
-                    raise IOError("%d of %d command(s) refused: %s"
+                    raise IOError(_("%d of %d command(s) refused: %s")
                                   % (len(said["refused"]), len(lines),
                                      "; ".join(said["refused"][:3])))
                 return "%d command(s)" % len(lines)
@@ -3682,7 +3809,7 @@ class _WorkerBackup(object):
                     items.append((os.path.splitext(os.path.basename(path))[0]
                                   .upper(), wave))
                 if not items:
-                    raise IOError("the backup holds no references")
+                    raise IOError(_("the backup holds no references"))
                 # A reference that holds nothing cannot be written to:
                 # every field describing the waveform is refused and the
                 # curve is truncated, silently. One live channel brings
@@ -3699,9 +3826,9 @@ class _WorkerBackup(object):
                         if on and not n.startswith("REF")]
                 if not live:
                     raise IOError(
-                        "no channel is displayed on the instrument. An "
+                        _("no channel is displayed on the instrument. An "
                         "empty reference can only be created from a "
-                        "live channel, so switch one on and try again.")
+                        "live channel, so switch one on and try again."))
                 self.wfm_send_many(items, live[0])
                 return "%d reference(s)" % len(items)
 
@@ -3726,7 +3853,7 @@ class _WorkerFirmware(object):
 
     def fw_session(self, resource, normal=""):
         import pyvisa
-        self._progress("Opening the bootloader monitor at %s"
+        self._progress(_("Opening the bootloader monitor at %s")
                        % resource, None)
         try:
             inst = pyvisa.ResourceManager().open_resource(resource,
@@ -3775,19 +3902,19 @@ class _WorkerFirmware(object):
             except Exception:
                 told = ""
         if told:
-            return ("The instrument is running its firmware rather than "
+            return (_("The instrument is running its firmware rather than "
                     "its bootloader: it answered at %s as %s.\n\n"
                     "Switch it off, move the NVRAM protection switch to "
                     "unprotected, and switch it on again. In the "
                     "bootloader the screen stays dark, every front-panel "
-                    "light stays on, and it answers at %s instead."
+                    "light stays on, and it answers at %s instead.")
                     % (normal, told, resource))
-        return ("Nothing answered at %s - %s.%s\n\n"
+        return (_("Nothing answered at %s - %s.%s\n\n"
                 "Check the instrument is switched on and its GPIB cable "
                 "is connected. It reaches its bootloader by being "
                 "switched on with the NVRAM protection switch "
                 "unprotected; the screen then stays dark and every "
-                "front-panel light stays on."
+                "front-panel light stays on.")
                 % (resource, describe_visa_error(exc),
                    " Nothing answered at %s either." % normal
                    if normal and vanished else ""))
@@ -3832,15 +3959,15 @@ class _WorkerFirmware(object):
         only thing a backup has to be is what was there, and the bus is
         the part that can be wrong.
         """
-        self._progress("Reading the existing %s ..." % what, 0.0)
+        self._progress(_("Reading the existing %s ...") % _(what), 0.0)
         got = flash.read(length, base=base, stop=stop,
                          note=lambda t, f, w=what: self._progress(
-                             "Backing up %s - %s" % (w, t), f))
+                             _("Backing up %s - %s") % (_(w), localise(t)), f))
         if plan.get("check_backup"):
-            self._progress("Reading the %s back to check it" % what, 0.0)
+            self._progress(_("Reading the %s back to check it") % _(what), 0.0)
             again = flash.read(length, base=base, stop=stop,
                                note=lambda t, f, w=what: self._progress(
-                                   "Checking the %s backup - %s" % (w, t), f))
+                                   _("Checking the %s backup - %s") % (_(w), localise(t)), f))
             # Where the two reads differ, and which of those differences
             # are the clock rather than the bus.
             #
@@ -3863,10 +3990,10 @@ class _WorkerFirmware(object):
             # pass.
             if len(again) != len(got):
                 raise RuntimeError(
-                    "The %s read a different length the second time. "
+                    _("The %s read a different length the second time. "
                     "That is the bus, not the instrument - nothing has "
                     "been written and nothing is lost, but the backup "
-                    "cannot be trusted, so this stopped here." % what)
+                    "cannot be trusted, so this stopped here.") % _(what))
             moved = [i for i, (a, b) in
                      enumerate(zip(bytearray(got), bytearray(again)))
                      if a != b]
@@ -3875,12 +4002,12 @@ class _WorkerFirmware(object):
             rest = [i for i in moved if i not in set(ticking)]
             if rest:
                 raise RuntimeError(
-                    "The %s read differently the second time, at %d "
+                    _("The %s read differently the second time, at %d "
                     "place(s) outside the clock, the first at 0x%X. That "
                     "is the bus, not the instrument - nothing has been "
                     "written and nothing is lost, but the backup cannot "
-                    "be trusted, so this stopped here."
-                    % (what, len(rest), rest[0]))
+                    "be trusted, so this stopped here.")
+                    % (_(what), len(rest), rest[0]))
             if ticking:
                 # Not a fault and not tolerated noise: the instrument
                 # keeping time while it is read. A backup of a running
@@ -3917,7 +4044,7 @@ class _WorkerFirmware(object):
         inst = self.fw_session(plan["resource"], plan.get("normal") or "")
         try:
             flash = tds_fw.Flash(tds_fw.Monitor(inst))
-            self._progress("Measuring the NVRAM window", None)
+            self._progress(_("Measuring the NVRAM window"), None)
             keep = flash.nvram_keep_len(stop=self.cancelled.is_set)
             self.fw_keep(flash, "NVRAM", tds_fw.NVRAM_BASE,
                          keep, plan, report,
@@ -3943,7 +4070,7 @@ class _WorkerFirmware(object):
         try:
             flash = tds_fw.Flash(tds_fw.Monitor(inst))
             report["flash"] = flash.identify()
-            self._progress("Measuring the NVRAM window", None)
+            self._progress(_("Measuring the NVRAM window"), None)
             keep = flash.nvram_keep_len(stop=stop)
             for what, base, length in (
                     ("NVRAM", tds_fw.NVRAM_BASE, keep),
@@ -3990,7 +4117,7 @@ class _WorkerFirmware(object):
             # and a wiped NVRAM is exactly what somebody reaching for
             # Restore is holding. The probe writes, which is why it
             # waits until what is in the instrument is already on disk.
-            self._progress("Measuring what the window really holds", None)
+            self._progress(_("Measuring what the window really holds"), None)
             here = flash.measure_distinct(tds_fw.NVRAM_BASE,
                                           tds_fw.NVRAM_LEN, stop=stop)
             # And what the file says about itself, as corroboration
@@ -4001,24 +4128,24 @@ class _WorkerFirmware(object):
             report["distinct"], report["held"] = here, len(data)
             if told < len(data) and told != here:
                 raise RuntimeError(
-                    "This file was taken from an instrument whose NVRAM "
+                    _("This file was taken from an instrument whose NVRAM "
                     "is laid out differently: it repeats itself from %s "
                     "and this instrument holds %s of distinct memory. "
                     "Restoring it would write the wrong cells. Nothing "
                     "has been written and the instrument still holds "
-                    "what it did."
+                    "what it did.")
                     % (human_bytes(told), human_bytes(here)))
-            self._progress("Writing the NVRAM ...", 0.0)
+            self._progress(_("Writing the NVRAM ..."), 0.0)
             wrote_to = min(len(data), here)
             report["wrote"] = flash.write_span(
                 data[:wrote_to], base=tds_fw.NVRAM_BASE,
                 skip=tds_fw.RTC_LEN, stop=stop,
                 note=lambda t, f: self._progress(
-                    "Restoring NVRAM - %s" % t, f))
-            self._progress("Reading it back to check it", 0.0)
+                    _("Restoring NVRAM - %s") % localise(t), f))
+            self._progress(_("Reading it back to check it"), 0.0)
             back = flash.read(len(data), base=tds_fw.NVRAM_BASE, stop=stop,
                               note=lambda t, f: self._progress(
-                                  "Checking the NVRAM - %s" % t, f))
+                                  _("Checking the NVRAM - %s") % localise(t), f))
             # From the clock upwards, because the clock was not written
             # and has moved on since anyway.
             wrong = [i for i in range(tds_fw.RTC_LEN, len(data))
@@ -4033,23 +4160,23 @@ class _WorkerFirmware(object):
             # wrong and not that anything failed to write.
             if wrong and wrong[0] >= wrote_to:
                 raise RuntimeError(
-                    "The %s of this file above %s does not match what "
+                    _("The %s of this file above %s does not match what "
                     "the instrument reads back, at %d place(s), the "
                     "first at 0x%X. That part was not written: it is the "
                     "same memory as lower down and should have followed "
                     "it. The measurement of what this instrument holds "
                     "was wrong, or the file is from a differently laid "
                     "out one. What was written below that point went in "
-                    "correctly."
+                    "correctly.")
                     % (human_bytes(len(data) - wrote_to),
                        human_bytes(wrote_to), len(wrong), wrong[0]))
             if wrong:
                 raise RuntimeError(
-                    "The NVRAM did not read back as what was written, at "
+                    _("The NVRAM did not read back as what was written, at "
                     "%d place(s), the first at 0x%X. What is in the "
                     "instrument now is neither what was there before nor "
-                    "what is in the file. Whatever Back up NVRAM... "
-                    "wrote before this is the way back."
+                    "what is in the file. Whatever Back up... in the NVRAM "
+                    "box wrote before this is the way back.")
                     % (len(wrong), wrong[0]))
         finally:
             try:
@@ -4075,7 +4202,7 @@ class _WorkerFirmware(object):
         image = tds_fw.read_image(plan["image"], plan.get("archive") or "")
         if not image.startswith(tds_fw.IMAGE_HEAD):
             raise RuntimeError(
-                "%s does not begin like a firmware image for this family."
+                _("%s does not begin like a firmware image for this family.")
                 % os.path.basename(plan["image"]))
         report = {"image": plan["image"], "wrote": len(image), "backups": []}
         inst = self.fw_session(plan["resource"], plan.get("normal") or "")
@@ -4094,7 +4221,7 @@ class _WorkerFirmware(object):
             # a restore reproduces either from the low region. So the
             # trim can only ever drop empty or duplicate bytes - the one
             # part nobody can re-derive is never in the part trimmed.
-            self._progress("Measuring the NVRAM window", None)
+            self._progress(_("Measuring the NVRAM window"), None)
             nvram_keep = flash.nvram_keep_len(stop=stop)
             for what, base, length in (
                     ("NVRAM", tds_fw.NVRAM_BASE, nvram_keep),
@@ -4117,14 +4244,14 @@ class _WorkerFirmware(object):
             room = flash.span()
             if len(image) > room:
                 raise RuntimeError(
-                    "This image is %s and the flash in this instrument "
+                    _("This image is %s and the flash in this instrument "
                     "measures %s. Writing it would run off the end of "
                     "the array and back over its own beginning.\n\n"
                     "Nothing has been erased and nothing is lost. Check "
-                    "that the image is the right one for this model."
+                    "that the image is the right one for this model.")
                     % (tds_fw._size(len(image)), tds_fw._size(room)))
             report["span"] = room
-            self._progress("Erasing the flash ...", None)
+            self._progress(_("Erasing the flash ..."), None)
             flash.erase(len(image), note=lambda t: self._progress(t, None),
                         stop=stop)
             # The helper is what makes this take minutes rather than
@@ -4143,7 +4270,7 @@ class _WorkerFirmware(object):
                                 else flash.arm() is not None)
             report["slow_pages"], report["blank_pages"] = flash.program(
                 image, stop=stop, note=self._progress)
-            self._progress("Checking what was written ...", 0.0)
+            self._progress(_("Checking what was written ..."), 0.0)
             report["faults"] = flash.verify(image, stop=stop,
                                             note=self._progress)
         finally:
@@ -4219,7 +4346,7 @@ class Worker(_WorkerFilesystem, _WorkerWaveform, _WorkerErrorLog, _WorkerScreens
             self.context = label
             try:
                 if needs_fs and self.fs is None:
-                    raise RuntimeError("not connected")
+                    raise RuntimeError(_("not connected"))
                 self.out.put((label, True, fn(self)))
             except Exception as exc:
                 # The class name goes in the log, where it is a clue, and
@@ -4444,8 +4571,8 @@ class Worker(_WorkerFilesystem, _WorkerWaveform, _WorkerErrorLog, _WorkerScreens
             addresses = list(rm.list_resources())
         except Exception as exc:
             raise RuntimeError(
-                "VISA could not list the bus: %s\n\nCheck that a VISA "
-                "runtime and your GPIB driver are installed." % exc)
+                _("VISA could not list the bus: %s\n\nCheck that a VISA "
+                "runtime and your GPIB driver are installed.") % exc)
         # Swept in numerical order, not the order VISA happened to list
         # them in: each address is split on its runs of digits and those
         # are compared as numbers, so the sweep climbs GPIB0::1, ::2 ...
@@ -4459,7 +4586,7 @@ class Worker(_WorkerFilesystem, _WorkerWaveform, _WorkerErrorLog, _WorkerScreens
             if self.cancelled.is_set():
                 return {"found": found, "cancelled": True,
                         "reached": i - 1, "total": len(addresses)}
-            self._progress("Identifying %s  (%d of %d)"
+            self._progress(_("Identifying %s  (%d of %d)")
                            % (res, i, len(addresses)),
                            (i - 1.0) / max(len(addresses), 1))
             idn, note = "", ""
@@ -4532,19 +4659,19 @@ class Worker(_WorkerFilesystem, _WorkerWaveform, _WorkerErrorLog, _WorkerScreens
             msgs = getattr(self.fs, "last_messages", []) or []
             codes = [c for c, _t in msgs]
             if NO_MEDIA in codes:
-                return "There is no disk in the drive."
+                return _("There is no disk in the drive.")
             if UNDEFINED_HEADER in codes:
                 self.no_transfers = command
-                return ("This instrument's firmware has no "
+                return (_("This instrument's firmware has no "
                         "FILESYSTEM:%s command, so file contents cannot "
                         "be transferred over GPIB. Browsing, creating "
-                        "folders and deleting still work." % command)
+                        "folders and deleting still work.") % command)
             said = "; ".join("%d %s" % (c, txt) for c, txt in msgs)
         except Exception:
             pass
-        return ("%s gave no answer after %.0f s (%s).%s"
+        return (_("%s gave no answer after %.0f s (%s).%s")
                 % (path, secs, type(exc).__name__,
-                   ("  The instrument said: " + said) if said else ""))
+                   (_("  The instrument said: ") + said) if said else ""))
 
     #: Where a waveform sent to the instrument's disk is put. At the
     #: root of the drive rather than in whichever folder the Files tab
@@ -4576,6 +4703,7 @@ class Worker(_WorkerFilesystem, _WorkerWaveform, _WorkerErrorLog, _WorkerScreens
         this the only way to tell whose it was is a flag the UI sets
         when it starts something - and a flag can be left standing.
         """
+        text = localise(text)
         self.out.put(("progress", True, {"text": text, "frac": frac,
                                          "job": self.context}))
 
@@ -4914,6 +5042,35 @@ def run_gui():
         widget.bind("<ButtonPress>", hide, add="+")
         return widget
 
+    # A UI font for the scripts Segoe UI has no glyphs for. Left to
+    # Windows, the missing glyphs come from whichever CJK font its font
+    # linking lists first - Meiryo UI on an English Windows - so Simplified
+    # Chinese came out in Japanese glyph shapes, and Japanese would in
+    # Chinese ones on a Chinese Windows. The named fonts are changed, so
+    # every widget follows, and put back for any other language.
+    #
+    # YaHei UI is two pixels taller a line than Segoe UI at 9 points (17
+    # against 15), which the System tab's layout has to leave room for.
+    SCRIPT_FONTS = {"zh-Hans": ("Microsoft YaHei UI", "Microsoft YaHei"),
+                    "ja": ("Meiryo UI", "Yu Gothic UI", "MS UI Gothic")}
+    UI_FONTS = ("TkDefaultFont", "TkTextFont", "TkMenuFont",
+                "TkHeadingFont", "TkCaptionFont", "TkSmallCaptionFont",
+                "TkIconFont", "TkTooltipFont")
+    home_family = {n: tkfont.nametofont(n).cget("family") for n in UI_FONTS}
+
+    def script_font(code):
+        """Set the UI font for this language's script."""
+        have = set(tkfont.families(root))
+        pick = next((f for f in SCRIPT_FONTS.get(code, ()) if f in have),
+                    None)
+        for n in UI_FONTS:
+            tkfont.nametofont(n).configure(family=pick or home_family[n])
+        # Fonts copied from the default before the change keep the old
+        # family; the few that carry words are refreshed with it.
+        for face in state.get("fontcopies", ()):
+            face.configure(family=pick or home_family["TkDefaultFont"])
+        state.pop("decfonts", None)
+
     state = {"cwd": None, "busy": False, "cache": {}, "saveas": None,
              "sizes": {}, "bar": False, "seen_events": set(),
              "scanned": [], "scopes": [],
@@ -4938,6 +5095,45 @@ def run_gui():
              "staged": {},
              "screen": None, "shotpng": None, "shotimg": None,
              "sformats": [], "errtext": "", "errlog": None, "idn": ""}
+    script_font(i18n.current())
+
+    def fit_text(widget, text):
+        """`text` broken into lines for this label, in Chinese or Japanese.
+
+        See cjk_break. Every other language is left to Tk. The lines are
+        measured in the label's own font and against its own wraplength,
+        so Tk, handed lines that already fit, leaves them as they are.
+        """
+        if i18n.current() not in SCRIPT_FONTS or not isinstance(text, str):
+            return text
+        try:
+            room = widget.winfo_pixels(widget.cget("wraplength") or 0)
+        except (tk.TclError, ValueError):
+            return text
+        if room <= 0:
+            return text
+        face = (str(widget.cget("font"))
+                or ttk.Style(widget).lookup(widget.winfo_class(), "font")
+                or "TkDefaultFont")
+        try:
+            face = tkfont.nametofont(face)
+        except tk.TclError:
+            face = tkfont.Font(root=widget, font=face)
+        return cjk_break(text, face.measure, room)
+
+    def fit_mapped(evt):
+        """Fit a label as it is shown - the dialogs' labels included,
+        which are made in one place each and registered nowhere."""
+        try:
+            said = str(evt.widget.cget("text"))
+        except tk.TclError:
+            return
+        fitted = fit_text(evt.widget, said)
+        if fitted != said:
+            evt.widget.config(text=fitted)
+
+    for _cls in ("TLabel", "Label"):
+        root.bind_class(_cls, "<Map>", fit_mapped, add="+")
 
     # ------------------------------------------------------ navigation row
     # Explorer's arrangement: back, forward and up together at the left,
@@ -5109,7 +5305,7 @@ def run_gui():
     WAVE_LEFT = (btn_wget, btn_wsave, btn_wload, btn_wsend, btn_wdel)
     WAVE_RIGHT = (btn_wscan,)
 
-    def flowing(host, row1, row2, left, right, key):
+    def flowing(host, row1, row2, left, right, key, gap=4):
         """A toolbar that wraps to a second row when it runs out of room.
 
         Measured rather than split by hand: the same ten buttons fit
@@ -5124,10 +5320,10 @@ def run_gui():
             room = host.winfo_width()
             if room <= 1:
                 return
-            spare = room - sum(b.winfo_reqwidth() + 4 for b in right)
+            spare = room - sum(b.winfo_reqwidth() + gap for b in right)
             used, wrapped, split = 0, False, []
             for button in left:
-                need = button.winfo_reqwidth() + 4
+                need = button.winfo_reqwidth() + gap
                 if used + need > spare and not wrapped and used:
                     wrapped, used = True, 0
                 if wrapped:
@@ -5138,15 +5334,24 @@ def run_gui():
             state[key] = list(split)
             for button in right:
                 button.pack_forget()
-                button.pack(in_=row1, side="right", padx=(4, 0))
+                button.pack(in_=row1, side="right", padx=(gap, 0))
             for button in left:
                 button.pack_forget()
                 button.pack(in_=row2 if button in split else row1,
-                            side="left", padx=(0, 4))
+                            side="left", padx=(0, gap))
             if split:
                 row2.pack(fill="x", pady=(4, 0))
             else:
                 row2.pack_forget()
+        # All on the first row to begin with, so the bar asks for a
+        # row's height before it has been measured. Left empty, a bar
+        # that the window was short of room for came out zero pixels
+        # tall, was never told its size, and never laid itself out: the
+        # Masks tab's row of boxes vanished in Chinese.
+        for button in right:
+            button.pack(in_=row1, side="right", padx=(gap, 0))
+        for button in left:
+            button.pack(in_=row1, side="left", padx=(0, gap))
         return lay
 
     flow_buttons = flowing(wtop, wrow1, wrow2, WAVE_LEFT, WAVE_RIGHT,
@@ -6792,41 +6997,44 @@ def run_gui():
                       background=tds_wfm.DEFAULT_COLOURS["background"],
                       highlightthickness=1, highlightbackground=EDGE)
     mplot.pack(side="left", fill="both", expand=True)
+    # The row under the graticule wraps when it runs out of room, the way
+    # the Waveforms toolbar does: in German and French the last box ran
+    # off the right edge of a 1280-pixel window. The rows are made before
+    # anything is put in them, or they would be drawn over it.
     mbar = ttk.Frame(mrightf)
     mbar.pack(fill="x", pady=(4, 0))
+    mrow1, mrow2 = ttk.Frame(mbar), ttk.Frame(mbar)
+    mrow1.pack(fill="x")
+    mgridpair = ttk.Frame(mbar)
     state["mgrid"] = tk.StringVar(value="0.5")
     state["msnap"] = tk.BooleanVar(value=True)
     state["mshowgrid"] = tk.BooleanVar(value=True)
     state["mgratic"] = tk.BooleanVar(value=True)
     state["mcross"] = tk.BooleanVar(value=False)
-    lbl_mgrid = ttk.Label(mbar, text=_("Grid spacing, divisions"))
+    lbl_mgrid = ttk.Label(mgridpair, text=_("Grid spacing, divisions"))
     says(lbl_mgrid, "Grid spacing, divisions")
     lbl_mgrid.pack(side="left")
-    ent_mgrid = ttk.Combobox(mbar, textvariable=state["mgrid"], width=5,
+    ent_mgrid = ttk.Combobox(mgridpair, textvariable=state["mgrid"], width=5,
                              values=("0.1", "0.2", "0.25", "0.5", "1"))
-    ent_mgrid.pack(side="left", padx=(4, 10))
+    ent_mgrid.pack(side="left", padx=(4, 0))
     ent_mgrid.bind("<<ComboboxSelected>>", lambda e: edit_redraw())
     ent_mgrid.bind("<Return>", lambda e: edit_redraw())
     chk_mshowgrid = ttk.Checkbutton(mbar, text=_("Show grid"),
                                     variable=state["mshowgrid"],
                                     command=lambda: edit_redraw())
     says(chk_mshowgrid, "Show grid")
-    chk_mshowgrid.pack(side="left", padx=(0, 10))
     chk_msnap = ttk.Checkbutton(mbar, text=_("Snap to grid"),
                                 variable=state["msnap"],
                                 command=lambda: edit_redraw())
     says(chk_msnap, "Snap to grid")
-    chk_msnap.pack(side="left", padx=(0, 10))
     chk_mgrat = ttk.Checkbutton(mbar, text=_("Graticule"),
                                 variable=state["mgratic"],
                                 command=lambda: edit_redraw())
     says(chk_mgrat, "Graticule")
-    chk_mgrat.pack(side="left", padx=(0, 10))
     chk_mcross = ttk.Checkbutton(mbar, text=_("Crosshairs"),
                                  variable=state["mcross"],
                                  command=lambda: edit_redraw())
     says(chk_mcross, "Crosshairs")
-    chk_mcross.pack(side="left", padx=(0, 10))
     # Filled is how the instrument draws a mask, and outlines are how
     # you edit one - so both, rather than a choice made for the user.
     state["mfill"] = tk.BooleanVar(value=False)
@@ -6834,7 +7042,6 @@ def run_gui():
                                 variable=state["mfill"],
                                 command=lambda: edit_redraw())
     says(chk_mfill, "Filled")
-    chk_mfill.pack(side="left", padx=(0, 10))
     # And out of the way altogether, for looking at the trace behind
     # it. It comes back the moment there is any reason to see it - a
     # tool picked up, or another mask opened - because a mask editor
@@ -6844,7 +7051,6 @@ def run_gui():
                                 variable=state["mhide"],
                                 command=lambda: edit_redraw())
     says(chk_mhide, "Hide mask")
-    chk_mhide.pack(side="left", padx=(0, 10))
     # The handles on their own, for looking at the shape rather than at
     # what it is made of. Back the moment the mask is - the same rule,
     # for the same reason: an editor that has quietly stopped showing
@@ -6854,7 +7060,10 @@ def run_gui():
                                   variable=state["mnodots"],
                                   command=lambda: edit_redraw())
     says(chk_mnodots, "Hide points")
-    chk_mnodots.pack(side="left")
+    mbar.bind("<Configure>", flowing(
+        mbar, mrow1, mrow2,
+        (mgridpair, chk_mshowgrid, chk_msnap, chk_mgrat, chk_mcross,
+         chk_mfill, chk_mhide, chk_mnodots), (), "mflow", gap=10))
     # A mask goes to the instrument as a mask, and nothing else. It
     # used to be able to go as a limit template instead, for an
     # instrument with no Option 2C - but a limit template is what the
@@ -7231,6 +7440,19 @@ def run_gui():
                                    outline=pick["label"], dash=(2, 2),
                                    tags="band")
 
+    def verdict_stamp(canvas, right, top, words, colour):
+        """The PASS/FAIL stamp in the graticule's top right corner.
+
+        As wide as its word, never narrower than the 70 pixels PASS
+        gets: a fixed box cut BESTANDEN and CONFORME off at both ends.
+        """
+        face = ("TkDefaultFont", 12, "bold")
+        wide = max(70, tkfont.Font(font=face).measure(words) + 16)
+        canvas.create_rectangle(right - 6 - wide, top + 6, right - 6, top + 32,
+                                fill=colour, outline="", tags="verdict")
+        canvas.create_text(right - 6 - wide / 2.0, top + 19, text=words,
+                           fill="#000000", font=face, tags="verdict")
+
     def draw_mask(_evt=None):
         """The graticule, the grid, the trace under it and the mask on top.
 
@@ -7281,12 +7503,7 @@ def run_gui():
             words, colour = verdict
             # Filled, with the word in black on it, the same way the
             # saved picture stamps it. See tds_wfm.plot_png.
-            mplot.create_rectangle(right - 76, top + 6, right - 6, top + 32,
-                                   fill=colour, outline="", tags="verdict")
-            mplot.create_text(right - 41, top + 19, text=words,
-                              fill="#000000",
-                              font=("TkDefaultFont", 12, "bold"),
-                              tags="verdict")
+            verdict_stamp(mplot, right, top, words, colour)
         say_mask()
 
     def say_mask():
@@ -10461,6 +10678,7 @@ def run_gui():
     limface = tkfont.nametofont("TkDefaultFont").copy()
     limface.configure(size=max(11, abs(limface.cget("size")) + 3),
                       weight="bold")
+    state.setdefault("fontcopies", []).append(limface)
     lbl_lverdict = ttk.Label(ltoolbar, font=limface)
     lbl_lverdict.pack(side="right")
     # No wraplength: this is a row now, not a column, and a sentence
@@ -10518,12 +10736,15 @@ def run_gui():
     # here is not a mask.
     lbar = ttk.Frame(lrightf)
     lbar.pack(fill="x", pady=(4, 0))
-    lbl_lgrid = ttk.Label(lbar, text=_("Grid spacing, divisions"))
+    lrow1, lrow2 = ttk.Frame(lbar), ttk.Frame(lbar)
+    lrow1.pack(fill="x")
+    lgridpair = ttk.Frame(lbar)
+    lbl_lgrid = ttk.Label(lgridpair, text=_("Grid spacing, divisions"))
     says(lbl_lgrid, "Grid spacing, divisions")
     lbl_lgrid.pack(side="left")
-    ent_lgrid = ttk.Combobox(lbar, textvariable=state["mgrid"], width=5,
+    ent_lgrid = ttk.Combobox(lgridpair, textvariable=state["mgrid"], width=5,
                              values=("0.1", "0.2", "0.25", "0.5", "1"))
-    ent_lgrid.pack(side="left", padx=(4, 10))
+    ent_lgrid.pack(side="left", padx=(4, 0))
     ent_lgrid.bind("<<ComboboxSelected>>", lambda e: edit_redraw())
     ent_lgrid.bind("<Return>", lambda e: edit_redraw())
     linfo = ttk.Label(lrightf, anchor="w", foreground="#555")
@@ -10539,8 +10760,10 @@ def run_gui():
         cb = ttk.Checkbutton(lbar, text=_(english), variable=state[key],
                              command=lambda: edit_redraw())
         says(cb, english)
-        cb.pack(side="left", padx=(0, 10))
         lchecks[key] = cb
+    lbar.bind("<Configure>", flowing(
+        lbar, lrow1, lrow2, (lgridpair,) + tuple(lchecks.values()), (),
+        "lflow", gap=10))
     # Explicit hints() calls so the translation audit sees each literal.
     hints(lchecks["mshowgrid"], "Show or hide the drawing grid")
     hints(lchecks["msnap"], "Snap points to the grid")
@@ -10636,11 +10859,7 @@ def run_gui():
         _l, top, right, _b = tds_wfm.plot_frame(
             max(lplot.winfo_width(), 80), max(lplot.winfo_height(), 60),
             20, room=8)
-        lplot.create_rectangle(right - 76, top + 6, right - 6, top + 32,
-                               fill=colour, outline="", tags="verdict")
-        lplot.create_text(right - 41, top + 19, text=words, fill="#000000",
-                          font=("TkDefaultFont", 12, "bold"),
-                          tags="verdict")
+        verdict_stamp(lplot, right, top, words, colour)
 
     def lim_verdict():
         """What the test is saying, in one word and one colour.
@@ -11560,6 +11779,13 @@ def run_gui():
                     "The GPIB address, calibration constants, and any "
                     "protected user data is left untouched.")
 
+    # The explanations on this tab wrap at SYS_WRAP rather than at the
+    # 300 pixels they were given when the columns were narrower: at 300
+    # the right column ran the Options button off the bottom of a
+    # 1280 x 800 window in German, Russian and Chinese. Twelve characters
+    # for the labels beside the boxes, where eight cut "Ausrichtung"
+    # and "Ориентация" short.
+    SYS_WRAP = 440
     sysleft = ttk.Frame(systab)
     sysleft.pack(side="left", fill="both", expand=True, padx=(4, 3),
                  pady=6)
@@ -11689,14 +11915,15 @@ def run_gui():
         values = SYS_CHOICES[key]
         line = ttk.Frame(sysbox3)
         line.pack(fill="x", pady=1)
-        one = ttk.Label(line, text=_(label), width=8)
+        one = ttk.Label(line, text=_(label), width=12)
         one.pack(side="left")
         says(one, label)
         _cb = ttk.Combobox(line, textvariable=state[key], values=values,
                            width=14, state="readonly")
         _cb.pack(side="left")
         hints(_cb, _systips[key])
-    lbl_sysrs = ttk.Label(sysbox3, foreground="#555", wraplength=300,
+    lbl_sysrs = ttk.Label(sysbox3, foreground="#555",
+                          wraplength=SYS_WRAP,
                           justify="left")
     says(lbl_sysrs, "The RS-232 settings below are Option 13 only. If not "
                     "fitted, these settings read back blank and the "
@@ -11710,7 +11937,7 @@ def run_gui():
         values = SYS_CHOICES[key]
         line = ttk.Frame(sysbox3)
         line.pack(fill="x", pady=1)
-        one = ttk.Label(line, text=_(label), width=8)
+        one = ttk.Label(line, text=_(label), width=12)
         one.pack(side="left")
         says(one, label)
         _cb = ttk.Combobox(line, textvariable=state[key], values=values,
@@ -11726,7 +11953,8 @@ def run_gui():
     sysbox4 = ttk.LabelFrame(sysright, padding=8)
     says(sysbox4, "Calibration and self test")
     sysbox4.pack(fill="x")
-    lbl_sysspc = ttk.Label(sysbox4, foreground="#555", wraplength=300,
+    lbl_sysspc = ttk.Label(sysbox4, foreground="#555",
+                           wraplength=SYS_WRAP,
                            justify="left")
     says(lbl_sysspc, "Signal Path Compensation (SPC) takes several "
                      "minutes to complete. Please ensure instrument is "
@@ -11758,7 +11986,8 @@ def run_gui():
                              command=lambda: do_sys_diag())
     btn_sysdiag.pack(side="left", padx=4)
     says(btn_sysdiag, "Run")
-    lbl_sysdiagwhat = ttk.Label(sysbox4, foreground="#555", wraplength=300,
+    lbl_sysdiagwhat = ttk.Label(sysbox4, foreground="#555",
+                                wraplength=SYS_WRAP,
                                 justify="left")
     lbl_sysdiagwhat.pack(anchor="w", pady=(4, 0))
 
@@ -11794,7 +12023,8 @@ def run_gui():
     sys_diag_what()
     relabel.append(sys_diag_what)
     state["sysdiag"].trace_add("write", sys_diag_what)
-    lbl_sysdiagsay = ttk.Label(sysbox4, foreground="#555", wraplength=300,
+    lbl_sysdiagsay = ttk.Label(sysbox4, foreground="#555",
+                               wraplength=SYS_WRAP,
                                justify="left")
     says(lbl_sysdiagsay, "Extended diagnostics performs a warm-boot and "
                          "takes a few minutes. All on screen data will be "
@@ -11890,7 +12120,8 @@ def run_gui():
     sysbox5 = ttk.LabelFrame(sysright, padding=8)
     says(sysbox5, "Memory")
     sysbox5.pack(fill="x")
-    lbl_syswipe = ttk.Label(sysbox5, foreground="#555", wraplength=300,
+    lbl_syswipe = ttk.Label(sysbox5, foreground="#555",
+                            wraplength=SYS_WRAP,
                             justify="left")
     says(lbl_syswipe, ERASE_SAYS)
     lbl_syswipe.pack(anchor="w")
@@ -11912,7 +12143,8 @@ def run_gui():
     sysbox6 = ttk.LabelFrame(sysright, padding=8)
     says(sysbox6, "Factory options")
     sysbox6.pack(fill="x")
-    lbl_sysopts = ttk.Label(sysbox6, foreground="#555", wraplength=300,
+    lbl_sysopts = ttk.Label(sysbox6, foreground="#555",
+                            wraplength=SYS_WRAP,
                             justify="left")
     says(lbl_sysopts, "Enable and disable factory options.")
     lbl_sysopts.pack(anchor="w")
@@ -12941,7 +13173,7 @@ def run_gui():
     tabs.add(baktab, text=_("Backup"))
     named(baktab, "Backup")
 
-    bakleft = ttk.Frame(baktab, width=LEFT_PANE)
+    bakleft = ttk.Frame(baktab, width=BAK_PANE)
     bakleft.pack(side="left", fill="y", padx=(4, 3), pady=6)
     bakleft.pack_propagate(False)
     bakright = ttk.Frame(baktab)
@@ -12992,7 +13224,7 @@ def run_gui():
     hints(bakchecks["refs"], "Include the stored reference waveforms")
     hints(bakchecks["cal"], "Include the calibration constants")
     lbl_bakfound = ttk.Label(bakbox1, foreground="#555", justify="left",
-                             wraplength=LEFT_PANE - 40)
+                             wraplength=BAK_PANE - 40)
     says(lbl_bakfound, "Refresh to see what this instrument has.")
     lbl_bakfound.pack(anchor="w", pady=(6, 0))
 
@@ -13036,7 +13268,7 @@ def run_gui():
     says(bakbox3, "Calibration constants")
     bakbox3.pack(fill="x")
     lbl_bakcal = ttk.Label(bakbox3, foreground="#555", justify="left",
-                           wraplength=LEFT_PANE - 40)
+                           wraplength=BAK_PANE - 40)
     says(lbl_bakcal,
          "The acquisition board's calibration EEPROMs, read over the bus "
          "while the instrument runs normally. Back these up before any "
@@ -13080,7 +13312,7 @@ def run_gui():
     says(bakbox4, "NVRAM")
     bakbox4.pack(fill="x")
     lbl_baknv = ttk.Label(bakbox4, foreground="#555", justify="left",
-                          wraplength=LEFT_PANE - 40)
+                          wraplength=BAK_PANE - 40)
     says(lbl_baknv,
          "User settings, saved waveforms, limits and masks, and on the "
          "earlier instruments the calibration constants too. Reading it "
@@ -14116,10 +14348,10 @@ def run_gui():
             say(_("%(job)s failed - see %(file)s")
                 % {"job": where, "file": os.path.basename(LOGFILE)})
             messagebox.showerror(
-                "Error",
-                "%s failed because of a bug in this program.\n\n"
+                _("Error"),
+                _("%s failed because of a bug in this program.\n\n"
                 "Nothing was sent to the instrument, and the window is "
-                "still usable. The details were written to:\n%s\n\n%s"
+                "still usable. The details were written to:\n%s\n\n%s")
                 % (where, LOGFILE, text.strip().splitlines()[-1]))
         except Exception:
             pass
@@ -14192,19 +14424,30 @@ def run_gui():
         """
         if MASS_STORAGE not in (payload.get("events") or []):
             return ""
-        return ("  (the instrument logged a mass storage error during the "
-                "delete - the folder is verified gone; see the log)")
+        return (_("  (the instrument logged a mass storage error during the "
+                "delete - the folder is verified gone; see the log)"))
 
     def report_failures(verb, failed):
         """Say what did not work, without hiding what did."""
         if not failed:
             return
+        title, text = {
+            "download": (_("Some files could not be downloaded"),
+                         _("%d file(s) could not be downloaded. Everything "
+                           "else was done.\n\n%s")),
+            "upload": (_("Some files could not be uploaded"),
+                       _("%d file(s) could not be uploaded. Everything "
+                         "else was done.\n\n%s")),
+            "delete": (_("Some files could not be deleted"),
+                       _("%d file(s) could not be deleted. Everything "
+                         "else was done.\n\n%s")),
+        }[verb]
         messagebox.showwarning(
-            "Some files could not be %sed" % verb,
-            "%d file(s) could not be %sed. Everything else was done.\n\n%s"
-            % (len(failed), verb,
-               "\n".join("    %s\n        %s" % (p.rsplit("/", 1)[-1], e)
-                         for p, e in failed[:6])))
+            title,
+            text % (len(failed),
+                    "\n".join("    %s\n        %s"
+                              % (p.rsplit("/", 1)[-1], localise(str(e)))
+                              for p, e in failed[:6])))
 
     def report_losses(payload):
         """Say so when the instrument took more than it was asked to.
@@ -14862,11 +15105,11 @@ def run_gui():
             if len(folders) > 1:
                 messagebox.showinfo(
                     _("One folder at a time"),
-                    "Saving a folder brings down everything inside it, so "
-                    "they are done one at a time.")
+                    _("Saving a folder brings down everything inside it, so "
+                    "they are done one at a time."))
                 return
             destdir = filedialog.askdirectory(
-                title="Save '%s' and its contents into" % folders[0],
+                title=_("Save '%s' and its contents into") % folders[0],
                 mustexist=True)
             if not destdir:
                 return
@@ -14894,15 +15137,15 @@ def run_gui():
             return
 
         destdir = filedialog.askdirectory(
-            title="Save %d files to folder" % len(names), mustexist=True)
+            title=_("Save %d files to folder") % len(names), mustexist=True)
         if not destdir:
             return
         clashes = [n for n in names
                    if os.path.exists(os.path.join(destdir, n))]
         if clashes and not messagebox.askyesno(
                 _("Replace files?"),
-                "%d of these already exist in that folder and will be "
-                "replaced:\n\n%s\n\nContinue?"
+                _("%d of these already exist in that folder and will be "
+                "replaced:\n\n%s\n\nContinue?")
                 % (len(clashes), name_list(clashes)),
                 icon="warning", default="no"):
             return
@@ -14969,16 +15212,16 @@ def run_gui():
                 break
             messagebox.showwarning(_("Cannot use that name"), why)
             name = simpledialog.askstring(
-                "Name on the instrument", "Name to save it as:",
+                _("Name on the instrument"), _("Name to save it as:"),
                 initialvalue=name)
             if name is None:
                 return
             name = name.strip().upper()
         if not messagebox.askyesno(
-                "Upload",
-                "Write %s (%s bytes) to %s ?\n\n"
+                _("Upload"),
+                _("Write %s (%s bytes) to %s ?\n\n"
                 "It is read back and compared afterwards; the upload reports "
-                "failure rather than success on a guess."
+                "failure rather than success on a guess.")
                 % (name, format(len(data), ","),
                    join(state["cwd"], name))):
             return
@@ -16278,16 +16521,16 @@ def run_gui():
             if sel_files():
                 messagebox.showwarning(
                     _("Select one kind at a time"),
-                    "The selection contains both folders and files.\n\n"
+                    _("The selection contains both folders and files.\n\n"
                     "Delete folders and files separately, so that what is "
-                    "about to be removed can be shown properly first.")
+                    "about to be removed can be shown properly first."))
                 return
             if len(sel_folders()) > 1:
                 messagebox.showwarning(
                     _("One folder at a time"),
-                    "Folders are removed with everything inside them, so "
+                    _("Folders are removed with everything inside them, so "
                     "they are deleted one at a time and each is shown to "
-                    "you first.")
+                    "you first."))
                 return
             node = join(state["cwd"], sel_folders()[0])
             why = Worker.refuse_reason(node)
@@ -16312,10 +16555,10 @@ def run_gui():
                        if Worker.refuse_reason(p)]
             if refused:
                 messagebox.showwarning(
-                    "Cannot delete",
+                    _("Cannot delete"),
                     refused[0][1] if len(refused) == 1 else
-                    "%d of the %d selected items cannot be deleted, so "
-                    "nothing was deleted:\n\n%s"
+                    _("%d of the %d selected items cannot be deleted, so "
+                      "nothing was deleted:\n\n%s")
                     % (len(refused), len(names),
                        name_list([n for n, _ in refused])))
                 return
@@ -16399,7 +16642,7 @@ def run_gui():
         if len(folders) + len(files) != 1:
             messagebox.showwarning(
                 _("One at a time"),
-                "Select a single file or folder to duplicate.")
+                _("Select a single file or folder to duplicate."))
             return
         is_dir = bool(folders)
         name = (folders or files)[0]
@@ -16425,7 +16668,7 @@ def run_gui():
             if new in taken:
                 messagebox.showwarning(
                     _("Name already in use"),
-                    "'%s' already exists in %s. Choose another name."
+                    _("'%s' already exists in %s. Choose another name.")
                     % (new, state["cwd"]))
                 suggestion = new
                 continue
@@ -16518,7 +16761,7 @@ def run_gui():
             if name.upper() in taken:
                 messagebox.showwarning(
                     _("Name already in use"),
-                    "'%s' already exists in %s. Choose another name."
+                    _("'%s' already exists in %s. Choose another name.")
                     % (name.upper(), state["cwd"]))
                 return
         busy(True)
@@ -16535,7 +16778,7 @@ def run_gui():
         needing to be tracked.
         """
         for widget, source in labelled:
-            widget.config(text=_(source))
+            widget.config(text=fit_text(widget, _(source)))
         for again in relabel:
             again()
         show_sort_arrow()
@@ -16599,6 +16842,7 @@ def run_gui():
 
     def set_language(code):
         i18n.use(code)
+        script_font(code)
         settings = load_settings()
         settings["language"] = code
         save_settings(settings)
@@ -17074,12 +17318,13 @@ def run_gui():
                     state["bakstep"] = None
                 if not ok:
                     busy(False)
+                    raw, payload = payload, localise(payload)
                     # A failure is the last line of the run it ends,
                     # and the report is the only place it stays.
                     if label in BAK_JOBS:
                         bak_note(_("Failed - %s") % payload)
                     if label == "connect":
-                        if "Another copy of TDS Toolkit" in (payload or ""):
+                        if "Another copy of TDS Toolkit" in (raw or ""):
                             # The bus is held by another copy of this
                             # program, not an absent instrument. Say so and
                             # do not open the picker - there is nothing to
@@ -18285,12 +18530,12 @@ def run_gui():
                     state["seen_events"].update(payload["codes"])
                     if fresh:
                         messagebox.showwarning(
-                            "The instrument reported something",
-                            "While doing '%s' the instrument reported:\n\n%s"
+                            _("The instrument reported something"),
+                            _("While doing '%s' the instrument reported:\n\n%s"
                             "\n\nThis was not expected. It has been written "
                             "to:\n%s\n\nIf anything looks wrong on the "
                             "instrument, stop and say so before deleting "
-                            "anything else."
+                            "anything else.")
                             % (payload["where"], payload["detail"], LOGFILE))
                 elif label == "download":
                     busy(False)
@@ -18668,6 +18913,13 @@ LEARN_MOST = 500
 #: shape column were cut off.
 LEFT_PANE = 310
 
+#: The Backup tab's left column, which is not one of the three above:
+#: it holds no list to line up with, and three paragraphs of
+#: explanation. At LEFT_PANE they ran the NVRAM buttons off the bottom
+#: of a 1280 x 800 window in French, Italian and Russian, and cut the
+#: Russian Verify button in half.
+BAK_PANE = 400
+
 
 def nudge_named(step):
     """A nudge distance as it is written on the box.
@@ -18822,9 +19074,11 @@ def translatable_strings():
             if not (isinstance(node, ast.Call)
                     and isinstance(node.func, ast.Name)):
                 continue
-            # _("...") says its first argument; says(w, "...") and
-            # hints(w, "...") say their second.
-            at = {"_": 0, "says": 1, "hints": 1}.get(node.func.id)
+            # _("...") and N_("...") say their first argument; says(w,
+            # "...") and hints(w, "...") say their second, and the zoom
+            # buttons' _zoombtn(key, cmd, "...") its third.
+            at = {"_": 0, "N_": 0, "says": 1, "hints": 1,
+                  "_zoombtn": 2}.get(node.func.id)
             if (at is not None and len(node.args) > at
                     and isinstance(node.args[at], ast.Constant)
                     and isinstance(node.args[at].value, str)):
@@ -18899,8 +19153,8 @@ def main():
             root = tkinter.Tk()
             root.withdraw()
             messagebox.showerror(
-                "Error",
-                "%s\n\nThe details were written to:\n%s"
+                _("Error"),
+                _("%s\n\nThe details were written to:\n%s")
                 % (detail.strip().splitlines()[-1], LOGFILE))
         except Exception:
             pass
