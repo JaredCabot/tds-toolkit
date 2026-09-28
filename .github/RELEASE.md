@@ -21,7 +21,9 @@ pointing one at real hardware over GPIB. The parts most likely to
 differ are the ones the simulator cannot stand in for: the VISA layer,
 GPIB timing, and how large transfers behave.
 
-If you try one, **please open an issue either way**. "Worked, TDS 754C
+If you try one, **please file an
+[instrument report](https://github.com/JaredCabot/tds-toolkit/issues/new?template=instrument_report.yml)
+either way**. "Worked, TDS 754C
 on Ubuntu 24.04 with linux-gpib 4.3.6" is as useful as a bug report,
 because right now the honest answer to "does it work on Linux" is that
 nobody knows. Say which instrument, which firmware (the System tab

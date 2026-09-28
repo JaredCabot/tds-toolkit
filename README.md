@@ -212,8 +212,9 @@ On Linux and macOS, `chmod +x` it first.
 
 The Linux and macOS builds are the same program from the same commit and
 pass the same automated checks against a simulator, but **nobody has yet
-pointed one at real hardware**. If you do, please open an issue whether it
-worked or not - the VISA layer and GPIB timing are exactly what a simulator
+pointed one at real hardware**. If you do, please file an
+[instrument report](../../issues/new?template=instrument_report.yml) whether
+it worked or not - the VISA layer and GPIB timing are exactly what a simulator
 cannot stand in for, so a report either way is worth having.
 
 None of them is code signed. Windows brings up SmartScreen on the first run -
