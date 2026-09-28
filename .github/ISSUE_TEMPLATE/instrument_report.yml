@@ -1,0 +1,100 @@
+name: Instrument report
+description: Tell us how TDS Toolkit got on with your instrument - whether it worked or not
+title: "[Instrument]: "
+labels: ["instrument report"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A report that everything worked is as useful as a bug report. The program has been
+        tested on a handful of instruments, and every model, firmware version, operating system
+        and GPIB adapter it meets is worth knowing about - especially the Linux and macOS builds,
+        which have not yet been pointed at real hardware.
+
+        If something failed, a **Bug report** is better for that part; this one is for the overall picture.
+  - type: input
+    id: version
+    attributes:
+      label: TDS Toolkit version
+      placeholder: "1.2.3"
+    validations:
+      required: true
+  - type: textarea
+    id: instruments
+    attributes:
+      label: Instrument ID
+      description: >-
+        The Instrument ID line on the System tab, copied whole - one line for each instrument
+        you tried. Say if an instrument has been converted to another model.
+      placeholder: |
+        TEKTRONIX,TDS 784D,0,CF:91.1CT FV:v7.4e
+        TEKTRONIX,TDS 784A,0,CF:91.1CT FV:v4.2.1e  (a TDS 744A converted to a 784A)
+      render: text
+    validations:
+      required: true
+  - type: dropdown
+    id: build
+    attributes:
+      label: Which build
+      options:
+        - Windows (TDS-Toolkit-windows-x86_64.exe)
+        - Linux (tds-toolkit-linux-x86_64)
+        - macOS, Apple silicon (tds-toolkit-macos-arm64)
+        - macOS, Intel (tds-toolkit-macos-x86_64)
+        - From source (python tdstoolkit.py)
+    validations:
+      required: true
+  - type: input
+    id: system
+    attributes:
+      label: Operating system, VISA layer and GPIB adapter
+      placeholder: "Ubuntu 24.04, linux-gpib 4.3.6, Agilent 82357B"
+    validations:
+      required: true
+  - type: dropdown
+    id: result
+    attributes:
+      label: Overall
+      options:
+        - Everything I tried worked
+        - Mostly worked - details below
+        - Did not work - details below
+    validations:
+      required: true
+  - type: checkboxes
+    id: tried
+    attributes:
+      label: What did you try?
+      options:
+        - label: Files - browse, upload, download
+        - label: Screenshot
+        - label: Waveforms - capture, save, load, send
+        - label: Protocol decode
+        - label: Limits or Masks
+        - label: Error Log
+        - label: System - self test, SPC, date and time
+        - label: Backup - backup file, calibration constants
+        - label: Backup - NVRAM through the bootloader
+        - label: Firmware - backup
+        - label: Firmware - write
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes
+      description: Anything that behaved differently from the manual, however small, and anything that was slow.
+    validations:
+      required: false
+  - type: dropdown
+    id: firmware
+    attributes:
+      label: Firmware catalogue
+      description: >-
+        FIRMWARE-INDEX.txt lists the firmware images the program knows. If your version is not in
+        it, we would like to add it - say so here and we will ask for the image. Please do not
+        attach it yet.
+      options:
+        - My firmware version is already listed
+        - My firmware version is not listed
+        - Not sure
+    validations:
+      required: false

@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: User manual
+    url: https://github.com/JaredCabot/tds-toolkit/blob/main/docs/TDS%20Toolkit%20User%20Manual%20(en).pdf
+    about: Every tab, the file formats, and a troubleshooting appendix. Translations sit beside it in docs/.
+  - name: Writing a Protocol Decoder
+    url: https://github.com/JaredCabot/tds-toolkit/blob/main/docs/TDS%20Toolkit%20-%20Writing%20a%20Protocol%20Decoder%20(en).pdf
+    about: How to add a decoder for a bus the program does not know yet.

@@ -1,0 +1,134 @@
+name: Bug report
+description: Something does not work as the manual describes
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. The more of this you can fill in, the faster the problem can be found.
+
+        **The log answers most of the questions here.** `tdstoolkit.log` sits beside the program
+        (the Settings tab shows where, under *This program*). It records what the program did,
+        what the instrument answered and what it was connected to at the time. Attach it below,
+        or paste the part around the problem. If it has already rolled over, attach
+        `tdstoolkit.log.old` as well.
+  - type: input
+    id: version
+    attributes:
+      label: TDS Toolkit version
+      description: From the title bar or the Settings tab, for example 1.2.3. Say if you run it from source.
+      placeholder: "1.2.3"
+    validations:
+      required: true
+  - type: input
+    id: instrument
+    attributes:
+      label: Instrument ID
+      description: >-
+        The Instrument ID line on the System tab, copied whole - it gives the model and the
+        firmware version. If the program cannot connect, give the model and firmware from the
+        instrument's own boot screen.
+      placeholder: "TEKTRONIX,TDS 784D,0,CF:91.1CT FV:v7.4e"
+    validations:
+      required: true
+  - type: dropdown
+    id: build
+    attributes:
+      label: Which build
+      options:
+        - Windows (TDS-Toolkit-windows-x86_64.exe)
+        - Linux (tds-toolkit-linux-x86_64)
+        - macOS, Apple silicon (tds-toolkit-macos-arm64)
+        - macOS, Intel (tds-toolkit-macos-x86_64)
+        - From source (python tdstoolkit.py)
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: "Windows 11 23H2 / Ubuntu 24.04 / macOS 14.5"
+    validations:
+      required: true
+  - type: input
+    id: gpib
+    attributes:
+      label: VISA layer and GPIB adapter
+      description: The VISA software and its version, and the GPIB interface the instrument is on.
+      placeholder: "NI-VISA 2024 Q3, NI GPIB-USB-HS"
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: What were you doing?
+      options:
+        - Connecting, or scanning the bus
+        - Files - browsing, uploading, downloading, deleting, formatting
+        - Screenshot
+        - Waveforms - capturing, saving, loading, sending
+        - Protocol decode
+        - Limits - templates and limit tests
+        - Masks - editing, sending, measuring
+        - Error Log
+        - System - date and time, hardcopy, self test, SPC, options
+        - Backup - backup files, calibration constants, NVRAM
+        - Firmware - backing up or writing firmware
+        - Settings - colours, saved pictures, language
+        - Installing or starting the program
+        - Something else
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+      description: Include any message the program or the instrument showed, word for word.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The shortest sequence that shows the problem, and whether it happens every time.
+      placeholder: |
+        1. Connect to the instrument
+        2. Open the Backup tab and press Refresh
+        3. Press Back up...
+    validations:
+      required: false
+  - type: textarea
+    id: log
+    attributes:
+      label: Log
+      description: Attach tdstoolkit.log, or paste the lines around the problem.
+      render: text
+    validations:
+      required: false
+  - type: dropdown
+    id: language
+    attributes:
+      label: Program language
+      description: Only matters if the problem is with the text the program shows.
+      options:
+        - English
+        - Deutsch
+        - Español
+        - Français
+        - Italiano
+        - Русский
+        - 日本語
+        - 简体中文
+    validations:
+      required: false
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: >-
+        Screenshots, files that trigger the problem (attach them), and the instrument's options
+        if they matter. Please do not attach firmware images, calibration or NVRAM backups unless
+        asked - they are specific to one instrument.
+    validations:
+      required: false
