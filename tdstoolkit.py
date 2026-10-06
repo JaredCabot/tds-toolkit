@@ -4791,6 +4791,16 @@ class Worker(_WorkerFilesystem, _WorkerWaveform, _WorkerErrorLog, _WorkerScreens
     #: calibration data.
     OPTION_SOFT = ("1M", "2F", "2C", "1G")
 
+    #: The instruments 1G is offered on, spelled the way the catalogue
+    #: spells a model (no space). It is held to a list by hand rather
+    #: than to the firmware table: plenty of firmwares read the constant
+    #: behind it, but it is an acquisition board identity rather than an
+    #: option flag, so it is offered only where it is known to apply -
+    #: traced on the 540B, and listed for the 520D, 540D, 724D and 754D
+    #: in Tektronix's own documentation (manual 071-0130-03).
+    OPTION_1G_MODELS = ("TDS540B", "TDS520D", "TDS540D", "TDS724D",
+                        "TDS754D")
+
     #: What *OPT? calls an option, where that is not what the option
     #: word list calls it. Measured, not guessed: a TDS 680B on v4.4.1e
     #: answers "13:Rs232/cent,1M:extended record length,0,2F:math
@@ -12458,11 +12468,10 @@ def run_gui():
         # box still ticks and still writes: the whole point of writing to
         # a firmware that ignores it is to find out that it does.
         #
-        # 1G is held to the TDS 540B by hand rather than by that rule.
-        # Plenty of firmwares read the constant behind it, but it is an
-        # acquisition board identity rather than an option flag and the
-        # 540B is the one it has been traced on, so the rest are greyed
-        # until somebody has tried it on them.
+        # 1G is held to Worker.OPTION_1G_MODELS by hand rather than by
+        # that rule: it is an acquisition board identity rather than an
+        # option flag, so the instruments it is not known to apply to
+        # are greyed until somebody has tried it on them.
         able = firmware_options(state.get("idn"))
         # Spelled the way the catalogue spells it, not the way the
         # instrument says it. *IDN? answers "TDS 540B" with a space and
@@ -12473,7 +12482,7 @@ def run_gui():
 
         def offered(code):
             if code == "1G":
-                return model == "TDS540B"
+                return model in Worker.OPTION_1G_MODELS
             return able is None or code in able
 
         if not all(offered(c) for c, _w, _o, _d in Worker.OPTION_WORDS):

@@ -5,6 +5,15 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **Option 1G is offered on the TDS 520D, 540D, 724D and 754D as well as the
+  TDS 540B.** Tektronix's manual (071-0130-03) lists the option for those four
+  models, so the **Factory options** dialog no longer greys it on them. The user
+  manuals say the same in all eight languages.
+
 ## [1.2.3] - 2026-09-25
 
 ### Changed
