@@ -1196,5 +1196,8 @@
   "'%s' already exists in %s. Choose another name.": "« %s » existe déjà dans %s. Choisissez un autre nom.",
   "The instrument reported something": "L'instrument a signalé quelque chose",
   "While doing '%s' the instrument reported:\n\n%s\n\nThis was not expected. It has been written to:\n%s\n\nIf anything looks wrong on the instrument, stop and say so before deleting anything else.": "Pendant « %s », l'instrument a signalé :\n\n%s\n\nCeci n'était pas attendu. Cela a été écrit dans :\n%s\n\nSi quelque chose semble anormal sur l'instrument, arrêtez-vous et signalez-le avant de supprimer quoi que ce soit d'autre.",
-  "%s\n\nThe details were written to:\n%s": "%s\n\nLes détails ont été écrits dans :\n%s"
+  "%s\n\nThe details were written to:\n%s": "%s\n\nLes détails ont été écrits dans :\n%s",
+  "%(file)s was taken from a %(theirs)s and this instrument says it is a %(mine)s. Calibration constants belong to one acquisition board, and another board's will leave this instrument measuring wrongly.\n\nRestore it anyway?": "%(file)s provient d'un %(theirs)s et cet instrument se déclare %(mine)s. Les constantes d'étalonnage appartiennent à une seule carte d'acquisition ; celles d'une autre carte feraient mesurer cet instrument faux.\n\nRestaurer quand même ?",
+  "Different model": "Modèle différent",
+  "%s is not the file the catalogue listed - it has changed since it was scanned. Nothing has been written. Refresh the list and try again.": "%s n'est pas le fichier que le catalogue indiquait - il a changé depuis l'analyse. Rien n'a été écrit. Actualisez la liste et réessayez."
 }

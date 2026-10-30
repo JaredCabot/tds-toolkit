@@ -24,6 +24,7 @@ and a TDS 640A (v3.8.8e); see INSTRUMENT-NOTES.md.
 """
 import base64
 import math
+import re
 import struct
 import time
 import zlib
@@ -547,13 +548,7 @@ def from_isf(data, name="file"):
     hash_at = rest.find(b"#")
     if hash_at < 0:
         raise ValueError("the CURVE block has no length in front of it")
-    digits = int(chr(rest[hash_at + 1]))
-    length = int(rest[hash_at + 2:hash_at + 2 + digits].decode("ascii"))
-    start = hash_at + 2 + digits
-    body = rest[start:start + length]
-    if len(body) < length:
-        raise ValueError("the curve is %d bytes short of the %d it claims"
-                         % (length - len(body), length))
+    body = ieee_block(rest, hash_at)
     pre = {}
     head = head.split(":WFMPRE:")[-1].split("WFMPRE:")[-1]
     for field in head.split(";"):
@@ -571,6 +566,14 @@ def from_isf(data, name="file"):
         raise ValueError("an odd number of bytes for a 16-bit waveform")
     source = pre.get("WFID", "").strip('"').split(",")[0].strip() or name
     return Waveform(source, body, pre, width=width)
+
+
+def _is_number(text):
+    try:
+        float(text)
+        return True
+    except ValueError:
+        return False
 
 
 def from_csv(data, name="file"):
@@ -593,12 +596,30 @@ def from_csv(data, name="file"):
         line = line.strip()
         if not line:
             continue
-        parts = [p.strip() for p in line.replace("\t", ",").split(",")]
+        # Semicolon or tab separated files carry comma decimals in the
+        # locales that write them, so the decimal mark follows the
+        # separator. A comma-separated row of four numbers with no point
+        # anywhere is the same file with the wrong separator: it cannot
+        # be paired, where a file of more than two columns can (the
+        # first two are taken, as always).
+        if ";" in line or "\t" in line:
+            parts = [p.strip().replace(",", ".")
+                     for p in re.split(r"[;\t]", line)]
+        else:
+            parts = [p.strip() for p in line.split(",")]
         if len(parts) < 2:
             continue
         try:
             t, v = float(parts[0]), float(parts[1])
+            if (len(parts) == 4 and "." not in line
+                    and all(_is_number(p) for p in parts)):
+                raise ValueError(
+                    "%s has four numbers on a line where two were expected "
+                    "- if the decimals are commas, separate the columns "
+                    "with semicolons" % name)
         except ValueError:
+            if len(parts) == 4 and "." not in line and _is_number(parts[0]):
+                raise
             # A header row names the columns and their units.
             low = line.lower()
             for unit, mark in (("s", "second"), ("s", "time")):
@@ -769,12 +790,24 @@ def llwfm_checksum(payload):
     return sum(struct.unpack(">%dH" % words, body[:words * 2])) & 0xFFFF
 
 
+def ieee_block(data, at=0):
+    """The body of an IEEE 488.2 definite-length block starting at `at`
+    (the '#'), or ValueError with a reason. Short or malformed input is
+    a reason, never an IndexError."""
+    try:
+        digits = int(chr(data[at + 1]))
+        length = int(data[at + 2:at + 2 + digits])
+    except (IndexError, ValueError):
+        raise ValueError("the block header after '#' is not a length")
+    body = data[at + 2 + digits:at + 2 + digits + length]
+    if len(body) < length:
+        raise ValueError("the block is %d bytes short of the %d it claims"
+                         % (length - len(body), length))
+    return body
+
+
 def looks_like_llwfm(data):
     return data[:5] == LLWFM_MAGIC
-
-
-def llwfm_word(table, code, unknown=""):
-    return table.get(code, unknown)
 
 
 def llwfm_code(table, words):
@@ -819,9 +852,7 @@ def from_wfm(data, name="file"):
     at = data.find(b"#")
     if at < 0:
         raise ValueError("no block header after LLWFM")
-    digits = int(chr(data[at + 1]))
-    length = int(data[at + 2:at + 2 + digits].decode("ascii"))
-    body = data[at + 2 + digits:at + 2 + digits + length]
+    body = ieee_block(data, at)
     if len(body) < LLWFM_CURVE + LLWFM_TRAILER:
         raise ValueError("the file is too short to hold a waveform")
     head = body[:LLWFM_HEADER]
@@ -851,15 +882,12 @@ def from_wfm(data, name="file"):
     which = struct.unpack_from(">H", head, LLWFM_SOURCE)[0] - LLWFM_SOURCE_0
     known = 0 <= which < len(LLWFM_SOURCES)
     source = LLWFM_SOURCES[which] if known else name
-    mode = llwfm_word(LLWFM_MODES,
-                      struct.unpack_from(">H", head, LLWFM_MODE)[0])
-    coupling = llwfm_word(LLWFM_COUPLINGS,
-                          struct.unpack_from(">H", head, LLWFM_COUPLING)[0])
-    xunit = llwfm_word(LLWFM_UNITS,
-                       struct.unpack_from(">H", head, LLWFM_XUNIT)[0], "s")
-    yunit = llwfm_word(LLWFM_UNITS,
-                       struct.unpack_from(">H", head, LLWFM_YUNIT)[0],
-                       "Volts")
+    def word(table, offset, unknown=""):
+        return table.get(struct.unpack_from(">H", head, offset)[0], unknown)
+    mode = word(LLWFM_MODES, LLWFM_MODE)
+    coupling = word(LLWFM_COUPLINGS, LLWFM_COUPLING)
+    xunit = word(LLWFM_UNITS, LLWFM_XUNIT, "s")
+    yunit = word(LLWFM_UNITS, LLWFM_YUNIT, "Volts")
     # The instrument shows fifty points to a division whatever the
     # record length, so its own timebase is the sample interval times
     # fifty - not the record over ten divisions.
@@ -871,9 +899,7 @@ def from_wfm(data, name="file"):
            "%d points" % count]
         + (["%s mode" % mode] if mode else []))
     pre = {"NR_PT": str(count),
-           "PT_FMT": llwfm_word(LLWFM_FORMATS,
-                                struct.unpack_from(">H", head,
-                                                   LLWFM_FORMAT)[0], "Y"),
+           "PT_FMT": word(LLWFM_FORMATS, LLWFM_FORMAT, "Y"),
            "XINCR": repr(xincr), "XZERO": "0",
            "PT_OFF": str(int(round(percent * count / 100.0))),
            "XUNIT": '"%s"' % xunit,
@@ -921,6 +947,8 @@ def eng(value, unit=""):
     """A number the way an instrument would print it: 1.23 ms, not 0.00123."""
     if value == 0:
         return "0 %s" % unit if unit else "0"
+    if not math.isfinite(value):
+        return "%s %s" % (value, unit) if unit else str(value)
     scale = [(1e9, "G"), (1e6, "M"), (1e3, "k"), (1.0, ""), (1e-3, "m"),
              (1e-6, "u"), (1e-9, "n"), (1e-12, "p")]
     size = abs(value)
@@ -1449,11 +1477,6 @@ class PlotView(object):
         self.span = max(self.MIN_POINTS * self.step,
                         min(self.full_span, room, per * DIVS_X))
         self.first = lo if hold == "first" else hi - self.span
-        return self.clamp()
-
-    def scroll_to(self, fraction):
-        """Put the left edge here, as a fraction of the whole."""
-        self.first = self.full_first + fraction * self.full_span
         return self.clamp()
 
 
@@ -2225,9 +2248,7 @@ def plot_png(waves, width=DEFAULT_PNG_WIDTH, height=None,
         view = PlotView(waves)
     pick = scheme(colours)
     bg = rgb(pick["background"], (18, 22, 28))
-    buf = bytearray()
-    for _ in range(width * height):
-        buf += bytes((bg[0], bg[1], bg[2], 255))
+    buf = bytearray(bytes((bg[0], bg[1], bg[2], 255)) * (width * height))
 
     def put(x, y, rgb):
         x, y = int(x), int(y)
@@ -2252,7 +2273,11 @@ def plot_png(waves, width=DEFAULT_PNG_WIDTH, height=None,
         wide, tall = int(right - left), int(bottom - top)
         if wide > 0 and tall > 0:
             spot = rescale_screen(pixels, shot_w, shot_h, wide, tall)
+            # Padded to every value a byte can hold: an 8-bit PCX
+            # without its palette tail, or a BMP with biClrUsed below
+            # 256, indexes past what it carries.
             paint = [bytes(tuple(c)[:3]) for c in palette]
+            paint += [b"\0\0\0"] * (256 - len(paint))
             for y in range(tall):
                 row = y * wide
                 for x in range(wide):
@@ -2967,13 +2992,10 @@ class TdsWfm(object):
             self.inst.read_termination = old
         if not raw.startswith(b"#"):
             raise IOError("the instrument did not send a waveform block")
-        digits = int(raw[1:2])
-        length = int(raw[2:2 + digits])
-        body = raw[2 + digits:2 + digits + length]
-        if len(body) != length:
-            raise IOError("waveform truncated: %d bytes of %d"
-                          % (len(body), length))
-        return body
+        try:
+            return ieee_block(raw)
+        except ValueError as exc:
+            raise IOError("waveform truncated: %s" % exc)
 
     def get(self, source, width=1):
         """Read one source. Returns a Waveform.

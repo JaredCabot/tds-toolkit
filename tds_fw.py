@@ -507,39 +507,16 @@ class Flash(object):
         return length
 
     def nvram_keep_len(self, note=None, stop=None):
-        """How much of the NVRAM window a backup should read.
-
-        The low NVRAM_KEEP is always kept whole - it holds the two
-        memory parts and everything that cannot be re-derived. The
-        384 kB above it is kept only if it holds something the low
-        region does not. Past the parts it reads as a uniform fill; on a
-        part that aliases it repeats the low bytes; and a restore of the
-        low region reproduces either, so neither needs storing. The
-        moment a probe finds bytes up there that are neither uniform nor
-        a copy of what sits a part-size lower, the whole megabyte is
-        read instead, so an unseen larger layout is backed up whole
-        rather than trimmed wrongly.
-
-        Read-only, unlike measure_distinct: a backup does not write, so
-        the aliasing is judged by content here rather than by probing.
-        Content cannot tell an alias from a coincidence in general, but
-        it does not have to: both an alias and a coincidence up here are
-        bytes the low region already carries, and both are safe to drop.
-        """
-        base = NVRAM_BASE                       # not self.base - that is flash
-        probe = min(0x200, PROBE_GRID)
-        for off in range(NVRAM_KEEP, NVRAM_LEN, PROBE_GRID):
-            if stop is not None and stop():
-                raise FirmwareError("measuring was abandoned part way")
-            here = self.mon.read(base + off, probe)
-            if len(set(bytearray(here))) < 2:
-                continue                        # empty: past the parts
-            if any(off - stride >= 0
-                   and self.mon.read(base + off - stride, probe) == here
-                   for stride in ALIAS_STRIDES):
-                continue                        # a copy of the low region
-            return NVRAM_LEN                    # something distinct up here
-        return NVRAM_KEEP
+        """How much of the NVRAM window a backup should read: all of it."""
+        # The whole window, always. This used to sample 512 bytes at
+        # each 128 kB step above NVRAM_KEEP and keep the low region alone
+        # when every sample was uniform or a copy of what sat a part-size
+        # lower - which is a judgement about 384 kB made on three
+        # glimpses of it, and a wrong one is a backup that cannot put the
+        # instrument back. A minute more on the bus buys the whole
+        # megabyte; nvram_check still ignores the all-zero sections and
+        # measure_distinct still finds the aliasing on the way in.
+        return NVRAM_LEN
 
     def write_span(self, data, base=None, skip=0, note=None, stop=None):
         """`data` into memory from `base`, leaving the first `skip` bytes.

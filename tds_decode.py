@@ -499,7 +499,7 @@ def _classes_in(path):
         spec = importlib.util.spec_from_file_location(mod_name, path)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-    except Exception as exc:                  # noqa: BLE001 - report, go on
+    except (Exception, SystemExit) as exc:    # noqa: BLE001 - report, go on
         _note_bad(path, exc)
         return []
     out = []

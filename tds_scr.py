@@ -475,6 +475,8 @@ def decode_tiff(data):
             raise ValueError("TIFF compression %d at %d bits is not handled"
                              % (comp, bits))
         width, height = _shape(width, height, bits, (1,))
+        if 273 not in tags or 279 not in tags:
+            raise ValueError("the TIFF has no strip offsets or counts")
         offsets, counts = values(273), values(279)
     except struct.error as exc:
         raise ValueError("the TIFF is cut short: %s" % exc)

@@ -1196,5 +1196,8 @@
   "'%s' already exists in %s. Choose another name.": "«%s» уже есть в %s. Выберите другое имя.",
   "The instrument reported something": "Прибор сообщил о событии",
   "While doing '%s' the instrument reported:\n\n%s\n\nThis was not expected. It has been written to:\n%s\n\nIf anything looks wrong on the instrument, stop and say so before deleting anything else.": "Во время операции «%s» прибор сообщил:\n\n%s\n\nЭтого не ожидалось. Сообщение записано в:\n%s\n\nЕсли на приборе что-то выглядит неправильно, остановитесь и сообщите об этом, прежде чем что-либо ещё удалять.",
-  "%s\n\nThe details were written to:\n%s": "%s\n\nПодробности записаны в:\n%s"
+  "%s\n\nThe details were written to:\n%s": "%s\n\nПодробности записаны в:\n%s",
+  "%(file)s was taken from a %(theirs)s and this instrument says it is a %(mine)s. Calibration constants belong to one acquisition board, and another board's will leave this instrument measuring wrongly.\n\nRestore it anyway?": "%(file)s снят с %(theirs)s, а этот прибор называет себя %(mine)s. Калибровочные константы принадлежат одной плате сбора данных; константы другой платы заставят этот прибор измерять неверно.\n\nВсё равно восстановить?",
+  "Different model": "Другая модель",
+  "%s is not the file the catalogue listed - it has changed since it was scanned. Nothing has been written. Refresh the list and try again.": "%s - не тот файл, который был в каталоге: он изменился после сканирования. Ничего не записано. Обновите список и повторите попытку."
 }

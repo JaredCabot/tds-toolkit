@@ -1196,5 +1196,8 @@
   "'%s' already exists in %s. Choose another name.": "'%s' already exists in %s. Choose another name.",
   "The instrument reported something": "The instrument reported something",
   "While doing '%s' the instrument reported:\n\n%s\n\nThis was not expected. It has been written to:\n%s\n\nIf anything looks wrong on the instrument, stop and say so before deleting anything else.": "While doing '%s' the instrument reported:\n\n%s\n\nThis was not expected. It has been written to:\n%s\n\nIf anything looks wrong on the instrument, stop and say so before deleting anything else.",
-  "%s\n\nThe details were written to:\n%s": "%s\n\nThe details were written to:\n%s"
+  "%s\n\nThe details were written to:\n%s": "%s\n\nThe details were written to:\n%s",
+  "%(file)s was taken from a %(theirs)s and this instrument says it is a %(mine)s. Calibration constants belong to one acquisition board, and another board's will leave this instrument measuring wrongly.\n\nRestore it anyway?": "%(file)s was taken from a %(theirs)s and this instrument says it is a %(mine)s. Calibration constants belong to one acquisition board, and another board's will leave this instrument measuring wrongly.\n\nRestore it anyway?",
+  "Different model": "Different model",
+  "%s is not the file the catalogue listed - it has changed since it was scanned. Nothing has been written. Refresh the list and try again.": "%s is not the file the catalogue listed - it has changed since it was scanned. Nothing has been written. Refresh the list and try again."
 }

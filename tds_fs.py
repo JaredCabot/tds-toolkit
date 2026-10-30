@@ -330,15 +330,31 @@ class TdsFs(object):
         TDS 640A, a 0.6 s sleep got 11 of 20 small files where polling got
         20 of 20.
         """
-        end = time.time() + limit
-        while time.time() < end:
-            try:
-                if self.inst.read_stb() & self.MAV:
-                    return True
-            except Exception:
-                pass
-            time.sleep(0.05)
-        return False
+        # On its own short leash: a serial poll of a scope that has gone
+        # away blocks for the session timeout, which read() has just
+        # raised to suit the file - so one poll of a dead instrument
+        # used to cost minutes, not the `limit` this promises.
+        try:
+            was = self.inst.timeout
+            self.inst.timeout = 1000
+        except Exception:
+            was = None
+        try:
+            end = time.time() + limit
+            while time.time() < end:
+                try:
+                    if self.inst.read_stb() & self.MAV:
+                        return True
+                except Exception:
+                    pass
+                time.sleep(0.05)
+            return False
+        finally:
+            if was is not None:
+                try:
+                    self.inst.timeout = was
+                except Exception:
+                    pass
 
     def _read_by_print(self, path):
         """Read a file on a firmware that has no READFILE.

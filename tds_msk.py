@@ -201,7 +201,7 @@ class Mask(object):
                 out.append("MASK:MASK%d:POINTSPCNT 0.0,0.0" % n)
                 continue
             out.append("MASK:MASK%d:POINTSPCNT %s"
-                       % (n, ",".join("%g,%g" % (x, 100.0 - y)
+                       % (n, ",".join("%.10g,%.10g" % (x, 100.0 - y)
                                       for x, y in seg)))
         out.append("MASK:SOURCE %s" % self.source)
         out.append("MASK:INVERT %d" % (1 if self.invert else 0))
@@ -260,7 +260,8 @@ class Mask(object):
             if len(seg) < MIN_POINTS:
                 continue
             lines.append("SEG%-4d %s"
-                         % (n, ",".join("%g,%g" % (x, y) for x, y in seg)))
+                         % (n, ",".join("%.10g,%.10g" % (x, y)
+                                        for x, y in seg)))
         return "\r\n".join(lines) + "\r\n"
 
     def to_bytes(self):

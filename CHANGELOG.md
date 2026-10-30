@@ -47,6 +47,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   file using `;:` to return to the root (as a `*LRN?` dump does) now reads
   correctly. A zip entry carrying a drive letter is refused on restore. A
   settings value of `1e400` no longer stops the program starting.
+- **A calibration restore now warns when the file came from a different
+  model.** The constants are laid out per model, and writing a TDS 540's
+  set into a TDS 744A would leave the scope miscalibrated. The program
+  names both models and asks before going on, and still allows it, since a
+  file renamed by hand is the usual cause.
+- **An NVRAM backup is the whole window.** The backup used to sample three
+  512-byte stretches of the window to decide how much to keep, and a region
+  that held data between the samples was left out of the image. The whole
+  window is read and written every time.
+- **Four jobs that run while the program is otherwise busy** - a limit
+  test, a setup send, a live mask count and the clock read - no longer clear
+  the busy state of the job they interrupted, so a long transfer's Cancel
+  button stays. A failed limit-test picture or build also returns its
+  buttons.
+- **Reconnecting after an instrument swap** forgets the previous scope's
+  state: what it could not do, its System tab snapshot, its limit-test
+  references and the firmware monitor are all cleared, so the new scope is
+  not shown the old one's answers.
+- **A renamed upload that the scope had not yet listed** was reported as
+  lost; the listing is now read again after two seconds before the program
+  gives up on it. Upload marks are kept per instrument (address and
+  identity), so two scopes on the same address do not share them.
+- **A firmware image is checked against the catalogue's SHA-256 before it
+  is written,** so a wrong or corrupt file under a right name is refused
+  while the flash is still whole.
+- **Waiting for the instrument's output queue** could not be interrupted by
+  a short timeout; the poll now runs with a one-second leash and restores
+  the caller's timeout afterwards.
+- **A CSV with comma decimals** (`1,5;2,5`, as a European spreadsheet
+  writes) is now read when the columns are separated by semicolons or tabs;
+  a line that does not yield two numbers says so instead of failing on
+  the first comma.
+- **A TIFF screen capture without its dimensions, a decoder plug-in calling
+  `sys.exit()`, and a mask vertex printed with Python's shortest-repr**
+  were each handled: the first now raises a clear error, the second is
+  caught like any other plug-in fault, and mask points are written with ten
+  significant digits as the scope writes them.
 
 ### Changed
 
@@ -54,6 +91,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   TDS 540B.** Tektronix's manual (071-0130-03) lists the option for those four
   models, so the **Factory options** dialog no longer greys it on them. The user
   manuals say the same in all eight languages.
+- **Internal tidying after a code review.** The worker's ten mix-in classes
+  are one class; eight dialogs share one pop-up scaffold and the Masks and
+  Limits tabs share one tool column; the toolbar icons are stored as
+  pre-rendered PNGs rather than drawn pixel by pixel at start-up; the
+  settings files are read and written through one pair of functions; the
+  address argument is parsed by `argparse`; and dead code (an unused scroll
+  helper, a redundant word reader, unreachable filters) is gone. No
+  behaviour changed; the icons are pixel-identical.
 
 ## [1.2.3] - 2026-09-25
 

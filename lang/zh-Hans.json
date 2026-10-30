@@ -1196,5 +1196,8 @@
   "'%s' already exists in %s. Choose another name.": "“%s”已存在于 %s 中。请选择其他名称。",
   "The instrument reported something": "仪器报告了事件",
   "While doing '%s' the instrument reported:\n\n%s\n\nThis was not expected. It has been written to:\n%s\n\nIf anything looks wrong on the instrument, stop and say so before deleting anything else.": "执行“%s”时，仪器报告：\n\n%s\n\n这是意外情况。已写入：\n%s\n\n如果仪器上有任何异常，请先停止操作并报告，然后再删除其他任何内容。",
-  "%s\n\nThe details were written to:\n%s": "%s\n\n详细信息已写入：\n%s"
+  "%s\n\nThe details were written to:\n%s": "%s\n\n详细信息已写入：\n%s",
+  "%(file)s was taken from a %(theirs)s and this instrument says it is a %(mine)s. Calibration constants belong to one acquisition board, and another board's will leave this instrument measuring wrongly.\n\nRestore it anyway?": "%(file)s 取自 %(theirs)s，而本仪器自称是 %(mine)s。校准常数只属于一块采集板，写入另一块板的常数会使本仪器测量错误。\n\n仍要恢复吗？",
+  "Different model": "型号不同",
+  "%s is not the file the catalogue listed - it has changed since it was scanned. Nothing has been written. Refresh the list and try again.": "%s 不是目录中列出的文件：自扫描以来已发生变化。未写入任何内容。请刷新列表后重试。"
 }

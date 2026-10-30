@@ -13,6 +13,13 @@ because the files are on an oscilloscope, not on this disk.
 Everything degrades rather than fails. On a non-Windows system, or if any
 part of the API dance goes wrong, a small drawn folder or page is returned
 instead, and the program looks slightly plainer.
+
+The program's own small icons - the mask editor's tools, the zoom column,
+the language globe - are 16-pixel PNGs held here as base64. They were
+drawn once, pixel by pixel, by the code this replaces (see the history
+for winicons.py before October 2026); keeping the pictures rather than
+the drawing saves three hundred lines and a few thousand _put() calls at
+every start, and Tk 8.6 reads base64 PNG directly.
 """
 import base64
 import os
@@ -20,8 +27,51 @@ import struct
 import sys
 import zlib
 
-_SIZE = 16
 _cache = {}
+
+#: 16 x 16 RGBA PNGs, base64, keyed by the name tool() is asked for.
+PNG = {
+    '_file':
+        "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAALklEQVR42mNgoCZo6Jr2nxiM14Bfv/7gxUPEgGnzVmHFoy4YWS6gyACKMhM5AABtUtNU8ZFiRAAAAABJRU5ErkJggg==",
+    '_folder':
+        "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAKUlEQVR42mNgGAVgcGSK3H9smGIDCGEUA/6fCCEJjxowKA2gKB0MKAAAeW56iEIhJVMAAAAASUVORK5CYII=",
+    'ampin':
+        "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAPElEQVR42mNgoCUoKCj4D8IUaSbLEHTNJBmCSzNRhhDSjNcQYjWT5R36RCNVvEAV/1M18KiaGumfmYgFAHu4yyleacKWAAAAAElFTkSuQmCC",
+    'ampout':
+        "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAOklEQVR42mNgwAMKCgr+gzADuYAkA2CKicUUGUK2S8jyP0UBSXEsDDygiv9JNoSiaKRLKiQrf9A0FgDdTLQTrMB5XQAAAABJRU5ErkJggg==",
+    'eraser':
+        "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAS0lEQVR42mNgGAUEgZWV1X+KNYNokg3CpoFoQ/ApJOgaYp2NVY5YZxOtGZuzcao7VlLyH6YQxEbGZAUiuiFkRSOys5FdQr+USAwAAILNS1wkaS35AAAAAElFTkSuQmCC",
+    'fliph':
+        "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAUklEQVR42mNgGPTAysrqP30MWLFixX9SDEhISPiPYQA2Q7AZANKM0wB0Q9ANgGnGawCyIcgGIGsmaADMEJgB6Jpp6wKKwoCiWKAoHQx8UiYXAADp3ZTw5uXeBAAAAABJRU5ErkJggg==",
+    'flipv':
+        "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAQUlEQVR42mNgGHRgxYoV/wlhigyhyCUUeYeiMKFP6FtZWf0nFdPHZQkJCf8p0gzDFGkm2RBsmok2BJ9msr2DDwAAC5SU8It/wjEAAAAASUVORK5CYII=",
+    'globe':
+        "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAASUlEQVR42mNgoAWwyFjxHxsmWyNRBiFLItP4xDAMQGdjMwCdjdV2UtgM+ExHV4jTFVQxgBxMfReQHYgURyNVEhLFSZkqmYkcAABaCf8RbAIJzwAAAABJRU5ErkJggg==",
+    'intersect':
+        "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAKElEQVR42mNgGAVwYGVl9Z8UjNUAdH5VVRUYY5MbNYBWBlAUjSMYAABUsG2NwPhqmgAAAABJRU5ErkJggg==",
+    'move':
+        "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAO0lEQVR42mNgGPTAysrqP0WaYZhsm9Fp2nsBXQMyn6Bh2BTgMxBngBGDqe8CqoQB1aORooRElaRMFwAAVOpBXAlGTs8AAAAASUVORK5CYII=",
+    'pen':
+        "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAALElEQVR42mNgGDLAysrqP8WaB4chyJgizSQZQFXNA+dn+mpGN4i+zqZ7JgMAiKRJvQPAJ9MAAAAASUVORK5CYII=",
+    'redo':
+        "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAMElEQVR42mNgGAWDFFhZWf1HxyRrJiSGUzMhF5FkM7rBeA0h5ESywoNUS2hvwOAEALKxKDnF6n27AAAAAElFTkSuQmCC",
+    'scissors':
+        "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAASUlEQVR42mNgGFTAysrqPwiTK49XEVGacSkmSTNVDEDWRJZmig0YuDDA52SC3kH3MzYX4DUEXRDdAHxqMfyJLwyI9gbJYUAuAABnG26bvX5SiQAAAABJRU5ErkJggg==",
+    'subtract':
+        "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAKElEQVR42mNgGAVwYGVl9Z8UjNWAqqoqOEZWhK5h1ABaGkBRNI5gAABFn3wbC9h77QAAAABJRU5ErkJggg==",
+    'timein':
+        "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAARUlEQVR42mNgGLSgoKDgPzY20ZrRDSDaEJhibAYQNARZIS4DcBqCrgifARiGYFNADKaeARR7gSqBSJVopEpCokpSpisAAHu4yymp1l2dAAAAAElFTkSuQmCC",
+    'timeout':
+        "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAPUlEQVR42mNgGDSgoKDgP0VqQYLEGIJTHUwCnyF41VDVAGwKcMqjS2BThFcNxQZQ7IXBFwsUJSRaJHvaAwD8crixoGzKygAAAABJRU5ErkJggg==",
+    'undo':
+        "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAL0lEQVR42mNgGAWDGFhZWf1HxyRrJiRG0GZc8kTZjM8AnIYQ61+CrqA49EdYggMAONAoOcPrQsgAAAAASUVORK5CYII=",
+    'union':
+        "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAKElEQVR42mNgGAVwYGVl9Z8UjNWAqqoqOEbmY5MbNYBWBlAUjSMYAAClocTh/BL3igAAAABJRU5ErkJggg==",
+    'whole':
+        "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAQElEQVR42mNgGDSgoKDgPykYqwGkWEZQEJmPTw6nBkJ8nAZg8ye6GE4DKA5EqsQCRV6gSiBSJRrJTkgUBeKAAQB7uMspdaZ/XQAAAABJRU5ErkJggg==",
+}
+
+
 
 
 # ------------------------------------------------------------- PNG writing
@@ -44,45 +94,6 @@ def _png_bytes(rgba, w, h):
 
 def _photo(tk, rgba, w, h):
     return tk.PhotoImage(data=base64.b64encode(_png_bytes(rgba, w, h)))
-
-
-# ------------------------------------------------------ drawn fall-backs
-
-def _blank():
-    return bytearray(_SIZE * _SIZE * 4)
-
-
-def _put(buf, x, y, rgba):
-    if 0 <= x < _SIZE and 0 <= y < _SIZE:
-        i = (y * _SIZE + x) * 4
-        buf[i:i + 4] = bytes(rgba)
-
-
-def _rect(buf, x0, y0, x1, y1, rgba):
-    for y in range(y0, y1 + 1):
-        for x in range(x0, x1 + 1):
-            _put(buf, x, y, rgba)
-
-
-def _drawn_folder():
-    buf = _blank()
-    edge = (196, 148, 30, 255)
-    face = (255, 200, 84, 255)
-    _rect(buf, 1, 4, 6, 5, edge)          # tab
-    _rect(buf, 1, 5, 14, 13, edge)        # body outline
-    _rect(buf, 2, 6, 13, 12, face)
-    return buf
-
-
-def _drawn_file():
-    buf = _blank()
-    edge = (128, 138, 150, 255)
-    face = (250, 250, 252, 255)
-    _rect(buf, 3, 1, 12, 14, edge)
-    _rect(buf, 4, 2, 11, 13, face)
-    for y in (5, 7, 9, 11):
-        _rect(buf, 5, y, 10, y, (150, 158, 170, 255))
-    return buf
 
 
 # ------------------------------------------------------ the Windows shell
@@ -244,306 +255,30 @@ def icon_for(tk, name, is_dir=False):
         except Exception:
             image = None
     if image is None:
-        buf = _drawn_folder() if is_dir else _drawn_file()
-        image = _photo(tk, buf, _SIZE, _SIZE)
+        image = tk.PhotoImage(data=PNG["_folder" if is_dir else "_file"])
     _cache[key] = image
     return image
 
 
 def globe(tk):
-    """A small world, for the language button.
-
-    Drawn rather than taken from the shell: there is no standard Windows
-    icon that reads as "language", and a flag would be worse - languages
-    are not countries.
-    """
-    import math
-    buf = bytearray(_SIZE * _SIZE * 4)
-    ink = (56, 104, 168, 255)
-    c, r = 7.5, 6.6
-    for a in range(0, 360, 2):
-        t = math.radians(a)
-        sin_t, cos_t = math.sin(t), math.cos(t)
-        # the outline, and two meridians drawn as narrower ellipses
-        for k in (1.0, 0.5, 0.15):
-            _put(buf, int(round(c + r * k * cos_t)),
-                 int(round(c + r * sin_t)), ink)
-    for x in range(_SIZE):                          # the equator
-        if abs(x - c) <= r:
-            _put(buf, x, int(round(c)), ink)
-    return _photo(tk, buf, _SIZE, _SIZE)
-
-
-# ----------------------------------------------- the mask editor's tools
-# Drawn here rather than taken from the shell: Windows has no stock icon
-# for "pen" or "eraser" that reads at 16 pixels, and the five have to
-# look like one set. Ink is dark grey rather than black so they sit on a
-# Toolbutton without shouting.
-
-_INK = (58, 58, 58, 255)
-
-
-def _line(buf, x0, y0, x1, y1, rgba=_INK):
-    steps = int(max(abs(x1 - x0), abs(y1 - y0))) + 1
-    for i in range(steps + 1):
-        t = i / float(steps)
-        _put(buf, int(round(x0 + (x1 - x0) * t)),
-             int(round(y0 + (y1 - y0) * t)), rgba)
-
-
-def _arc(buf, cx, cy, r, first, last, rgba=_INK):
-    import math
-    step = 2 if last > first else -2
-    for a in range(int(first), int(last), step):
-        t = math.radians(a)
-        _put(buf, int(round(cx + r * math.cos(t))),
-             int(round(cy + r * math.sin(t))), rgba)
-
-
-def _mirrored(buf):
-    out = bytearray(len(buf))
-    for y in range(_SIZE):
-        for x in range(_SIZE):
-            i = (y * _SIZE + x) * 4
-            j = (y * _SIZE + (_SIZE - 1 - x)) * 4
-            out[j:j + 4] = buf[i:i + 4]
-    return out
-
-
-def _pen():
-    buf = _blank()
-    for k in range(4):                       # the shaft, as parallel lines
-        _line(buf, 5 + k, 11, 11 + k, 5)
-    _line(buf, 9, 3, 13, 7)                  # the cap across the top end
-    _line(buf, 10, 2, 14, 6)
-    _line(buf, 5, 11, 2, 14)                 # the nib, down to its point
-    _line(buf, 8, 12, 2, 14)
-    _line(buf, 4, 13, 2, 14)
-    return buf
-
-
-def _move():
-    buf = _blank()
-    _line(buf, 8, 2, 8, 13)
-    _line(buf, 2, 8, 13, 8)
-    for tx, ty, ax, ay, bx, by in ((8, 2, 6, 4, 10, 4),
-                                   (8, 13, 6, 11, 10, 11),
-                                   (2, 8, 4, 6, 4, 10),
-                                   (13, 8, 11, 6, 11, 10)):
-        _line(buf, tx, ty, ax, ay)
-        _line(buf, tx, ty, bx, by)
-    return buf
-
-
-def _eraser():
-    buf = _blank()
-    rub = (198, 116, 116, 255)
-    a, b, c, d = (2, 10), (8, 4), (14, 8), (8, 14)
-    for k in range(3):                       # the rubbed-out half, filled
-        _line(buf, a[0] + k, a[1] + 1, d[0] + k, d[1] - 3 + k, rub)
-    for i, (x0, y0) in enumerate((a, b, c, d)):
-        x1, y1 = (b, c, d, a)[i]
-        _line(buf, x0, y0, x1, y1)
-    _line(buf, 5, 7, 11, 11)                 # the crease across it
-    return buf
-
-
-def _undo():
-    buf = _blank()
-    _arc(buf, 8, 11, 5, 200, 345)            # over the top, right to left
-    _line(buf, 3, 9, 6, 8)                   # the head, back on itself
-    _line(buf, 3, 9, 4, 12)
-    _line(buf, 6, 8, 4, 12)
-    return buf
-
-
-TOOLS = {"pen": _pen, "move": _move, "eraser": _eraser,
-         "undo": _undo, "redo": lambda: _mirrored(_undo())}
-
-
-def tool(tk, name):
-    """One of the mask editor's small icons, as a PhotoImage."""
-    key = ("tool", name)
+    """A small world, for the language button. A globe rather than a
+    flag: languages are not countries."""
+    key = ("tool", "globe")
     if key not in _cache:
-        _cache[key] = _photo(tk, TOOLS[name](), _SIZE, _SIZE)
+        _cache[key] = tk.PhotoImage(data=PNG["globe"])
     return _cache[key]
 
 
-def _both(fill_a, fill_b, fill_overlap):
-    """Two overlapping squares, each region filled or not.
-
-    The three boolean icons differ only in which of the three regions is
-    solid, so they are one drawing with three sets of switches - which
-    is also why they read as a set at sixteen pixels.
-    """
-    buf = _blank()
-    ink = _INK
-    pale = (122, 122, 122, 255)
-    # The same height, so the overlap is a clear band up the middle
-    # rather than a corner nick that vanishes at this size.
-    ax0, ay0, ax1, ay1 = 2, 4, 9, 11
-    bx0, by0, bx1, by1 = 6, 4, 13, 11
-    for y in range(16):
-        for x in range(16):
-            in_a = ax0 <= x <= ax1 and ay0 <= y <= ay1
-            in_b = bx0 <= x <= bx1 and by0 <= y <= by1
-            if in_a and in_b:
-                on = fill_overlap
-            elif in_a:
-                on = fill_a
-            elif in_b:
-                on = fill_b
-            else:
-                on = False
-            if on:
-                _put(buf, x, y, pale)
-    for x0, y0, x1, y1 in ((ax0, ay0, ax1, ay1), (bx0, by0, bx1, by1)):
-        _line(buf, x0, y0, x1, y0, ink)
-        _line(buf, x1, y0, x1, y1, ink)
-        _line(buf, x1, y1, x0, y1, ink)
-        _line(buf, x0, y1, x0, y0, ink)
-    return buf
+#: The editor's tools, the boolean operations, the flips, undo and redo,
+#: and the waveform tab's zoom column - one family, drawn in dark grey
+#: ink (the zoom heads lighter) so they sit on a Toolbutton without
+#: shouting.
+TOOLS = tuple(k for k in PNG if not k.startswith("_") and k != "globe")
 
 
-def _union():
-    return _both(True, True, True)
-
-
-def _intersect():
-    return _both(False, False, True)
-
-
-def _subtract():
-    return _both(True, False, False)
-
-
-def _scissors():
-    buf = _blank()
-    _line(buf, 3, 2, 11, 11)                 # the two blades, crossing
-    _line(buf, 4, 2, 12, 11)
-    _line(buf, 12, 2, 4, 11)
-    _line(buf, 11, 2, 3, 11)
-    _arc(buf, 4, 12, 2, 0, 360)              # and the loops under them
-    _arc(buf, 11, 12, 2, 0, 360)
-    return buf
-
-
-TOOLS.update({"union": _union, "intersect": _intersect,
-              "subtract": _subtract, "scissors": _scissors})
-
-
-def _wedge(buf, a, b, c, rgba):
-    """A filled triangle, scanned line by line."""
-    lo = int(min(a[1], b[1], c[1]))
-    hi = int(max(a[1], b[1], c[1]))
-    for y in range(lo, hi + 1):
-        xs = []
-        for (x0, y0), (x1, y1) in ((a, b), (b, c), (c, a)):
-            if (y0 <= y <= y1) or (y1 <= y <= y0):
-                if y0 == y1:
-                    xs += [x0, x1]
-                else:
-                    xs.append(x0 + (x1 - x0) * (y - y0) / float(y1 - y0))
-        if xs:
-            for x in range(int(round(min(xs))), int(round(max(xs))) + 1):
-                _put(buf, x, y, rgba)
-
-
-def _flip(across):
-    """A wedge and its mirror image, with the axis between them."""
-    buf = _blank()
-    # One side darker than the other, so the icon says which way round
-    # the mirroring goes rather than only that there is a mirror.
-    pale, deep = (168, 168, 168, 255), (96, 96, 96, 255)
-    if across:
-        _wedge(buf, (2, 4), (6, 8), (2, 12), pale)
-        _wedge(buf, (14, 4), (10, 8), (14, 12), deep)
-        for y in range(2, 15):
-            _put(buf, 8, y, _INK)
-    else:
-        _wedge(buf, (4, 2), (8, 6), (12, 2), pale)
-        _wedge(buf, (4, 14), (8, 10), (12, 14), deep)
-        for x in range(2, 15):
-            _put(buf, x, 8, _INK)
-    return buf
-
-
-TOOLS.update({"fliph": lambda: _flip(True),
-              "flipv": lambda: _flip(False)})
-
-
-# ------------------------------------------- the waveform tab's zoom tools
-# Drawn in the filled-wedge language of the mask tools, but in the softer
-# grey the flip (mirror) icons use for their wedges rather than the near-black
-# _INK - so the heads read as arrows without shouting, and the two toolbars
-# still sit together as one set. Double-headed arrows: horizontal for the
-# time axis, vertical for amplitude; heads spread apart to zoom in (magnify),
-# pinched together to zoom out. "Whole record" is a framed record with a
-# double-arrow across it - fit the whole capture on the graticule.
-
-# The zoom heads are grey, not ink: the same weight as the flip icons' wedges.
-_ZOOM = (112, 112, 112, 255)
-
-
-def _harrow(spread):
-    buf = _blank()
-    if spread:                               # <====>  magnify (zoom in)
-        for y in (7, 8):
-            _line(buf, 5, y, 10, y, _ZOOM)
-        _wedge(buf, (1, 7), (6, 2), (6, 13), _ZOOM)
-        _wedge(buf, (1, 8), (6, 2), (6, 13), _ZOOM)
-        _wedge(buf, (14, 7), (9, 2), (9, 13), _ZOOM)
-        _wedge(buf, (14, 8), (9, 2), (9, 13), _ZOOM)
-    else:                                    # ==> <==  shrink (zoom out)
-        for y in (7, 8):
-            _line(buf, 0, y, 2, y, _ZOOM); _line(buf, 13, y, 15, y, _ZOOM)
-        _wedge(buf, (6, 7), (2, 2), (2, 13), _ZOOM)
-        _wedge(buf, (6, 8), (2, 2), (2, 13), _ZOOM)
-        _wedge(buf, (9, 7), (13, 2), (13, 13), _ZOOM)
-        _wedge(buf, (9, 8), (13, 2), (13, 13), _ZOOM)
-    return buf
-
-
-def _varrow(spread):
-    buf = _blank()
-    if spread:
-        for x in (7, 8):
-            _line(buf, x, 5, x, 10, _ZOOM)
-        _wedge(buf, (7, 1), (2, 6), (13, 6), _ZOOM)
-        _wedge(buf, (8, 1), (2, 6), (13, 6), _ZOOM)
-        _wedge(buf, (7, 14), (2, 9), (13, 9), _ZOOM)
-        _wedge(buf, (8, 14), (2, 9), (13, 9), _ZOOM)
-    else:
-        for x in (7, 8):
-            _line(buf, x, 0, x, 2, _ZOOM); _line(buf, x, 13, x, 15, _ZOOM)
-        _wedge(buf, (7, 6), (2, 2), (13, 2), _ZOOM)
-        _wedge(buf, (8, 6), (2, 2), (13, 2), _ZOOM)
-        _wedge(buf, (7, 9), (2, 13), (13, 13), _ZOOM)
-        _wedge(buf, (8, 9), (2, 13), (13, 13), _ZOOM)
-    return buf
-
-
-def _whole():
-    buf = _blank()
-    for x in range(2, 14):                   # the record's frame
-        _put(buf, x, 2, _ZOOM)
-        _put(buf, x, 13, _ZOOM)
-    for y in range(2, 14):
-        _put(buf, 2, y, _ZOOM)
-        _put(buf, 13, y, _ZOOM)
-    # a double-arrow spanning it, in the same language as the zoom heads:
-    # fit the whole width of the record on the graticule.
-    for y in (7, 8):
-        _line(buf, 6, y, 9, y, _ZOOM)
-    _wedge(buf, (3, 7), (6, 4), (6, 11), _ZOOM)
-    _wedge(buf, (3, 8), (6, 4), (6, 11), _ZOOM)
-    _wedge(buf, (12, 7), (9, 4), (9, 11), _ZOOM)
-    _wedge(buf, (12, 8), (9, 4), (9, 11), _ZOOM)
-    return buf
-
-
-TOOLS.update({"timein": lambda: _harrow(True),
-              "timeout": lambda: _harrow(False),
-              "ampin": lambda: _varrow(True),
-              "ampout": lambda: _varrow(False),
-              "whole": _whole})
+def tool(tk, name):
+    """One of the program's small icons, as a PhotoImage."""
+    key = ("tool", name)
+    if key not in _cache:
+        _cache[key] = tk.PhotoImage(data=PNG[name])
+    return _cache[key]

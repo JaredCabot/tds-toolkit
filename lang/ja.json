@@ -1196,5 +1196,8 @@
   "'%s' already exists in %s. Choose another name.": "「%s」は %s にすでに存在します。別の名前を選んでください。",
   "The instrument reported something": "測定器から報告がありました",
   "While doing '%s' the instrument reported:\n\n%s\n\nThis was not expected. It has been written to:\n%s\n\nIf anything looks wrong on the instrument, stop and say so before deleting anything else.": "「%s」の実行中に、測定器から次の報告がありました:\n\n%s\n\nこれは想定外です。内容は次に書き込まれました:\n%s\n\n測定器の状態におかしな点があれば、他のものを削除する前に作業を中止し、その旨を報告してください。",
-  "%s\n\nThe details were written to:\n%s": "%s\n\n詳細は次に書き込まれました:\n%s"
+  "%s\n\nThe details were written to:\n%s": "%s\n\n詳細は次に書き込まれました:\n%s",
+  "%(file)s was taken from a %(theirs)s and this instrument says it is a %(mine)s. Calibration constants belong to one acquisition board, and another board's will leave this instrument measuring wrongly.\n\nRestore it anyway?": "%(file)s は %(theirs)s から取得したもので、この測定器は %(mine)s と名乗っています。校正定数は 1 枚のアクイジション基板に固有のもので、別の基板の定数を書き込むとこの測定器は正しく測定できなくなります。\n\nそれでも復元しますか?",
+  "Different model": "機種が異なります",
+  "%s is not the file the catalogue listed - it has changed since it was scanned. Nothing has been written. Refresh the list and try again.": "%s はカタログに載っていたファイルではありません。スキャン後に変更されています。何も書き込まれていません。一覧を更新してやり直してください。"
 }

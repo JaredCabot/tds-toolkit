@@ -103,21 +103,31 @@ SETTINGSFILE = os.path.join(APPDIR, "tdstoolkit.json")
 UPLOADS_FILE = os.path.join(APPDIR, "tdstoolkit-uploads.json")
 
 
-def load_uploads():
+def _json_load(path):
+    """A dict from `path`, or {} for anything else. Never raises."""
     try:
-        with open(UPLOADS_FILE, "r") as fh:
+        with open(path, "r") as fh:
             got = json.load(fh)
         return got if isinstance(got, dict) else {}
     except Exception:
         return {}
 
 
-def save_uploads(marks):
+def _json_save(path, data):
+    """Best effort: a lost manifest costs a re-upload, not data."""
     try:
-        with open(UPLOADS_FILE, "w") as fh:
-            json.dump(marks, fh)
+        with open(path, "w") as fh:
+            json.dump(data, fh)
     except Exception:
-        pass                       # a lost manifest costs a re-upload, not data
+        pass
+
+
+def load_uploads():
+    return _json_load(UPLOADS_FILE)
+
+
+def save_uploads(marks):
+    _json_save(UPLOADS_FILE, marks)
 
 
 #: Instruments a transfer left wedged, kept as {addr: why}. A run that
@@ -131,20 +141,11 @@ TRANSFERS_FILE = os.path.join(APPDIR, "tdstoolkit-transfers.json")
 
 
 def load_transfers():
-    try:
-        with open(TRANSFERS_FILE, "r") as fh:
-            got = json.load(fh)
-        return got if isinstance(got, dict) else {}
-    except Exception:
-        return {}
+    return _json_load(TRANSFERS_FILE)
 
 
 def save_transfers(state):
-    try:
-        with open(TRANSFERS_FILE, "w") as fh:
-            json.dump(state, fh)
-    except Exception:
-        pass
+    _json_save(TRANSFERS_FILE, state)
 
 
 def transfer_blocked(addr):
@@ -243,20 +244,17 @@ def release_process_lock():
 
 
 def address_argument(argv=None):
-    """--address GPIB0::3::INSTR, or --address=GPIB0::3::INSTR.
+    """--address GPIB0::3::INSTR, or --address=GPIB0::3::INSTR, or None.
 
-    Overrides the remembered address for one run. Worth having on its own
-    - two instruments on one bus and you want the other one - and it is
-    useful on a bench with two instruments on one bus when you want the
-    other one.
+    Overrides the remembered address for one run: two instruments on one
+    bus and you want the other one.
     """
-    args = list(sys.argv if argv is None else argv)
-    for i, a in enumerate(args):
-        if a.startswith("--address="):
-            return a.split("=", 1)[1].strip()
-        if a == "--address" and i + 1 < len(args):
-            return args[i + 1].strip()
-    return None
+    import argparse
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--address")
+    got = parser.parse_known_args(
+        (sys.argv if argv is None else argv)[1:])[0].address
+    return got.strip() if got else None
 
 
 def load_capabilities():
@@ -896,7 +894,20 @@ def log_note(where, text):
         pass
 
 
-class _WorkerFilesystem(object):
+class Worker(object):
+    """Serialises every instrument operation onto one thread.
+
+    COUNT_FOR is how long the instrument is left counting against a
+    mask before the tally is read, where reading the trace would
+    otherwise stop it. A second is a few hundred acquisitions on a
+    784D; in DPO no wait is needed, since the hardcopy itself takes
+    several.
+
+    Jobs are (label, callable). Results come back as (label, ok, payload) on
+    an output queue the UI polls; nothing is called back on this thread.
+    """
+
+    # -- the filesystem -----------------------------------------------------
 
     def volumes(self):
         """Which volumes this instrument has.
@@ -1060,9 +1071,17 @@ class _WorkerFilesystem(object):
             self.fs.rename(tmp, real)
             self.fs.wait_done()
             self.fs.errors()
-            listed = [n.upper() for n in real_names(self.fs.dir(parent))]
-            if leaf.upper() in listed and STAGE_NAME.upper() not in listed:
-                return
+            # Listed twice before the rename is disbelieved: the
+            # directory lags a write (see write_verified), and a rename
+            # judged on the first listing fell back to rewriting the
+            # whole file, which is the churn the stage exists to avoid.
+            for settle in (0.0, 2.0):
+                time.sleep(settle)
+                listed = [n.upper()
+                          for n in real_names(self.fs.dir(parent))]
+                if (leaf.upper() in listed
+                        and STAGE_NAME.upper() not in listed):
+                    return
         except Exception:
             pass
         # RENAME missing or it did not take. The original may be gone
@@ -1336,7 +1355,10 @@ class _WorkerFilesystem(object):
         that reports success really did land byte for byte.
         """
         done, failed, unchanged, skipped, running = [], [], [], [], 0
-        addr = getattr(self, "addr", "") or ""
+        # Keyed by address and identity together: a different scope put
+        # on the same address must not inherit the last one's marks and
+        # have a file skipped that was never compared against it.
+        addr = getattr(self, "ident", "") or ""
         marks = load_uploads().get(addr, {})
         seen = {}            # parent -> leaf names now on the instrument
         dirty = False
@@ -1740,7 +1762,6 @@ class _WorkerFilesystem(object):
         return {"dest": dest, "folders": folders, "copied": True}
 
 
-class _WorkerWaveform(object):
 
     # -- waveforms ---------------------------------------------------------
 
@@ -1877,7 +1898,6 @@ class _WorkerWaveform(object):
         return self.write_verified("%s/%s" % (folder, name), data)
 
 
-class _WorkerErrorLog(object):
 
     # -- the instrument's error log ----------------------------------------
 
@@ -1928,7 +1948,6 @@ class _WorkerErrorLog(object):
         return [one for one in after if one not in before]
 
 
-class _WorkerScreenshot(object):
 
     # -- the screen --------------------------------------------------------
 
@@ -1952,7 +1971,6 @@ class _WorkerScreenshot(object):
         return {"screen": screen, "secs": screen.seconds}
 
 
-class _WorkerMask(object):
 
     # -- masks ------------------------------------------------------------
     #
@@ -1986,7 +2004,7 @@ class _WorkerMask(object):
 
     def set_read(self, source):
         """What the instrument is set to, for the file beside a mask."""
-        return {"fields": tds_set.TdsSet(self.fs.inst).read(source)}
+        return {"fields": self.set.read(source)}
 
     def set_send(self, lines, source="CH1"):
         """Put a setup on the instrument, and say what it would not take.
@@ -2014,10 +2032,10 @@ class _WorkerMask(object):
         # answers "no events to report - new events pending *ESR?" for
         # ever, which a 794D turned into a report that it had refused
         # eighteen lines of a setup it had taken perfectly.
-        said = tds_err.TdsErr(self.fs.inst, self.fs.payload).drain()
+        said = self.err.drain()
         return {"sent": len(lines),
                 "refused": [m for m in said if not m.startswith("0,")],
-                "got": tds_set.TdsSet(self.fs.inst).read(source)}
+                "got": self.set.read(source)}
 
     def msk_delayed(self, source, bit):
         """A whole eye on the instrument's own screen, with no clock.
@@ -2660,7 +2678,7 @@ class _WorkerMask(object):
             waves, _refused, _how = self.wfm.capture(["MATH1"])
             return {"wave": waves[0] if waves else None, "hits": None}
         if self.wfm.in_dpo():
-            shot = tds_scr.TdsScr(self.fs.inst).capture()
+            shot = self.scr.capture()
             pixels, wide, tall = shot.graticule()
             return {"shot": {"pixels": pixels, "palette": shot.palette,
                              "width": wide, "height": tall},
@@ -2820,7 +2838,7 @@ class _WorkerMask(object):
         return out
 
 
-class _WorkerLimits(object):
+    # -- limit tests -----------------------------------------------------
 
     def lim_build(self, source, vertical, horizontal, dest):
         """Have the instrument build a limit template for itself.
@@ -2965,7 +2983,7 @@ class _WorkerLimits(object):
         return {"on": False}
 
 
-class _WorkerSystem(object):
+    # -- the system tab --------------------------------------------------
 
     def options_read(self):
         """Which options the instrument's own words say are enabled.
@@ -3343,7 +3361,7 @@ class _WorkerSystem(object):
         return [str(e) for e in self.fs.errors()]
 
 
-class _WorkerCalibration(object):
+    # -- calibration constants -------------------------------------------
 
     def cal_read(self, base=None, check=True):
         """The acquisition board's calibration words, read twice.
@@ -3516,7 +3534,6 @@ class _WorkerCalibration(object):
         return report
 
 
-class _WorkerBackup(object):
 
     # --------------------------------------------------- backup and restore
     #
@@ -3856,7 +3873,6 @@ class _WorkerBackup(object):
         return report
 
 
-class _WorkerFirmware(object):
 
     # ------------------------------------------------------------ firmware
     #
@@ -4009,9 +4025,10 @@ class _WorkerFirmware(object):
                     "That is the bus, not the instrument - nothing has "
                     "been written and nothing is lost, but the backup "
                     "cannot be trusted, so this stopped here.") % _(what))
-            moved = [i for i, (a, b) in
-                     enumerate(zip(bytearray(got), bytearray(again)))
-                     if a != b]
+            moved = [] if got == again else [
+                i for i, (a, b) in enumerate(zip(bytearray(got),
+                                                 bytearray(again)))
+                if a != b]
             ticking = [i for i in moved
                        if base == tds_fw.NVRAM_BASE and i < tds_fw.RTC_LEN]
             rest = [i for i in moved if i not in set(ticking)]
@@ -4130,8 +4147,9 @@ class _WorkerFirmware(object):
             # second copy wins. Content cannot answer it: blank memory
             # reads alike at every address whether it is aliased or not,
             # and a wiped NVRAM is exactly what somebody reaching for
-            # Restore is holding. The probe writes, which is why it
-            # waits until what is in the instrument is already on disk.
+            # Restore is holding. The probe writes four bytes and puts
+            # them back; the confirmation before this asks for a backup
+            # to be in hand first, and that backup is the undo.
             self._progress(_("Measuring what the window really holds"), None)
             here = flash.measure_distinct(tds_fw.NVRAM_BASE,
                                           tds_fw.NVRAM_LEN, stop=stop)
@@ -4219,6 +4237,14 @@ class _WorkerFirmware(object):
             raise RuntimeError(
                 _("%s does not begin like a firmware image for this family.")
                 % os.path.basename(plan["image"]))
+        # Read again here, so it is checked against what the catalogue
+        # showed: a file replaced or damaged between the scan and Write
+        # must not be the one that goes into the flash.
+        if plan.get("sha") and hashlib.sha256(image).hexdigest() != plan["sha"]:
+            raise RuntimeError(
+                _("%s is not the file the catalogue listed - it has changed "
+                  "since it was scanned. Nothing has been written. Refresh "
+                  "the list and try again.") % os.path.basename(plan["image"]))
         report = {"image": plan["image"], "wrote": len(image), "backups": []}
         inst = self.fw_session(plan["resource"], plan.get("normal") or "")
         try:
@@ -4304,18 +4330,7 @@ class _WorkerFirmware(object):
         return report
 
 
-class Worker(_WorkerFilesystem, _WorkerWaveform, _WorkerErrorLog, _WorkerScreenshot, _WorkerMask, _WorkerLimits, _WorkerSystem, _WorkerCalibration, _WorkerBackup, _WorkerFirmware):
-    """Serialises every instrument operation onto one thread.
-
-    COUNT_FOR is how long the instrument is left counting against a
-    mask before the tally is read, where reading the trace would
-    otherwise stop it. A second is a few hundred acquisitions on a
-    784D; in DPO no wait is needed, since the hardcopy itself takes
-    several.
-
-    Jobs are (label, callable). Results come back as (label, ok, payload) on
-    an output queue the UI polls; nothing is called back on this thread.
-    """
+    # -- the thread itself --------------------------------------------------
 
     COUNT_FOR = 1.0
 
@@ -4468,7 +4483,7 @@ class Worker(_WorkerFilesystem, _WorkerWaveform, _WorkerErrorLog, _WorkerScreens
         # Per instrument, not per process: one timeout on the counter
         # query used to switch mask counting off for every scope after.
         self._counts = None
-        self.fs = TdsFs(**({"addr": addr} if addr else {}))
+        self.fs = TdsFs(addr or DEFAULT_ADDR)
         # Ask who is there before anything else, on a short leash. An
         # address with nothing on it is otherwise discovered only when
         # the first real query gives up, three quarters of a minute
@@ -4490,10 +4505,10 @@ class Worker(_WorkerFilesystem, _WorkerWaveform, _WorkerErrorLog, _WorkerScreens
         # which is after the question it protects.
         self.fs.clear()
         try:
-            self.fs.hello()
+            told = self.fs.hello()
         except Exception:
             self.fs.close()
-            self.fs = self.wfm = self.scr = self.err = None
+            self.fs = self.wfm = self.scr = self.err = self.set = None
             raise
         # One VISA session serves both subsystems; the waveform side
         # borrows the filesystem side's header-stripping rule so there is
@@ -4501,7 +4516,13 @@ class Worker(_WorkerFilesystem, _WorkerWaveform, _WorkerErrorLog, _WorkerScreens
         self.wfm = tds_wfm.TdsWfm(self.fs.inst, TdsFs.payload)
         self.scr = tds_scr.TdsScr(self.fs.inst, TdsFs.payload)
         self.err = tds_err.TdsErr(self.fs.inst, TdsFs.payload)
-        self.addr = addr or getattr(self.fs, "addr", None) or "default"
+        self.set = tds_set.TdsSet(self.fs.inst)
+        self.addr = addr or DEFAULT_ADDR
+        # What the upload marks are kept under: the address and the
+        # instrument's own word on what it is, so a different scope put
+        # on the same address does not inherit the last one's marks and
+        # have a file skipped that was never compared against it.
+        self.ident = "%s|%s" % (self.addr, str(told or "").strip())
         self._watch_events()
         # "Is there a waveform in this source?" is answered, for an
         # empty one, with 2241 and a 420 in the event queue. That is the
@@ -5031,6 +5052,22 @@ def run_gui():
             return True
         state.pop("dialog", None)
         return False
+
+    def popup(title, resizable=None):
+        """A dialog of this program's: titled, transient, with its icon
+        and a padded frame. Returns (window, frame)."""
+        dlg = tk.Toplevel(root)
+        dlg.title(title)
+        dlg.transient(root)
+        if resizable is not None:
+            dlg.resizable(*resizable)
+        try:
+            dlg.iconbitmap(resource("app.ico"))
+        except Exception:
+            pass
+        pad = ttk.Frame(dlg, padding=10)
+        pad.pack(fill="both", expand=True)
+        return dlg, pad
 
     def hints(widget, english):
         """A word about what a button does, after a moment's hover.
@@ -6987,47 +7024,57 @@ def run_gui():
 
     mcanvasrow = ttk.Frame(mrightf)
     mcanvasrow.pack(fill="both", expand=True)
-    # The three tools, in a column against the drawing they act on.
-    # Radiobuttons rather than plain ones: exactly one is in your hand
-    # at a time, and the sunken one says which.
-    mtools = ttk.Frame(mcanvasrow)
-    mtools.pack(side="left", fill="y", padx=(0, 3))
     state["mtool"] = tk.StringVar(value="pen")
-    for key, english in (("move", "Select and move points and shapes"),
-                         ("pen", "Draw points"),
-                         ("eraser", "Delete points and shapes"),
-                         ("cut", "Split a shape between two of its points")):
-        rb = ttk.Radiobutton(mtools, value=key, variable=state["mtool"],
-                             style="Toolbutton", padding=3,
-                             command=lambda: msk_tool_changed())
-        rb.pack(pady=(0, 2))
-        hints(rb, english)
-        state.setdefault("mtoolbtn", {})[key] = rb
-    # Below the line: not tools but things done to two shapes at once,
-    # which is why they are ordinary buttons rather than another mode to
-    # be in. The instrument has no idea any of this happened - it is all
-    # arithmetic on this side, and what it gets is the pieces.
-    ttk.Separator(mtools, orient="horizontal").pack(fill="x", pady=5)
-    for key, english in (
-            ("fliph", "Mirror the selection horizontally"),
-            ("flipv", "Mirror the selection vertically")):
-        fb = ttk.Button(mtools, style="Toolbutton", padding=3,
-                        command=lambda k=key: do_msk_flip(k == "fliph"))
-        fb.pack(pady=(0, 2))
-        hints(fb, english)
-        state.setdefault("mboolbtn", {})[key] = fb
-    ttk.Separator(mtools, orient="horizontal").pack(fill="x", pady=5)
-    for key, english in (
-            ("union", "Union: join the two selected shapes into one"),
-            ("intersect", "Intersect: keep only where the two selected "
-                          "shapes overlap"),
-            ("subtract", "Subtract: take the second selected shape out "
-                         "of the first")):
-        bb = ttk.Button(mtools, style="Toolbutton", padding=3,
-                        command=lambda k=key: do_msk_boolean(k))
-        bb.pack(pady=(0, 2))
-        hints(bb, english)
-        state.setdefault("mboolbtn", {})[key] = bb
+
+    def edit_tools(parent, prefix):
+        """The editor's tool column, beside the drawing it acts on.
+
+        One editor, two drawings (see edit_here), so the Masks and
+        Limits tabs each get this column and share the tool in hand.
+        Radiobuttons for the tools, because exactly one is in your hand
+        at a time and the sunken one says which. Below the line: not
+        tools but things done to two shapes at once, which is why they
+        are ordinary buttons rather than another mode to be in. The
+        instrument has no idea any of this happened - it is all
+        arithmetic on this side, and what it gets is the pieces.
+        """
+        tools = ttk.Frame(parent)
+        tools.pack(side="left", fill="y", padx=(0, 3))
+        for key, english in (
+                ("move", "Select and move points and shapes"),
+                ("pen", "Draw points"),
+                ("eraser", "Delete points and shapes"),
+                ("cut", "Split a shape between two of its points")):
+            rb = ttk.Radiobutton(tools, value=key, variable=state["mtool"],
+                                 style="Toolbutton", padding=3,
+                                 command=lambda: msk_tool_changed())
+            rb.pack(pady=(0, 2))
+            hints(rb, english)
+            state.setdefault(prefix + "toolbtn", {})[key] = rb
+        ttk.Separator(tools, orient="horizontal").pack(fill="x", pady=5)
+        for key, english in (
+                ("fliph", "Mirror the selection horizontally"),
+                ("flipv", "Mirror the selection vertically")):
+            fb = ttk.Button(tools, style="Toolbutton", padding=3,
+                            command=lambda k=key: do_msk_flip(k == "fliph"))
+            fb.pack(pady=(0, 2))
+            hints(fb, english)
+            state.setdefault(prefix + "boolbtn", {})[key] = fb
+        ttk.Separator(tools, orient="horizontal").pack(fill="x", pady=5)
+        for key, english in (
+                ("union", "Union: join the two selected shapes into one"),
+                ("intersect", "Intersect: keep only where the two selected "
+                              "shapes overlap"),
+                ("subtract", "Subtract: take the second selected shape "
+                             "out of the first")):
+            bb = ttk.Button(tools, style="Toolbutton", padding=3,
+                            command=lambda k=key: do_msk_boolean(k))
+            bb.pack(pady=(0, 2))
+            hints(bb, english)
+            state.setdefault(prefix + "boolbtn", {})[key] = bb
+        return tools
+
+    mtools = edit_tools(mcanvasrow, "m")
 
     mplot = tk.Canvas(mcanvasrow,
                       background=tds_wfm.DEFAULT_COLOURS["background"],
@@ -8550,15 +8597,7 @@ def run_gui():
             return
         if not mask.segments[seg]:
             return
-        dlg = tk.Toplevel(root)
-        dlg.title(_("Segment %d") % (seg + 1))
-        dlg.transient(root)
-        try:
-            dlg.iconbitmap(resource("app.ico"))
-        except Exception:
-            pass
-        pad = ttk.Frame(dlg, padding=10)
-        pad.pack(fill="both", expand=True)
+        dlg, pad = popup(_("Segment %d") % (seg + 1))
         ttk.Label(pad, text=_("Coordinates are in percent of the "
                               "graticule: X across, Y up.")).pack(
                                   anchor="w", pady=(0, 8))
@@ -9650,15 +9689,7 @@ def run_gui():
         on the graticule, so a list of what is displayed can never
         contain it.
         """
-        dlg = tk.Toplevel(root)
-        dlg.title(_("Start measurement"))
-        dlg.transient(root)
-        try:
-            dlg.iconbitmap(resource("app.ico"))
-        except Exception:
-            pass
-        pad = ttk.Frame(dlg, padding=10)
-        pad.pack(fill="both", expand=True)
+        dlg, pad = popup(_("Start measurement"))
         probe = tk.StringVar(value="probe")
         trig = tk.StringVar(value="clock")
         ttk.Label(pad, wraplength=460, text=_(
@@ -9715,6 +9746,8 @@ def run_gui():
         )).pack(anchor="w", pady=(4, 0))
 
         def go():
+            if state["busy"]:
+                return
             dlg.destroy()
             # Remembered rather than only passed on: Capture screen is
             # a separate press later, and on the math route it has to
@@ -9824,15 +9857,7 @@ def run_gui():
         # those - they are notes to this program, not commands.
         was_ui = msk_unit_interval(mask)
         was_diff = msk_differential(mask)
-        dlg = tk.Toplevel(root)
-        dlg.title(_("Save setup"))
-        dlg.transient(root)
-        try:
-            dlg.iconbitmap(resource("app.ico"))
-        except Exception:
-            pass
-        pad = ttk.Frame(dlg, padding=10)
-        pad.pack(fill="both", expand=True)
+        dlg, pad = popup(_("Save setup"))
         ttk.Label(pad, wraplength=420, text=_(
             "Read from the instrument. Change anything the mask means "
             "rather than what happened to be set, then save it beside "
@@ -10096,15 +10121,7 @@ def run_gui():
             return
         live = [s for s in (state.get("wsources") or [])
                 if not s.startswith("REF")]
-        dlg = tk.Toplevel(root)
-        dlg.title(_("Send as a mask"))
-        dlg.transient(root)
-        try:
-            dlg.iconbitmap(resource("app.ico"))
-        except Exception:
-            pass
-        pad = ttk.Frame(dlg, padding=10)
-        pad.pack(fill="both", expand=True)
+        dlg, pad = popup(_("Send as a mask"))
         ttk.Label(pad, wraplength=460, text=_(
             "%s goes into the instrument's eight mask segments and is "
             "drawn on its graticule. This instrument has the mask "
@@ -10136,6 +10153,8 @@ def run_gui():
             "all eight segments of it.")).pack(fill="x", pady=(10, 0))
 
         def go():
+            if state["busy"]:
+                return
             mask.source = against.get()
             dlg.destroy()
             state["msent"] = mask.name or _("untitled")
@@ -10723,39 +10742,7 @@ def run_gui():
 
     lcanvasrow = ttk.Frame(lrightf)
     lcanvasrow.pack(fill="both", expand=True)
-    ltools = ttk.Frame(lcanvasrow)
-    ltools.pack(side="left", fill="y", padx=(0, 3))
-    for key, english in (("move", "Select and move points and shapes"),
-                         ("pen", "Draw points"),
-                         ("eraser", "Delete points and shapes"),
-                         ("cut", "Split a shape between two of its points")):
-        rb = ttk.Radiobutton(ltools, value=key, variable=state["mtool"],
-                             style="Toolbutton", padding=3,
-                             command=lambda: msk_tool_changed())
-        rb.pack(pady=(0, 2))
-        hints(rb, english)
-        state.setdefault("ltoolbtn", {})[key] = rb
-    ttk.Separator(ltools, orient="horizontal").pack(fill="x", pady=5)
-    for key, english in (
-            ("fliph", "Mirror the selection horizontally"),
-            ("flipv", "Mirror the selection vertically")):
-        fb = ttk.Button(ltools, style="Toolbutton", padding=3,
-                        command=lambda k=key: do_msk_flip(k == "fliph"))
-        fb.pack(pady=(0, 2))
-        hints(fb, english)
-        state.setdefault("lboolbtn", {})[key] = fb
-    ttk.Separator(ltools, orient="horizontal").pack(fill="x", pady=5)
-    for key, english in (
-            ("union", "Union: join the two selected shapes into one"),
-            ("intersect", "Intersect: keep only where the two selected "
-                          "shapes overlap"),
-            ("subtract", "Subtract: take the second selected shape out "
-                         "of the first")):
-        bb = ttk.Button(ltools, style="Toolbutton", padding=3,
-                        command=lambda k=key: do_msk_boolean(k))
-        bb.pack(pady=(0, 2))
-        hints(bb, english)
-        state.setdefault("lboolbtn", {})[key] = bb
+    ltools = edit_tools(lcanvasrow, "l")
 
     lplot = tk.Canvas(lcanvasrow,
                       background=tds_wfm.DEFAULT_COLOURS["background"],
@@ -12365,16 +12352,7 @@ def run_gui():
         """
         if dialog_open():
             return
-        dlg = tk.Toplevel(root)
-        dlg.title(_("Factory options"))
-        dlg.transient(root)
-        dlg.resizable(False, False)
-        try:
-            dlg.iconbitmap(resource("app.ico"))
-        except Exception:
-            pass
-        pad = ttk.Frame(dlg, padding=10)
-        pad.pack(fill="both", expand=True)
+        dlg, pad = popup(_("Factory options"), resizable=(False, False))
         left = ttk.Frame(pad)
         left.pack(side="left", fill="y")
         right = ttk.Frame(pad)
@@ -12586,7 +12564,7 @@ def run_gui():
             return
         if not state.get("idn"):
             return
-        if state.get("sysnow") is None:
+        if state.get("sysnow") is None and not state["busy"]:
             do_sys_read()
         elif not state.get("busy"):
             w.submit("sys_clock_read", lambda k: k.sys_clock_read())
@@ -13065,7 +13043,7 @@ def run_gui():
                 icon="warning", default="no"):
             return
         plan = {"resource": got["resource"], "image": one.path,
-                "archive": one.archive,
+                "archive": one.archive, "sha": one.sha,
                 "normal": state.get("addr") or DEFAULT_ADDR,
                 "slow": bool(state["fwslow"].get()),
                 "backup_dir": where, "backup_len": fw_backup_len(),
@@ -13815,6 +13793,24 @@ def run_gui():
                   "leave the acquisition board holding that damage.\n\n"
                   "Restore it anyway?") % {"file": os.path.basename(path)},
                 icon="warning", default="no"):
+            return
+        # The file names the model it came off (tds_cal.names), and the
+        # constants belong to one acquisition board. Another model's go
+        # in all the same, if asked twice, because a converted instrument
+        # may well be carrying a backup under its old name.
+        theirs = os.path.basename(path).split("_")[0].upper()
+        mine = model_of(state.get("idn")).replace(" ", "").upper()
+        if theirs and mine and "_CAL_" in os.path.basename(path).upper() \
+                and theirs != mine and not messagebox.askyesno(
+                    _("Different model"),
+                    _("%(file)s was taken from a %(theirs)s and this "
+                      "instrument says it is a %(mine)s. Calibration "
+                      "constants belong to one acquisition board, and "
+                      "another board's will leave this instrument "
+                      "measuring wrongly.\n\nRestore it anyway?")
+                    % {"file": os.path.basename(path), "theirs": theirs,
+                       "mine": mine},
+                    icon="warning", default="no"):
             return
         if not messagebox.askyesno(_("Restore calibration constants?"), _(
                 "This writes the calibration constants in\n\n%(file)s"
@@ -14840,17 +14836,7 @@ def run_gui():
         """
         if state["busy"] and not reason:
             return
-        dlg = tk.Toplevel(root)
-        dlg.title(_("Select instrument"))
-        dlg.transient(root)
-        dlg.resizable(True, False)
-        try:
-            dlg.iconbitmap(resource("app.ico"))
-        except Exception:
-            pass
-
-        pad = ttk.Frame(dlg, padding=10)
-        pad.pack(fill="both", expand=True)
+        dlg, pad = popup(_("Select instrument"), resizable=(True, False))
         if reason:
             # Red is for something that went wrong. An instrument that is
             # not where it was last time has not gone wrong.
@@ -15091,6 +15077,14 @@ def run_gui():
         show_shot(None)
         show_errors([])
         state["errlog"] = None
+        # And what the last one could not do, what its System tab read,
+        # which references held a template and whether its bootloader
+        # answered: each decides something on its own tab, and each was
+        # kept, so the next instrument was judged by the last one.
+        state["cannot"] = None
+        state["sysnow"] = None
+        state.pop("lrefs", None)
+        state["fwmonitor"] = None
         root.title("TDS Toolkit %s - %s"
                    % (__version__, _("connecting to %s") % addr))
         busy(True, "wait")
@@ -16450,15 +16444,7 @@ def run_gui():
                   "fetch it first."))
             return
         choices = wfm_destinations()
-        dlg = tk.Toplevel(root)
-        dlg.title(_("Send to instrument"))
-        dlg.transient(root)
-        try:
-            dlg.iconbitmap(resource("app.ico"))
-        except Exception:
-            pass
-        pad = ttk.Frame(dlg, padding=10)
-        pad.pack(fill="both", expand=True)
+        dlg, pad = popup(_("Send to instrument"))
         ttk.Label(pad, text=_("Send %s to:") % (wave.wfid or wave.source),
                   wraplength=460).pack(anchor="w", pady=(0, 8))
         pick = tk.StringVar(value=choices[0][0])
@@ -16472,6 +16458,8 @@ def run_gui():
         note.pack(fill="x", pady=(8, 0))
 
         def go():
+            if state["busy"]:
+                return
             key = pick.get()
             dlg.destroy()
             if key == "FILE":
@@ -17252,7 +17240,7 @@ def run_gui():
     menu_file = tk.Menu(root, tearoff=0)
     menu_file.add_command(label=_("Save as..."), command=do_download)
     menu_file.add_separator()
-    menu_file.add_command(label="Delete", command=do_delete)
+    menu_file.add_command(label=_("Delete"), command=do_delete)
 
     # The background menu, for a right-click that hits no row.
     menu_empty = tk.Menu(root, tearoff=0)
@@ -17333,6 +17321,11 @@ def run_gui():
     tree.bind("<Button-3>", popup_tree)
 
     # ------------------------------------ results, on the Tk thread only
+    #: Jobs submitted without busy(True): read in passing and never
+    #: owning the bus, so neither their success nor their failure may
+    #: release it.
+    UNBUSIED = ("lim_state", "set_send", "msk_live", "sys_clock_read")
+
     def pump():
         if state.get("closing"):
             return                     # window gone; nothing to update
@@ -17353,9 +17346,20 @@ def run_gui():
                 if label not in ("progress", "event"):
                     state["bakstep"] = None
                 if not ok:
-                    busy(False)
+                    # Four jobs run without taking busy - they are asked
+                    # in passing, beside whatever else is on the bus -
+                    # so their failing must not hand back buttons that
+                    # another job still holds.
+                    if label not in UNBUSIED:
+                        busy(False)
                     if label == "scan":
                         scanning(False)
+                    if label in ("lim_build", "lim_picture"):
+                        # The flags a Learn or a Load set for the
+                        # picture that follows, or the next unrelated
+                        # Refresh would take the band unasked.
+                        state.pop("llearn", None)
+                        state.pop("lload", None)
                     raw, payload = payload, localise(payload)
                     # A failure is the last line of the run it ends,
                     # and the report is the only place it stays.
