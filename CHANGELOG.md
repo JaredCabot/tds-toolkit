@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Starting a mask measurement on a level mask reported a bug in the
+  program.** The handler for the count's result carried a stray copy of the
+  limit-template handler, which asked the result for fields it never has.
+  Every successful count ended in a "bug in this program" box. The stray
+  copy is gone.
+- **Backspace in the Files tab's address bar jumped up a folder** and
+  overwrote what was being typed; Delete deleted the selected file. Both
+  keys now act only when the folder tree or the file list has the focus.
+- **A timeout on the instrument was not caught where the program expected
+  it.** Eight places caught `IOError` round a VISA query, which the VISA
+  library does not raise. The worst was the signal path compensation: a
+  `*CAL?` that outlasted its 25 minutes was meant to clear the bus so its
+  late answer could not be read as the next reply, and did not. The System
+  tab also failed whole on one unanswered field, and a calibration restore
+  stopped mid-block. All eight now catch the VISA error too.
+- **A failed download left the file's tail in the bus,** so the next
+  command in a batch read it as its own reply and every remaining file was
+  reported missing. The session is now cleared on a failed read, as it
+  already was on a failed write. The same clear follows an `*OPC?` that
+  times out after a slow delete or write.
+- **Firmware: the on-instrument helper is set up before the flash is
+  erased,** not after. On a part with no page buffer, a helper that would
+  not go was refused with a message saying nothing had begun - with the
+  flash already blank. The refusal now comes while the flash is still whole.
+- **The Backup tab's survey raised "The instrument reported something" on
+  a scope with an empty floppy.** Probing the volumes is excused those
+  events under its own name; the survey ran it under another.
+- Changing the language after the Masks tab's **Save setup** dialog had
+  been opened and closed raised a fault; the dialog's labels were
+  registered for relabelling and were gone.
+- A bus scan that failed left the **Scan** button saying Cancel.
+- One timeout on the mask counter query switched mask counting off for
+  every instrument until the program was restarted.
+- A hand-edited mask file naming segment 999999999 made the program
+  allocate until it died; segment numbers are now held to 1-8. A setup
+  file using `;:` to return to the root (as a `*LRN?` dump does) now reads
+  correctly. A zip entry carrying a drive letter is refused on restore. A
+  settings value of `1e400` no longer stops the program starting.
+
 ### Changed
 
 - **Option 1G is offered on the TDS 520D, 540D, 724D and 754D as well as the

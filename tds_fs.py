@@ -431,7 +431,10 @@ class TdsFs(object):
         try:
             self.inst.query("*OPC?")
         except Exception:
+            # The answer is still coming. Left in the queue it is read as
+            # the reply to the next question, so it is drained here.
             time.sleep(3.0)
+            self.clear()
         finally:
             self.inst.timeout = old
 

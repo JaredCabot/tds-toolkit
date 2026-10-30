@@ -52,7 +52,9 @@ def safe_name(arc):
     """
     if not arc or arc.startswith("/") or "\\" in arc:
         return False
-    return ".." not in arc.split("/")
+    # A drive letter in a segment restarts os.path.join on Windows:
+    # hd0/C:/x would land at C:x.
+    return not any(seg == ".." or ":" in seg for seg in arc.split("/"))
 
 
 def pack(folder, path, about):

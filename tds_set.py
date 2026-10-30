@@ -255,8 +255,11 @@ def parse(data):
             if not part or " " not in part:
                 continue
             word, value = part.split(" ", 1)
+            # A leading colon returns to the root (IEEE 488.2), so
+            # `;:CH1:SCALE` is not under the path in front of it.
+            rooted = word.strip().startswith(":")
             word = word.strip().lstrip(":").upper()
-            word = word if at == 0 else (path + word).upper()
+            word = word if at == 0 or rooted else (path + word).upper()
             if word.startswith("SELECT:CH"):
                 fields.setdefault("source", word.split(":", 1)[1])
                 continue

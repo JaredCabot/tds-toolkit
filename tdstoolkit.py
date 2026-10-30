@@ -61,6 +61,7 @@ import tds_msk
 import tds_scr
 import tds_set
 import tds_wfm
+import pyvisa
 import winicons
 import i18n
 from i18n import gettext as _
@@ -898,24 +899,34 @@ def log_note(where, text):
 class _WorkerFilesystem(object):
 
     def volumes(self):
-        """Which volumes this instrument has."""
-        here = self.fs.get_cwd() or "hd0:"
-        found = []
-        for c in self.CANDIDATES:
+        """Which volumes this instrument has.
+
+        Probing an empty floppy raises 252 and a 640A raises 257 for the
+        same question, and _routine() excuses both only under this name -
+        so the context is set here, for whichever job asked, and put back
+        after, or the Backup tab's survey turned them into a modal box.
+        """
+        was, self.context = self.context, "volumes"
+        try:
+            here = self.fs.get_cwd() or "hd0:"
+            found = []
+            for c in self.CANDIDATES:
+                try:
+                    self.fs.set_cwd(c)
+                    if (self.fs.get_cwd() or "").rstrip("/").lower(
+                            ).startswith(c.rstrip("/").lower()):
+                        found.append(c)
+                except Exception:
+                    pass
+                finally:
+                    self.fs.errors()
             try:
-                self.fs.set_cwd(c)
-                if (self.fs.get_cwd() or "").rstrip("/").lower().startswith(
-                        c.rstrip("/").lower()):
-                    found.append(c)
+                self.fs.set_cwd(here)
             except Exception:
                 pass
-            finally:
-                self.fs.errors()
-        try:
-            self.fs.set_cwd(here)
-        except Exception:
-            pass
-        return {"volumes": found, "cwd": self.fs.get_cwd() or here}
+            return {"volumes": found, "cwd": self.fs.get_cwd() or here}
+        finally:
+            self.context = was
 
     def listdir(self, path=None):
         if path is not None:
@@ -998,6 +1009,13 @@ class _WorkerFilesystem(object):
         try:
             data = self.fs.read(path, timeout=TRANSFER_TIMEOUT)
         except Exception as exc:
+            # Whatever the instrument was still sending is drained, or
+            # the next command in the batch reads the file's tail as its
+            # reply - the same wound write_verified clears after.
+            try:
+                self.fs.clear()
+            except Exception:
+                pass
             why = self._transfer_failed(self.fs.reader or "READFILE", path,
                                         exc, time.time() - t)
             # The capability table said this instrument could do it and
@@ -2144,7 +2162,7 @@ class _WorkerMask(object):
             self.fs.inst.write("MASK:COUNT:STATE 0")
             self.fs.inst.write("MASK:COUNT:STATE 1")
             self.wfm.q("*OPC?")
-        except IOError:
+        except (IOError, pyvisa.Error):
             return None
         end = time.time() + most
         while time.time() < end:
@@ -3008,7 +3026,7 @@ class _WorkerSystem(object):
         def ask(what):
             try:
                 got = self.wfm.q(what)
-            except IOError:
+            except (IOError, pyvisa.Error):
                 return None
             # Quoted strings come back quoted, and the boxes want the
             # date, not the quotation marks round it. sys_read strips
@@ -3031,7 +3049,7 @@ class _WorkerSystem(object):
         def ask(what):
             try:
                 got = self.wfm.q(what)
-            except IOError:
+            except (IOError, pyvisa.Error):
                 return None
             got = str(got).strip() if got is not None else ""
             return got or None
@@ -3071,11 +3089,10 @@ class _WorkerSystem(object):
             self.fs.inst.write(line)
             try:
                 self.wfm.q("*OPC?")
-            except IOError:
+            except (IOError, pyvisa.Error):
                 pass
             for said in self.fs.errors():
-                if not str(said).startswith("0,"):
-                    refused.append((line, str(said)))
+                refused.append((line, str(said)))
         return {"sent": len(lines), "refused": refused,
                 "now": self.sys_read()}
 
@@ -3100,7 +3117,7 @@ class _WorkerSystem(object):
         try:
             self.fs.inst.timeout = int(most * 1000)
             said = str(self.wfm.q("*CAL?")).strip()
-        except IOError:
+        except (IOError, pyvisa.Error):
             try:
                 self.fs.inst.clear()
             except Exception:
@@ -3298,10 +3315,9 @@ class _WorkerSystem(object):
             self.fs.inst.write(line)
             try:
                 self.wfm.q("*OPC?")
-            except IOError:
+            except (IOError, pyvisa.Error):
                 pass
-            said += [str(e) for e in self.fs.errors()
-                     if not str(e).startswith("0,")]
+            said += [str(e) for e in self.fs.errors()]
             sent.append(line)
         return {"sent": sent, "refused": said, "options": self.sys_options()}
 
@@ -3309,7 +3325,7 @@ class _WorkerSystem(object):
         """What the instrument says it has fitted, as a list."""
         try:
             got = str(self.wfm.q("ID?")).strip().strip('"')
-        except IOError:
+        except (IOError, pyvisa.Error):
             return []
         # ID? is a comma-separated list with the options at the end,
         # after a field that starts "CF:". Anything before that is the
@@ -3324,8 +3340,7 @@ class _WorkerSystem(object):
         The same drain the factory options use, and "0,..." is the reply
         that means there was nothing to say.
         """
-        return [str(e) for e in self.fs.errors()
-                if not str(e).startswith("0,")]
+        return [str(e) for e in self.fs.errors()]
 
 
 class _WorkerCalibration(object):
@@ -3434,7 +3449,7 @@ class _WorkerCalibration(object):
         self.fs.inst.write(tds_cal.setting(n, value, base))
         try:
             self.wfm.q("*OPC?")
-        except IOError:
+        except (IOError, pyvisa.Error):
             pass
 
     def cal_write(self, plan):
@@ -4251,9 +4266,6 @@ class _WorkerFirmware(object):
                     "that the image is the right one for this model.")
                     % (tds_fw._size(len(image)), tds_fw._size(room)))
             report["span"] = room
-            self._progress(_("Erasing the flash ..."), None)
-            flash.erase(len(image), note=lambda t: self._progress(t, None),
-                        stop=stop)
             # The helper is what makes this take minutes rather than
             # hours, but it is code running on the instrument. Asking
             # for the host's own page loop instead is how a first flash
@@ -4265,9 +4277,20 @@ class _WorkerFirmware(object):
             # a run somebody chose to drive from here is not the same
             # story as one where the helper would not go, and telling
             # the second when the first is true reads as a failure.
+            #
+            # Armed before the erase, not after. arm() only writes the
+            # helper to scratch RAM and reads it back, and a part with
+            # no page buffer cannot be programmed without it - so if it
+            # will not go, the refusal has to come while the flash is
+            # still whole, which is what the refusal's wording says.
             report["asked_slow"] = bool(plan.get("slow"))
             report["helper"] = (False if plan.get("slow")
                                 else flash.arm() is not None)
+            if not flash.paged and flash.helper is None:
+                flash._refuse()
+            self._progress(_("Erasing the flash ..."), None)
+            flash.erase(len(image), note=lambda t: self._progress(t, None),
+                        stop=stop)
             report["slow_pages"], report["blank_pages"] = flash.program(
                 image, stop=stop, note=self._progress)
             self._progress(_("Checking what was written ..."), 0.0)
@@ -4442,6 +4465,9 @@ class Worker(_WorkerFilesystem, _WorkerWaveform, _WorkerErrorLog, _WorkerScreens
         if self.fs is not None:
             self.fs.close()
             self.fs = None
+        # Per instrument, not per process: one timeout on the counter
+        # query used to switch mask counting off for every scope after.
+        self._counts = None
         self.fs = TdsFs(**({"addr": addr} if addr else {}))
         # Ask who is there before anything else, on a short leash. An
         # address with nothing on it is otherwise discovered only when
@@ -9816,25 +9842,23 @@ def run_gui():
         rows.pack(fill="x")
         boxes = {}
         for at, (key, english) in enumerate(SETUP_FIELDS):
-            says(ttk.Label(rows, text=english),
-                 english).grid(row=at, column=0, sticky="w", pady=1)
+            ttk.Label(rows, text=_(english)).grid(row=at, column=0,
+                                                   sticky="w", pady=1)
             box = ttk.Entry(rows, width=16)
             box.insert(0, str(fields.get(key, "")))
             box.grid(row=at, column=1, sticky="w", padx=8, pady=1)
             boxes[key] = box
         at = len(SETUP_FIELDS)
-        says(ttk.Label(rows, text="Unit interval, seconds"),
-             "Unit interval, seconds").grid(row=at, column=0, sticky="w",
-                                            pady=(8, 1))
+        ttk.Label(rows, text=_("Unit interval, seconds")).grid(
+            row=at, column=0, sticky="w", pady=(8, 1))
         ui = ttk.Entry(rows, width=16)
         ui.insert(0, "" if was_ui is None else "%g" % was_ui)
         ui.grid(row=at, column=1, sticky="w", padx=8, pady=(8, 1))
         hints(ui, "The bit period in seconds, for the eye diagram")
         diff = tk.BooleanVar(value=bool(was_diff))
-        says(ttk.Checkbutton(rows, variable=diff),
-             "The signal is differential").grid(row=at + 1, column=0,
-                                                columnspan=2, sticky="w",
-                                                pady=1)
+        ttk.Checkbutton(rows, variable=diff,
+                        text=_("The signal is differential")).grid(
+            row=at + 1, column=0, columnspan=2, sticky="w", pady=1)
         note = ttk.Label(pad, wraplength=420, foreground="#555", text=_(
             "The unit interval is the bit period the mask is drawn for. "
             "An eye mask needs it; any other mask can leave it empty."))
@@ -14298,10 +14322,6 @@ def run_gui():
         state["cannot"] = cannot
         busy(state.get("busy", False))
 
-    # Defined for real further down, once the waveform tab's widgets
-    # exist. busy() runs before then during start-up and has to be able
-    # to call it, and a closure reads the name when it is called rather
-    # than when it is written - so the stub is replaced, not shadowed.
     def busy(on, working=None):
         """`working` is None for no bar, 'wait' for marquee, 'steps' for one
         that fills. Anything that clears busy also clears the bar, so it
@@ -17214,8 +17234,15 @@ def run_gui():
         except Exception:
             return False
 
-    root.bind("<BackSpace>", lambda e: do_up() if on_files_tab() else None)
-    root.bind("<Delete>", lambda e: do_delete(e) if on_files_tab() else None)
+    # And only with a file pane focused: the same keys edit text in the
+    # address bar, where Backspace used to jump a folder and overwrite
+    # what was being typed.
+    def in_file_panes():
+        return on_files_tab() and root.focus_get() in (lst, tree)
+
+    root.bind("<BackSpace>", lambda e: do_up() if in_file_panes() else None)
+    root.bind("<Delete>",
+              lambda e: do_delete(e) if in_file_panes() else None)
     # Explorer's navigation keys, which cost nothing to support.
     root.bind("<Alt-Left>", do_back)
     root.bind("<Alt-Right>", do_forward)
@@ -17327,6 +17354,8 @@ def run_gui():
                     state["bakstep"] = None
                 if not ok:
                     busy(False)
+                    if label == "scan":
+                        scanning(False)
                     raw, payload = payload, localise(payload)
                     # A failure is the last line of the run it ends,
                     # and the report is the only place it stays.
@@ -18216,26 +18245,6 @@ def run_gui():
                         if payload["counting"] else
                         _("This instrument has no mask counter to start"))
                     log_context("mask count", "no eye: %s" % (payload,))
-                    busy(False)
-                    if not payload["made"]:
-                        # The instrument's own refusal, word for word.
-                        messagebox.showerror(
-                            _("Error"),
-                            "%s\n\n%s"
-                            % (_("The instrument did not write a "
-                                 "template."),
-                               "\n".join(payload["why"])
-                               or _("It reported nothing about why.")))
-                        say(_("No template was written"))
-                        continue
-                    say(_("%(dest)s now holds a template made from "
-                          "%(source)s, allowing %(up)g division(s) up "
-                          "and down and %(across)g across")
-                        % {"dest": payload["dest"],
-                           "source": payload["source"],
-                           "up": payload["vertical"],
-                           "across": payload["horizontal"]})
-                    do_lim_refresh()
                 elif label == "lim_run":
                     busy(False)
                     if not payload["on"]:
@@ -18979,7 +18988,7 @@ def png_size(value):
         value = value[0]
     try:
         wide = int(float(value))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return PNG_DEFAULT_SIZE
     return min(PNG_SIZES, key=lambda wh: abs(wh[0] - wide))
 
@@ -19005,7 +19014,7 @@ def human_bytes(count):
     """
     try:
         count = max(0, int(count or 0))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return _("%d bytes") % 0
     if count < 1024:
         return _("%d bytes") % count

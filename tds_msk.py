@@ -314,6 +314,9 @@ class Mask(object):
                     n = int(word[3:])
                 except ValueError:
                     raise MaskError("%r is not a segment number" % word)
+                if not 1 <= n <= SEGMENTS:
+                    raise MaskError("segment %d is outside 1 to %d"
+                                    % (n, SEGMENTS))
                 numbers = []
                 for part in rest.split(","):
                     part = part.strip()
