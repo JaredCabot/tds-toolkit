@@ -115,9 +115,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   merely unnecessary where it must not happen; "percent of the graticule"
   read as percent of one division), terms used two ways within one
   language, control names quoted differently from the control, Russian
-  plurals that broke with the number, and punctuation. Button and tab
-  labels were left as they are, so the manuals and their screenshots
-  still match the program.
+  plurals that broke with the number, and punctuation.
+- **Some controls are relabelled in seven languages.** German: **Signalverlauf
+  abrufen**, **Bildschirmfoto aufnehmen** (it read the same as its own tab)
+  and **Wiederherstellen...**, which now matches the dialogs it opens.
+  Italian: the System tab's clock reads **Ora** (it said "Tempo", a
+  duration), and PASS reads **SUPERATO**. Russian **Фигура** and **Активные
+  каналы**, Chinese **图形** and **吸附到网格**, and Japanese
+  **波形を読み込む...**, with smaller fixes in Spanish and French. The user
+  manuals quote the new labels.
 
 ## [1.2.3] - 2026-09-25
 
