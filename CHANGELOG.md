@@ -89,6 +89,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `0,5`, which is how those languages write a half, and the program only
   took `0.5`. The Limits tolerances, the Masks grid step and a point typed
   into the mask editor now take either.
+- **Listing a folder of more than about twenty files could leave the
+  program busy for good.** Each file in a listing is told apart from a
+  folder by trying to enter it, which the instrument answers with an event,
+  and its event queue holds about twenty. A longer folder overflowed it,
+  the overflow was reported as unexpected, and its warning box opened
+  inside the loop that hands results back - so nothing after it finished
+  until the box was found and closed. The queue is now emptied as the
+  listing goes.
 - **A CSV that would not load said why in English only.** The reason is
   now shown in the program's language, and the new comma-decimal advice
   is translated.

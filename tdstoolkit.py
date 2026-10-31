@@ -963,7 +963,16 @@ class Worker(object):
         # folder, which is most of the wait on an application folder.
         names = real_names(self.fs.dir())
         dirs, files = [], []
-        for n in names:
+        for i, n in enumerate(names):
+            # Every file costs one 256 "file name not found", and the
+            # instrument's event queue holds about twenty. A folder of
+            # 63 files overflowed it, the 350 "queue overflow" was an
+            # event nobody expected, and its warning box opened in the
+            # middle of the result pump - which then held the program
+            # busy until the box was found and closed. Emptied as it
+            # goes, the queue never fills.
+            if i and not i % 10:
+                self.fs.errors()
             try:
                 self.fs.set_cwd(n)
                 now = self.fs.get_cwd() or base
