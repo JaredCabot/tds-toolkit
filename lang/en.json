@@ -1199,5 +1199,6 @@
   "%s\n\nThe details were written to:\n%s": "%s\n\nThe details were written to:\n%s",
   "%(file)s was taken from a %(theirs)s and this instrument says it is a %(mine)s. Calibration constants belong to one acquisition board, and another board's will leave this instrument measuring wrongly.\n\nRestore it anyway?": "%(file)s was taken from a %(theirs)s and this instrument says it is a %(mine)s. Calibration constants belong to one acquisition board, and another board's will leave this instrument measuring wrongly.\n\nRestore it anyway?",
   "Different model": "Different model",
-  "%s is not the file the catalogue listed - it has changed since it was scanned. Nothing has been written. Refresh the list and try again.": "%s is not the file the catalogue listed - it has changed since it was scanned. Nothing has been written. Refresh the list and try again."
+  "%s is not the file the catalogue listed - it has changed since it was scanned. Nothing has been written. Refresh the list and try again.": "%s is not the file the catalogue listed - it has changed since it was scanned. Nothing has been written. Refresh the list and try again.",
+  "%s has four numbers on a line where two were expected - if the decimals are commas, separate the columns with semicolons": "%s has four numbers on a line where two were expected - if the decimals are commas, separate the columns with semicolons"
 }

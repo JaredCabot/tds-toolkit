@@ -84,6 +84,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   were each handled: the first now raises a clear error, the second is
   caught like any other plug-in fault, and mask points are written with ten
   significant digits as the scope writes them.
+- **A tolerance or grid step typed with a decimal comma was refused.** The
+  German, Spanish, French, Italian and Russian error message says to type
+  `0,5`, which is how those languages write a half, and the program only
+  took `0.5`. The Limits tolerances, the Masks grid step and a point typed
+  into the mask editor now take either.
+- **A CSV that would not load said why in English only.** The reason is
+  now shown in the program's language, and the new comma-decimal advice
+  is translated.
 
 ### Changed
 
@@ -99,6 +107,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   address argument is parsed by `argparse`; and dead code (an unused scroll
   helper, a redundant word reader, unreachable filters) is gone. No
   behaviour changed; the icons are pixel-identical.
+- **The Klingon translation is complete again.** 195 messages added in
+  1.2.3 had been left in English.
+- **Translations reviewed.** Every entry in the seven other languages was
+  checked against the English. 96 messages and tooltips were
+  corrected: wrong meanings (the Chinese told the reader a reboot was
+  merely unnecessary where it must not happen; "percent of the graticule"
+  read as percent of one division), terms used two ways within one
+  language, control names quoted differently from the control, Russian
+  plurals that broke with the number, and punctuation. Button and tab
+  labels were left as they are, so the manuals and their screenshots
+  still match the program.
 
 ## [1.2.3] - 2026-09-25
 

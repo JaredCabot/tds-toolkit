@@ -414,6 +414,7 @@ LIBRARY_SAYS = (
     # tds_wfm.py
     N_('%s has no waveform that can be read. A channel has to be displayed on the instrument before it can be read; a reference has to have something stored in it.'),
     N_('fewer than two numeric rows - is this a CSV of time and amplitude?'),
+    N_('%s has four numbers on a line where two were expected - if the decimals are commas, separate the columns with semicolons'),
     N_('This is a waveform file from a TDS5000/6000/7000 or a DPO/MSO - a different and much later format from the one the TDS500/600/700 write. It is not handled here.'),
     N_('Waveform capture is not supported in DPO mode.\nDisable DPO and try again or perform a screen capture.'),
     N_('Only a stored reference can be deleted; %s is a live source.'),
@@ -7314,7 +7315,7 @@ def run_gui():
         instrument's own, which is a grid that helps with nothing.
         """
         try:
-            divs = float(state["mgrid"].get())
+            divs = typed(state["mgrid"].get())
         except (TypeError, ValueError):
             return (0.0, 0.0)
         if divs <= 0:
@@ -8647,7 +8648,7 @@ def run_gui():
             if box is None:
                 return
             try:
-                said = round(float(box.get()), 2)
+                said = round(typed(box.get()), 2)
             except ValueError:
                 return
             i, which = cell["at"]
@@ -9561,7 +9562,7 @@ def run_gui():
         except Exception as exc:
             messagebox.showerror(_("Error"), "%s\n\n%s"
                                      % (_("Could not load that file"),
-                                        exc))
+                                        localise(str(exc))))
             return
         state[which + "wave"] = wave
         state[which + "wavefrom"] = "pc"
@@ -11210,8 +11211,8 @@ def run_gui():
     def lim_tolerances():
         """The two numbers, or None with the complaint already made."""
         try:
-            vertical = float(state["lvert"].get())
-            horizontal = float(state["lhorz"].get())
+            vertical = typed(state["lvert"].get())
+            horizontal = typed(state["lhorz"].get())
         except ValueError:
             vertical = horizontal = -1.0
         if not (0.0 <= vertical <= 5.0 and 0.0 <= horizontal <= 5.0):
@@ -16243,7 +16244,8 @@ def run_gui():
             messagebox.showerror(
                 _("Error"),
                 _("%(name)s could not be read as a waveform.\n\n%(why)s")
-                % {"name": os.path.basename(path), "why": exc})
+                % {"name": os.path.basename(path),
+                   "why": localise(str(exc))})
             return
         slots = wfm_picked_refs()
         staged = state.setdefault("staged", {})
@@ -18995,6 +18997,15 @@ def png_size(value):
     except (TypeError, ValueError, OverflowError):
         return PNG_DEFAULT_SIZE
     return min(PNG_SIZES, key=lambda wh: abs(wh[0] - wide))
+
+
+def typed(text):
+    """A number as a person types it: 0.5 or, in most of Europe, 0,5.
+
+    Five of the translations tell the reader to type 0,5 because that is
+    how their language writes a half, and float() refuses it.
+    """
+    return float(str(text).strip().replace(",", "."))
 
 
 def model_of(idn):
