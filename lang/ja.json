@@ -230,7 +230,6 @@
   "Copied to %s": "%s にコピーしました",
   "Copy": "コピー",
   "Copy files from this computer to the instrument": "このコンピューターから測定器へファイルをコピー",
-  "Copy the selected file(s) to this computer": "選択したファイルをこのコンピューターにコピーします",
   "Copy what is selected to this computer": "選択したものをこのコンピューターにコピー",
   "Copy what is ticked into one backup file": "チェックした項目を 1 つのバックアップファイルにまとめる",
   "Copying %s ...": "%s をコピーしています ...",
@@ -262,7 +261,6 @@
   "Delete preset": "プリセットを削除",
   "Delete template": "テンプレートを削除",
   "Delete the colour scheme '%s'?": "配色「%s」を削除しますか？",
-  "Delete the selected file(s) or folder(s)": "選択したファイルまたはフォルダーを削除します",
   "Delete the selected mask file": "選択したマスクファイルを削除",
   "Delete the selected preset": "選択したプリセットを削除します",
   "Delete the selected template file": "選択したテンプレートファイルを削除",
@@ -427,7 +425,6 @@
   "MB": "MB",
   "Made %(when)s from %(idn)s": "%(when)s に %(idn)s から作成",
   "Make a folder here": "ここにフォルダーを作成",
-  "Make a new folder here": "ここに新しいフォルダーを作成します",
   "Making a template of %(source)s in %(dest)s ...": "%(source)s のテンプレートを %(dest)s に作成しています ...",
   "Mask": "マスク",
   "Mask (*.MSK)": "マスク (*.MSK)",
@@ -539,7 +536,6 @@
   "Read each backup a second time and compare, to catch a bad read": "各バックアップを二度読み込んで比較し、読み取りミスを検出します",
   "Read from the instrument. Change anything the mask means rather than what happened to be set, then save it beside %s.": "測定器から読み取りました。設定されていた値ではなく、マスクが意味する値に直してから、%s の隣に保存します。",
   "Read the calibration constants and save them on this computer": "校正定数を読み出してこのコンピューターに保存する",
-  "Read the current folder again": "現在のフォルダーを再度読み込みます",
   "Read the front-panel lock state from the instrument": "測定器からフロントパネルのロック状態を読み取ります",
   "Read the instrument's eight segments back into the editor": "測定器の 8 つのセグメントをエディタへ読み戻す",
   "Read the instrument's error log": "測定器のエラーログを読み込む",
@@ -673,7 +669,6 @@
   "Send": "送信",
   "Send %d to instrument": "%d 件を測定器に送信",
   "Send %s to:": "%s の送信先:",
-  "Send a file from this computer to this folder": "このコンピューターからこのフォルダーへファイルを送ります",
   "Send anyway?": "それでも送信しますか？",
   "Send as a mask": "マスクとして送信",
   "Send its setup too?": "設定も送信しますか？",
@@ -1198,5 +1193,7 @@
   "%(file)s was taken from a %(theirs)s and this instrument says it is a %(mine)s. Calibration constants belong to one acquisition board, and another board's will leave this instrument measuring wrongly.\n\nRestore it anyway?": "%(file)s は %(theirs)s から取得したもので、この測定器は %(mine)s と名乗っています。校正定数は 1 枚の取り込みボードに固有のもので、別のボードの定数を書き込むとこの測定器は正しく測定できなくなります。\n\nそれでも復元しますか？",
   "Different model": "機種が異なります",
   "%s is not the file the catalogue listed - it has changed since it was scanned. Nothing has been written. Refresh the list and try again.": "%s は一覧に表示されていたファイルではありません - フォルダーを読み込んだ後に変更されています。何も書き込まれていません。一覧を更新してやり直してください。",
-  "%s has four numbers on a line where two were expected - if the decimals are commas, separate the columns with semicolons": "%s の行に、2 つのはずの数値が 4 つあります - 小数点がコンマの場合は、列をセミコロンで区切ってください"
+  "%s has four numbers on a line where two were expected - if the decimals are commas, separate the columns with semicolons": "%s の行に、2 つのはずの数値が 4 つあります - 小数点がコンマの場合は、列をセミコロンで区切ってください",
+  "%(file)s could not be written:\n\n%(why)s\n\nSave it somewhere else?": "%(file)s を書き込めませんでした:\n\n%(why)s\n\n別の場所に保存しますか？",
+  "Nothing was saved": "何も保存されませんでした"
 }

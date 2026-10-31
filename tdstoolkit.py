@@ -958,6 +958,17 @@ class Worker(object):
         """
         self.fs.set_cwd(path)
         base = self.fs.get_cwd() or path
+        # A CWD to a folder that is not there fails without a word and
+        # leaves the cwd where it was, so the listing would be of the
+        # folder before - shown as this one's contents, and, inside a
+        # recursive delete or download, walked again and again under a
+        # path that grows each time. An empty drive is the one refusal
+        # that is an answer.
+        if base.rstrip("/").upper() != path.rstrip("/").upper():
+            if NO_MEDIA in (self.fs.errors() or []):
+                return {"cwd": path, "dirs": [], "files": [],
+                        "no_media": True}
+            raise IOError(_("%s does not exist on the instrument.") % path)
         # Filtered before classification, not after: each phantom would
         # otherwise cost two or three round trips to prove it is not a
         # folder, which is most of the wait on an application folder.
@@ -1103,16 +1114,20 @@ class Worker(object):
         self.fs.errors()
         back = self.fs.read(
             real, timeout=TRANSFER_TIMEOUT + len(data) / READ_RATE)
+        # Compared before the temp goes. The original is already deleted,
+        # so the verified temp is the only good copy on the card until
+        # the rewrite is proven; deleted first, a rewrite that came back
+        # wrong left nothing good anywhere.
+        if back != data:
+            raise RuntimeError(
+                _("staged rename is unsupported and the direct rewrite of "
+                "%s did not verify") % real)
         try:
             self.fs.delete(tmp)
             self.fs.wait_done()
             self.fs.errors()
         except Exception:
             pass
-        if back != data:
-            raise RuntimeError(
-                _("staged rename is unsupported and the direct rewrite of "
-                "%s did not verify") % real)
 
     def write_verified(self, path, data, base=0.0, span=1.0):
         """Write, read back, compare. Never reports success on a guess.
@@ -1127,6 +1142,18 @@ class Worker(object):
         What it can report honestly is which phase it is in, and each
         attempt is three phases of roughly equal length.
         """
+        # The lock-out after a failed transfer is checked here, where the
+        # write happens, and not only in upload_plan: Upload of a single
+        # file and Send to disk come straight here, and went on writing
+        # into a filesystem the program had just declared wedged.
+        locked = transfer_blocked(getattr(self, "addr", None))
+        if locked:
+            raise RuntimeError(_(
+                "Nothing was written. The instrument's file system was "
+                "checked first and did not answer normally:\n\n%s\n\nThis "
+                "is usually a wedged file system. Power cycle the "
+                "instrument, confirm it lists its files, then try again.")
+                % locked)
         leaf = path.rsplit("/", 1)[-1]
         # Fix 6 (staged overwrite): if a file of this name is already on
         # the instrument, send the new copy to a temp sibling and RENAME
@@ -3300,7 +3327,10 @@ class Worker(object):
         finally:
             if was is not None:
                 self.fs.inst.timeout = was
-        said = [str(e) for e in self.fs.errors()]
+        # The pass and fail events are the answer to this job, not
+        # something unexpected, so they are read past the event watcher -
+        # which otherwise warned about TEKSecure's own success.
+        said = [str(e) for e in self._quiet_drain()]
         return {"events": said,
                 "passed": any(e.startswith("2285") for e in said),
                 "failed": any(e.startswith("2286") for e in said)}
@@ -3825,6 +3855,10 @@ class Worker(object):
             def volume(where, drive):
                 tds_bak.unpack(plan["path"], work, where + "/")
                 got = self.upload_tree(os.path.join(work, where), drive)
+                # A refusal is reported in its own keys, with nothing in
+                # "failed" - and was reported as "0 file(s) restored".
+                if got.get("blocked") or got.get("unhealthy"):
+                    raise IOError(got.get("blocked") or got["unhealthy"])
                 if got["failed"]:
                     raise IOError(_("%d file(s) would not write")
                                   % len(got["failed"]))
@@ -6279,11 +6313,10 @@ def run_gui():
                                         outline=pick["label"],
                                         tags="empty")
             plot.tag_lower(box, label)
-            # The strip above and the scrollbar describe the same
-            # nothing. Returning before they are redrawn left the last
-            # trace drawn up there after every trace had been taken off.
+            # The strip above describes the same nothing. Returning
+            # before it is redrawn left the last trace drawn up there
+            # after every trace had been taken off.
             draw_over()
-            set_scroll()
             return
         taken = []
         for one in shown_waves():
@@ -6349,7 +6382,6 @@ def run_gui():
                          tags="scales")
         draw_decode_strip(left, top, right, bottom)
         draw_over()
-        set_scroll()
 
     def draw_over():
         """The strip above the plot: the whole record, window marked.
@@ -6419,15 +6451,8 @@ def run_gui():
                                       outline="", stipple="gray50",
                                       tags="shade")
 
-    def set_scroll():
-        """No horizontal scrollbar any more - the record strip above the plot
-        is the one place the window's position in the record is shown. Kept as
-        a no-op so the handful of callers that redraw the view need not each
-        know the bar is gone."""
-        return
-
     plot.bind("<Configure>", draw_plot)
-    over.bind("<Configure>", lambda e: (draw_over(), set_scroll()))
+    over.bind("<Configure>", lambda e: draw_over())
 
     # ------------------------------------------------ moving the view
     # Everything here works in the record's own coordinates - samples
@@ -13018,7 +13043,7 @@ def run_gui():
     def do_fw_start():
         one = fw_current()
         got = state.get("fwmonitor")
-        if one is None or not got:
+        if one is None or not got or state["busy"]:
             return
         # The same folder the label names and the button gates on. Read
         # again here only in case it has gone since it was chosen.
@@ -13069,7 +13094,7 @@ def run_gui():
         is chosen and nothing is written to the instrument - this is the
         backup a write would take, taken on its own."""
         got = state.get("fwmonitor")
-        if not got:
+        if not got or state["busy"]:
             return
         where = state.get("fwbackups") or APPDIR
         if not os.path.isdir(where):
@@ -13465,6 +13490,8 @@ def run_gui():
         bak_buttons()
 
     def do_bak_make():
+        if state["busy"]:
+            return
         want = bak_wants()
         name = stamped((model_of(state.get("idn")) or "TDS").replace(" ", ""),
                        ".zip")
@@ -14348,8 +14375,13 @@ def run_gui():
         if not on:
             wfm_buttons()
             lim_buttons()
-            fw_buttons()
-            bak_buttons()
+        # Write firmware and Back up... are not in `buttons` and decide for
+        # themselves - but both read busy, so they have to be asked on the
+        # way in too. Asked only on the way out, Write stayed live through
+        # the minutes of its own job and a second press queued a second
+        # erase behind the first.
+        fw_buttons()
+        bak_buttons()
         root.config(cursor="watch" if on else "")
         if not on:
             progress_off()
@@ -14357,6 +14389,32 @@ def run_gui():
             progress(None)
         elif working == "steps":
             progress(0.0)
+
+    def keep_file(path, data):
+        """Write what came off the bus, asking for another place if that fails.
+
+        Returns where it went, or None if the user gave up. A locked file
+        or a read-only folder used to raise inside the pump, throw away
+        minutes of reading and call it a bug in this program.
+        """
+        while path:
+            try:
+                with open(path, "wb") as fh:
+                    fh.write(data)
+                return path
+            except OSError as exc:
+                if not messagebox.askyesno(
+                        _("Error"),
+                        _("%(file)s could not be written:\n\n%(why)s\n\n"
+                          "Save it somewhere else?")
+                        % {"file": path, "why": exc.strerror or exc},
+                        icon="warning"):
+                    break
+                path = filedialog.asksaveasfilename(
+                    parent=root, initialdir=os.path.dirname(path),
+                    initialfile=os.path.basename(path))
+        say(_("Nothing was saved"))
+        return None
 
     def fault(where, text):
         """Report a bug in this program without taking the window with it.
@@ -14679,6 +14737,10 @@ def run_gui():
             tree.delete(child)
         for d in dirs:
             iid = join(path, d)
+            # The instrument can list a name twice, and a row id is the
+            # path; a second insert raised half way through show().
+            if tree.exists(iid):
+                continue
             tree.insert(node, "end", iid=iid, text=" " + d,
                         image=icon_for(d, True))
             # a placeholder so the expander arrow appears without us having
@@ -14992,6 +15054,10 @@ def run_gui():
                 say(_("No TDS oscilloscope found on the bus"))
 
         def do_connect():
+            # The picker stays usable while a job runs; reconnecting under
+            # it wiped the state the job's result was about to land in.
+            if state["busy"]:
+                return
             addr = addr_var.get().strip()
             if not addr:
                 note.config(text=_("Enter an address, or scan and pick "
@@ -15095,6 +15161,13 @@ def run_gui():
         state["sysnow"] = None
         state.pop("lrefs", None)
         state["fwmonitor"] = None
+        # And what the Limits, Masks and Backup tabs remember of the last
+        # instrument: its running test, the mask sent to it, its live
+        # counts and what its Backup survey found.
+        for key in ("lrun", "msent", "mlivecounts", "bakhas", "bakreflist"):
+            state.pop(key, None)
+        lim_verdict()
+        bak_relabel()
         root.title("TDS Toolkit %s - %s"
                    % (__version__, _("connecting to %s") % addr))
         busy(True, "wait")
@@ -15922,8 +15995,10 @@ def run_gui():
         if not path:
             return
         try:
+            # Text mode already turns "\n" into the platform's line end;
+            # replacing it first as well wrote "\r\r\n" on Windows.
             with open(path, "w", encoding="utf-8") as fh:
-                fh.write(state["errtext"].replace("\n", os.linesep))
+                fh.write(state["errtext"])
         except Exception as exc:
             messagebox.showerror(_("Error"), "%s\n\n%s"
                                      % (_("Could not save"), exc))
@@ -16901,12 +16976,6 @@ def run_gui():
         buttons.append(b)
         labelled.append((b, text))
         by_name[text] = b
-    # Explicit hints() calls so the translation audit sees each literal.
-    hints(by_name["Refresh"], "Read the current folder again")
-    hints(by_name["Download"], "Copy the selected file(s) to this computer")
-    hints(by_name["Upload"], "Send a file from this computer to this folder")
-    hints(by_name["New folder"], "Make a new folder here")
-    hints(by_name["Delete"], "Delete the selected file(s) or folder(s)")
     # The globe goes hard right, at the far end of the row - packed before
     # the left-hand widgets claim the space, which is how pack works.
     btn_lang.pack(side="right", padx=(8, 0))
@@ -17095,6 +17164,13 @@ def run_gui():
     # constant librarian, and state["cannot"] is only read for buttons
     # in this set.
     buttons += [btn_sysopts]
+    # The rest of the System tab is bus work like any other, and was the
+    # only tab whose buttons stayed live while a job ran: a Secure erase
+    # pressed during a 25-minute SPC queued behind it, and SPC's finish
+    # then called the window idle while TEKSecure was still running.
+    buttons += [btn_sysread, btn_syslock, btn_sysfree, btn_systime,
+                btn_syssync, btn_sysports, btn_sysspc, btn_sysdiag,
+                btn_syswipe, btn_sysfact]
     # btn_baknv is busy-gated but never in state["cannot"]: the monitor
     # it talks to is in ROM on every instrument in the range, including
     # the v2.16e generation that has no librarian and greys the two
@@ -17500,7 +17576,13 @@ def run_gui():
                            "folder": payload["folder"]})
                     continue
                 if label == "fw_run":
+                    # The report ends by telling the user to switch off, so
+                    # what Connect measured is about to be stale: Write
+                    # waits for a fresh Connect rather than sizing the next
+                    # backup by a part that may since have been swapped.
+                    state["fwmonitor"] = None
                     busy(False)
+                    fw_say_state()
                     fw_report(payload)
                     continue
                 if label == "fw_backup":
@@ -17657,16 +17739,6 @@ def run_gui():
                                        ", ".join(found) or "none"))
                     if payload.get("colours"):
                         state["icolours"] = payload["colours"]
-                    then = state.pop("wafter", None)
-                    if then and then in (payload.get("sources") or []):
-                        # Switched on at the instrument, so choose it -
-                        # but do not read it. A source read on its own
-                        # comes from a different moment than everything
-                        # already on the graticule, which is what the
-                        # capture exists to prevent. Its row now says to
-                        # press Get waveform.
-                        state["wticked"] = wfm_order(
-                            list(state.get("wticked") or ()) + [then])
                     show_sources(payload)
                     lim_scan()
                     if found:
@@ -17677,11 +17749,6 @@ def run_gui():
                               "source to turn it on"))
                 elif label == "wfm_select":
                     busy(False)
-                    # Asked to turn it on so it could be read, rather
-                    # than merely toggled - so read it, now that it can
-                    # be. The list refresh comes first because that is
-                    # what tells us it really did come on.
-                    state["wafter"] = state.pop("wthen", None)
                     do_wfm_sources()
                 elif label == "wfm_delete":
                     busy(False)
@@ -17943,9 +18010,9 @@ def run_gui():
                     busy(False)
                     # Where it goes was settled before the read started,
                     # so there is nothing to ask here - only to write.
-                    path = state.get("calpath")
-                    with open(path, "wb") as fh:
-                        fh.write(payload["data"])
+                    path = keep_file(state.get("calpath"), payload["data"])
+                    if not path:
+                        continue
                     lines = [_("Saved to %s") % os.path.basename(path)]
                     # Shown the way the NVRAM's sections are, and named
                     # for what it is: the calibration block carries one
@@ -18552,13 +18619,13 @@ def run_gui():
                             % (payload["where"], payload["detail"], LOGFILE))
                 elif label == "download":
                     busy(False)
-                    with open(state["saveas"], "wb") as fh:
-                        fh.write(payload["data"])
                     set_size(os.path.basename(payload["path"]),
                              len(payload["data"]))
-                    say(_("Saved %(bytes)s bytes to %(where)s")
-                        % {"bytes": format(len(payload["data"]), ","),
-                           "where": state["saveas"]})
+                    where = keep_file(state["saveas"], payload["data"])
+                    if where:
+                        say(_("Saved %(bytes)s bytes to %(where)s")
+                            % {"bytes": format(len(payload["data"]), ","),
+                               "where": where})
                 elif label == "tree":
                     busy(False)
                     total = sum(n for _, n in payload["done"])

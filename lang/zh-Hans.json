@@ -230,7 +230,6 @@
   "Copied to %s": "已复制到 %s",
   "Copy": "复制",
   "Copy files from this computer to the instrument": "将文件从本机复制到仪器",
-  "Copy the selected file(s) to this computer": "将选定的文件复制到本机",
   "Copy what is selected to this computer": "将所选内容复制到本机",
   "Copy what is ticked into one backup file": "将勾选的内容复制到一个备份文件中",
   "Copying %s ...": "正在复制 %s ...",
@@ -262,7 +261,6 @@
   "Delete preset": "删除预设",
   "Delete template": "删除模板",
   "Delete the colour scheme '%s'?": "删除配色方案“%s”？",
-  "Delete the selected file(s) or folder(s)": "删除选定的文件或文件夹",
   "Delete the selected mask file": "删除所选的掩模文件",
   "Delete the selected preset": "删除选定的预设",
   "Delete the selected template file": "删除所选的模板文件",
@@ -427,7 +425,6 @@
   "MB": "MB",
   "Made %(when)s from %(idn)s": "%(when)s 由 %(idn)s 创建",
   "Make a folder here": "在此处新建文件夹",
-  "Make a new folder here": "在此新建文件夹",
   "Making a template of %(source)s in %(dest)s ...": "正在把 %(source)s 的模板建立到 %(dest)s ...",
   "Mask": "掩模",
   "Mask (*.MSK)": "掩模 (*.MSK)",
@@ -539,7 +536,6 @@
   "Read each backup a second time and compare, to catch a bad read": "再次读取每个备份并比较，以发现读取错误",
   "Read from the instrument. Change anything the mask means rather than what happened to be set, then save it beside %s.": "从仪器读取。请改成掩模所表示的值，而不是当时碰巧设定的值，然后保存在 %s 旁边。",
   "Read the calibration constants and save them on this computer": "读取校准常数并保存到本机",
-  "Read the current folder again": "重新读取当前文件夹",
   "Read the front-panel lock state from the instrument": "从仪器读取前面板锁定状态",
   "Read the instrument's eight segments back into the editor": "把仪器的八个分段读回编辑器",
   "Read the instrument's error log": "读取仪器的错误日志",
@@ -673,7 +669,6 @@
   "Send": "发送",
   "Send %d to instrument": "发送 %d 条到仪器",
   "Send %s to:": "将 %s 发送到：",
-  "Send a file from this computer to this folder": "将本机的文件发送到此文件夹",
   "Send anyway?": "仍然发送？",
   "Send as a mask": "作为掩模发送",
   "Send its setup too?": "也发送其设置？",
@@ -1198,5 +1193,7 @@
   "%(file)s was taken from a %(theirs)s and this instrument says it is a %(mine)s. Calibration constants belong to one acquisition board, and another board's will leave this instrument measuring wrongly.\n\nRestore it anyway?": "%(file)s 取自 %(theirs)s，而本仪器自称是 %(mine)s。校准常数只属于某一块采集板，用另一块板的常数会使本仪器测量错误。\n\n仍要恢复吗？",
   "Different model": "型号不同",
   "%s is not the file the catalogue listed - it has changed since it was scanned. Nothing has been written. Refresh the list and try again.": "%s 不是列表中所列的那个文件 - 扫描之后它已发生变化。未写入任何内容。请刷新列表后重试。",
-  "%s has four numbers on a line where two were expected - if the decimals are commas, separate the columns with semicolons": "%s 的一行中有四个数字，而应为两个 - 如果小数点是逗号，请用分号分隔各列"
+  "%s has four numbers on a line where two were expected - if the decimals are commas, separate the columns with semicolons": "%s 的一行中有四个数字，而应为两个 - 如果小数点是逗号，请用分号分隔各列",
+  "%(file)s could not be written:\n\n%(why)s\n\nSave it somewhere else?": "无法写入 %(file)s：\n\n%(why)s\n\n要保存到其他位置吗？",
+  "Nothing was saved": "未保存任何内容"
 }

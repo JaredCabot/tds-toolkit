@@ -299,7 +299,12 @@ class Mask(object):
             if word == "NAME":
                 mask.name = rest
             elif word == "SOURCE":
-                mask.source = rest or "CH1"
+                # A source name and nothing else. It is put into SCPI
+                # later, and a hand-edited `CH1;:FILESYSTEM:FORMAT "hd0:"`
+                # would have gone to the instrument as written.
+                mask.source = (rest.upper() if rest.isascii()
+                               and rest.isalnum() and rest[:1].isalpha()
+                               else "CH1")
             elif word == "INVERT":
                 mask.invert = rest.strip() not in ("", "0", "OFF")
             elif word == "MARGIN":

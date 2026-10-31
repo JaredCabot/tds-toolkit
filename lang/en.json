@@ -230,7 +230,6 @@
   "Copied to %s": "Copied to %s",
   "Copy": "Copy",
   "Copy files from this computer to the instrument": "Copy files from this computer to the instrument",
-  "Copy the selected file(s) to this computer": "Copy the selected file(s) to this computer",
   "Copy what is selected to this computer": "Copy what is selected to this computer",
   "Copy what is ticked into one backup file": "Copy what is ticked into one backup file",
   "Copying %s ...": "Copying %s ...",
@@ -262,7 +261,6 @@
   "Delete preset": "Delete preset",
   "Delete template": "Delete template",
   "Delete the colour scheme '%s'?": "Delete the colour scheme '%s'?",
-  "Delete the selected file(s) or folder(s)": "Delete the selected file(s) or folder(s)",
   "Delete the selected mask file": "Delete the selected mask file",
   "Delete the selected preset": "Delete the selected preset",
   "Delete the selected template file": "Delete the selected template file",
@@ -427,7 +425,6 @@
   "MB": "MB",
   "Made %(when)s from %(idn)s": "Made %(when)s from %(idn)s",
   "Make a folder here": "Make a folder here",
-  "Make a new folder here": "Make a new folder here",
   "Making a template of %(source)s in %(dest)s ...": "Making a template of %(source)s in %(dest)s ...",
   "Mask": "Mask",
   "Mask (*.MSK)": "Mask (*.MSK)",
@@ -539,7 +536,6 @@
   "Read each backup a second time and compare, to catch a bad read": "Read each backup a second time and compare, to catch a bad read",
   "Read from the instrument. Change anything the mask means rather than what happened to be set, then save it beside %s.": "Read from the instrument. Change anything the mask means rather than what happened to be set, then save it beside %s.",
   "Read the calibration constants and save them on this computer": "Read the calibration constants and save them on this computer",
-  "Read the current folder again": "Read the current folder again",
   "Read the front-panel lock state from the instrument": "Read the front-panel lock state from the instrument",
   "Read the instrument's eight segments back into the editor": "Read the instrument's eight segments back into the editor",
   "Read the instrument's error log": "Read the instrument's error log",
@@ -673,7 +669,6 @@
   "Send": "Send",
   "Send %d to instrument": "Send %d to instrument",
   "Send %s to:": "Send %s to:",
-  "Send a file from this computer to this folder": "Send a file from this computer to this folder",
   "Send anyway?": "Send anyway?",
   "Send as a mask": "Send as a mask",
   "Send its setup too?": "Send its setup too?",
@@ -1198,5 +1193,7 @@
   "%(file)s was taken from a %(theirs)s and this instrument says it is a %(mine)s. Calibration constants belong to one acquisition board, and another board's will leave this instrument measuring wrongly.\n\nRestore it anyway?": "%(file)s was taken from a %(theirs)s and this instrument says it is a %(mine)s. Calibration constants belong to one acquisition board, and another board's will leave this instrument measuring wrongly.\n\nRestore it anyway?",
   "Different model": "Different model",
   "%s is not the file the catalogue listed - it has changed since it was scanned. Nothing has been written. Refresh the list and try again.": "%s is not the file the catalogue listed - it has changed since it was scanned. Nothing has been written. Refresh the list and try again.",
-  "%s has four numbers on a line where two were expected - if the decimals are commas, separate the columns with semicolons": "%s has four numbers on a line where two were expected - if the decimals are commas, separate the columns with semicolons"
+  "%s has four numbers on a line where two were expected - if the decimals are commas, separate the columns with semicolons": "%s has four numbers on a line where two were expected - if the decimals are commas, separate the columns with semicolons",
+  "%(file)s could not be written:\n\n%(why)s\n\nSave it somewhere else?": "%(file)s could not be written:\n\n%(why)s\n\nSave it somewhere else?",
+  "Nothing was saved": "Nothing was saved"
 }

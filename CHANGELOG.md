@@ -97,6 +97,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   inside the loop that hands results back - so nothing after it finished
   until the box was found and closed. The queue is now emptied as the
   listing goes.
+- **NVRAM restore refused every TDS 784C/D, blaming the protection
+  switch.** The aliasing probe landed in the empty part of the window above
+  the fitted memory, where a write cannot stick, and took that for the
+  switch. The switch is now asked about once, at the bottom of the window.
+- **Write firmware, Back up... and the System tab's buttons stayed live
+  while a job ran.** A second press of Write queued a second erase behind
+  the first; a Secure erase pressed during SPC ran after the window had
+  already said idle. They are greyed like every other button, and Write
+  needs a fresh Connect after each write.
+- **A single-file Upload and Send to disk ignored the lock-out** that
+  follows a failed transfer, and wrote into the filesystem the program had
+  just declared wedged. **A backup restore that was refused** before
+  writing anything said "Restored to the instrument".
+- **Listing a folder that is no longer there showed the folder before it**,
+  and a recursive delete, copy or download of it walked that folder again
+  and again. It is now reported as missing.
+- **A failed rewrite during a staged overwrite** deleted the only verified
+  copy before checking the rewrite. **TEKSecure's own success** raised the
+  "instrument reported something" warning. **A download or calibration
+  backup that could not be saved** (locked file, read-only folder) was
+  thrown away and reported as a bug; the program now asks where else to
+  put it.
+- **A mask file's SOURCE line could carry a SCPI command** to the
+  instrument; it is now held to a source name. **One broken decoder
+  plug-in** could empty the protocol list. **An image in a folder inside a
+  zip** was listed but could not be written. **A setup line** read later
+  commands under the first command's path (`EDGE:SOURCE CH2;SLOPE FALL`
+  lost its slope) and took a channel switched off as the mask's source.
+- Smaller: a malformed block length or a waveform file whose time step is
+  NaN, infinite or zero is refused rather than loaded; an ISF save no
+  longer fails on a non-ASCII name; a saved error log no longer ends its
+  lines with a doubled carriage return on Windows; reconnecting forgets the previous
+  instrument's limit test, sent mask and Backup survey; the instrument
+  picker cannot reconnect under a running job; a folder listed twice no
+  longer breaks the folder tree; the Files toolbar shows one tooltip per
+  button; and some dead code is gone.
 - **A CSV that would not load said why in English only.** The reason is
   now shown in the program's language, and the new comma-decimal advice
   is translated.

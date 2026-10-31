@@ -230,7 +230,6 @@
   "Copied to %s": "Nach %s kopiert",
   "Copy": "Kopieren",
   "Copy files from this computer to the instrument": "Dateien von diesem Computer auf das Gerät kopieren",
-  "Copy the selected file(s) to this computer": "Die ausgewählte(n) Datei(en) auf diesen Computer kopieren",
   "Copy what is selected to this computer": "Das Ausgewählte auf diesen Computer kopieren",
   "Copy what is ticked into one backup file": "Das Angehakte in eine Sicherungsdatei kopieren",
   "Copying %s ...": "%s wird kopiert ...",
@@ -262,7 +261,6 @@
   "Delete preset": "Voreinstellung löschen",
   "Delete template": "Vorlage löschen",
   "Delete the colour scheme '%s'?": "Farbschema „%s“ löschen?",
-  "Delete the selected file(s) or folder(s)": "Die ausgewählten Dateien oder Ordner löschen",
   "Delete the selected mask file": "Die gewählte Maskendatei löschen",
   "Delete the selected preset": "Die ausgewählte Voreinstellung löschen",
   "Delete the selected template file": "Die gewählte Vorlagendatei löschen",
@@ -427,7 +425,6 @@
   "MB": "MB",
   "Made %(when)s from %(idn)s": "Erstellt %(when)s von %(idn)s",
   "Make a folder here": "Hier einen Ordner anlegen",
-  "Make a new folder here": "Hier einen neuen Ordner erstellen",
   "Making a template of %(source)s in %(dest)s ...": "Vorlage von %(source)s wird in %(dest)s erstellt ...",
   "Mask": "Maske",
   "Mask (*.MSK)": "Maske (*.MSK)",
@@ -539,7 +536,6 @@
   "Read each backup a second time and compare, to catch a bad read": "Jede Sicherung ein zweites Mal lesen und vergleichen, um einen Lesefehler zu erkennen",
   "Read from the instrument. Change anything the mask means rather than what happened to be set, then save it beside %s.": "Vom Gerät gelesen. Ändern Sie, was die Maske bedeutet, nicht was gerade eingestellt war, und speichern Sie es neben %s.",
   "Read the calibration constants and save them on this computer": "Die Kalibrierkonstanten lesen und auf diesem Computer speichern",
-  "Read the current folder again": "Den aktuellen Ordner erneut lesen",
   "Read the front-panel lock state from the instrument": "Den Sperrzustand der Frontplatte vom Gerät lesen",
   "Read the instrument's eight segments back into the editor": "Die acht Segmente des Geräts zurück in den Editor lesen",
   "Read the instrument's error log": "Das Fehlerprotokoll des Geräts lesen",
@@ -673,7 +669,6 @@
   "Send": "Senden",
   "Send %d to instrument": "%d an Gerät senden",
   "Send %s to:": "%s senden an:",
-  "Send a file from this computer to this folder": "Eine Datei von diesem Computer in diesen Ordner senden",
   "Send anyway?": "Trotzdem senden?",
   "Send as a mask": "Als Maske senden",
   "Send its setup too?": "Auch das Setup senden?",
@@ -1198,5 +1193,7 @@
   "%(file)s was taken from a %(theirs)s and this instrument says it is a %(mine)s. Calibration constants belong to one acquisition board, and another board's will leave this instrument measuring wrongly.\n\nRestore it anyway?": "%(file)s stammt von einem %(theirs)s, und dieses Gerät meldet sich als %(mine)s. Kalibrierkonstanten gehören zu genau einer Erfassungsbaugruppe; die einer anderen lassen dieses Gerät falsch messen.\n\nTrotzdem wiederherstellen?",
   "Different model": "Anderes Modell",
   "%s is not the file the catalogue listed - it has changed since it was scanned. Nothing has been written. Refresh the list and try again.": "%s ist nicht die Datei, die der Katalog aufgeführt hat - sie hat sich seit dem Einlesen geändert. Es wurde nichts geschrieben. Liste aktualisieren und erneut versuchen.",
-  "%s has four numbers on a line where two were expected - if the decimals are commas, separate the columns with semicolons": "%s hat in einer Zeile vier Zahlen, wo zwei erwartet wurden - wenn das Dezimaltrennzeichen ein Komma ist, trennen Sie die Spalten durch Semikolons"
+  "%s has four numbers on a line where two were expected - if the decimals are commas, separate the columns with semicolons": "%s hat in einer Zeile vier Zahlen, wo zwei erwartet wurden - wenn das Dezimaltrennzeichen ein Komma ist, trennen Sie die Spalten durch Semikolons",
+  "%(file)s could not be written:\n\n%(why)s\n\nSave it somewhere else?": "%(file)s konnte nicht geschrieben werden:\n\n%(why)s\n\nAn einem anderen Ort speichern?",
+  "Nothing was saved": "Nichts wurde gespeichert"
 }

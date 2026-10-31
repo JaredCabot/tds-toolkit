@@ -248,20 +248,29 @@ def parse(data):
         line = line.strip().lstrip(":")
         if not line or line.upper().startswith("REM"):
             continue
-        head = line.split(" ", 1)[0]
-        path = head.rsplit(":", 1)[0] + ":" if ":" in head else ""
-        for at, part in enumerate(line.split(";")):
+        # IEEE 488.2's rule, as scpi_tree reads a reply: each command's
+        # path less its last node is the path of the one after it, and a
+        # leading colon goes back to the root. Taken from the first
+        # header on the line instead, `TRIG:MAIN:MODE AUTO;EDGE:SOURCE
+        # CH2;SLOPE FALL` lost its slope.
+        path = []
+        for part in line.split(";"):
             part = part.strip()
-            if not part or " " not in part:
+            if not part:
                 continue
-            word, value = part.split(" ", 1)
-            # A leading colon returns to the root (IEEE 488.2), so
-            # `;:CH1:SCALE` is not under the path in front of it.
-            rooted = word.strip().startswith(":")
-            word = word.strip().lstrip(":").upper()
-            word = word if at == 0 or rooted else (path + word).upper()
+            head = part.split(" ", 1)[0]
+            nodes = ([n for n in head.lstrip(":").upper().split(":") if n]
+                     if head.startswith(":") or not path
+                     else path + head.upper().split(":"))
+            path = nodes[:-1]
+            if " " not in part:
+                continue
+            value = part.split(" ", 1)[1]
+            word = ":".join(nodes)
             if word.startswith("SELECT:CH"):
-                fields.setdefault("source", word.split(":", 1)[1])
+                # A channel switched off is not the one the mask is on.
+                if value.strip().upper() not in ("OFF", "0"):
+                    fields.setdefault("source", word.split(":", 1)[1])
                 continue
             channel = re.match(r"^(CH[1-4]):(.+)$", word)
             if channel:

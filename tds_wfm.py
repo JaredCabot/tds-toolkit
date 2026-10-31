@@ -416,8 +416,10 @@ class Waveform(object):
         head = ":WFMPRE:" + ";".join("%s %s" % kv for kv in order) + ";"
         body = self.raw
         digits = str(len(body))
+        # Replaced, not refused: the WFID can carry a PC file name, and
+        # loading 波形.csv and saving it as .isf raised on the encode.
         return (head + ":CURVE #%d%s" % (len(digits), digits)).encode(
-            "ascii") + body
+            "ascii", "replace") + body
 
     def to_wfm(self):
         """The instrument's own .WFM, as SAVE:WAVEFORM would write it.
@@ -796,7 +798,12 @@ def ieee_block(data, at=0):
     a reason, never an IndexError."""
     try:
         digits = int(chr(data[at + 1]))
-        length = int(data[at + 2:at + 2 + digits])
+        field = data[at + 2:at + 2 + digits]
+        # Digits only: int() also takes a sign and spaces, and "#2-5"
+        # sliced five bytes counted back from the end of the buffer.
+        if not field.isdigit():
+            raise ValueError
+        length = int(field)
     except (IndexError, ValueError):
         raise ValueError("the block header after '#' is not a length")
     body = data[at + 2 + digits:at + 2 + digits + length]
@@ -932,15 +939,30 @@ def load(path):
     import os
     name = os.path.splitext(os.path.basename(path))[0]
     if looks_like_llwfm(data):
-        return from_wfm(data, name)
+        return _finite(from_wfm(data, name))
     if data[:2] in (b"\xf0\xf0", b"\x0f\x0f") or b":WFM#" in data[:16]:
         raise ValueError(
             "This is a waveform file from a TDS5000/6000/7000 or a "
             "DPO/MSO - a different and much later format from the one "
             "the TDS500/600/700 write. It is not handled here.")
     if b"CURVE" in data[:4096] and b"#" in data:
-        return from_isf(data, name)
-    return from_csv(data, name)
+        wave = from_isf(data, name)
+    else:
+        wave = from_csv(data, name)
+    return _finite(wave)
+
+
+def _finite(wave):
+    """The wave, if its time step is a number every redraw can use.
+
+    A file with a NaN, infinite or zero XINCR loaded without complaint
+    and then raised on every redraw of the plot it was put on.
+    """
+    step = wave.number("XINCR", 1.0)
+    if not (math.isfinite(step) and step != 0.0):
+        raise ValueError("the time between samples in this file is %r, "
+                         "which is not a time" % step)
+    return wave
 
 
 def eng(value, unit=""):

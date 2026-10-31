@@ -474,7 +474,6 @@ def discover(folders):
     how _template.py stays a template and not an empty protocol in the list.
     """
     found = {}
-    order = 0
     for folder in folders:
         if not folder or not os.path.isdir(folder):
             continue
@@ -483,9 +482,16 @@ def discover(folders):
             if name.startswith("_"):
                 continue
             for cls in _classes_in(path):
-                found[cls.NAME] = cls
-    out = [cls() for cls in found.values()]
-    out.sort(key=lambda d: d.NAME)
+                found[str(cls.NAME)] = (cls, path)
+    # Made one at a time, for the reason the imports are: a plugin whose
+    # constructor raises, or whose NAME is not a string, took every
+    # decoder off the list with it.
+    out = []
+    for name, (cls, path) in sorted(found.items()):
+        try:
+            out.append(cls())
+        except (Exception, SystemExit) as exc:    # noqa: BLE001
+            _note_bad(path, exc)
     return out
 
 

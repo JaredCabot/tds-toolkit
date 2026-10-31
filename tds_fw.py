@@ -481,15 +481,24 @@ class Flash(object):
         """
         probe = len(PROBES[0])
         top = base + length - probe
+        # The switch is asked about once, at the bottom of the window,
+        # where every instrument has memory. A write that does not stick
+        # higher up is not the switch: on a TDS784C the window is empty
+        # past the parts, the second stride's probe lands there, and
+        # taking that for the switch refused every restore on the family.
+        self.same_cell(base + RTC_LEN, base + RTC_LEN)
         stride = None
         for candidate in ALIAS_STRIDES:
             if candidate >= length:
                 continue
             if stop is not None and stop():
                 raise FirmwareError("measuring was abandoned part way")
-            if self.same_cell(top - candidate, top):
-                stride = candidate
-                break
+            try:
+                if self.same_cell(top - candidate, top):
+                    stride = candidate
+                    break
+            except FirmwareError:
+                continue                 # nothing there to hold a write
         if stride is None:
             return length
         # The clock is the first fourteen bytes of the part at the base
@@ -1054,8 +1063,11 @@ def archives(folder):
 def read_image(path, archive=""):
     """The bytes of an image, loose on disk or inside an archive."""
     if archive:
+        # The member's own name, folders and all: the catalogue keeps it
+        # whole, and the bare file name is not a member of a zip that
+        # holds its images in a folder.
         with zipfile.ZipFile(archive) as zf:
-            return zf.read(os.path.basename(path))
+            return zf.read(path)
     with open(path, "rb") as fh:
         return fh.read()
 

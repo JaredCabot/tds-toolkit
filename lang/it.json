@@ -230,7 +230,6 @@
   "Copied to %s": "Copiato in %s",
   "Copy": "Copia",
   "Copy files from this computer to the instrument": "Copia file da questo computer allo strumento",
-  "Copy the selected file(s) to this computer": "Copia i file selezionati su questo computer",
   "Copy what is selected to this computer": "Copia la selezione su questo computer",
   "Copy what is ticked into one backup file": "Copia quanto selezionato in un unico file di backup",
   "Copying %s ...": "Copia di %s in corso ...",
@@ -262,7 +261,6 @@
   "Delete preset": "Elimina preimpostazione",
   "Delete template": "Elimina modello",
   "Delete the colour scheme '%s'?": "Eliminare la combinazione di colori «%s»?",
-  "Delete the selected file(s) or folder(s)": "Elimina i file o le cartelle selezionati",
   "Delete the selected mask file": "Elimina il file di maschera selezionato",
   "Delete the selected preset": "Elimina la preimpostazione selezionata",
   "Delete the selected template file": "Elimina il file di modello selezionato",
@@ -427,7 +425,6 @@
   "MB": "MB",
   "Made %(when)s from %(idn)s": "Creato il %(when)s da %(idn)s",
   "Make a folder here": "Crea una cartella qui",
-  "Make a new folder here": "Crea una nuova cartella qui",
   "Making a template of %(source)s in %(dest)s ...": "Creazione di un modello di %(source)s in %(dest)s ...",
   "Mask": "Maschera",
   "Mask (*.MSK)": "Maschera (*.MSK)",
@@ -539,7 +536,6 @@
   "Read each backup a second time and compare, to catch a bad read": "Rileggi ogni backup una seconda volta e confronta, per rilevare una lettura errata",
   "Read from the instrument. Change anything the mask means rather than what happened to be set, then save it beside %s.": "Letto dallo strumento. Modificare ciò che definisce la maschera, non ciò che era impostato per caso, poi salvare accanto a %s.",
   "Read the calibration constants and save them on this computer": "Leggi le costanti di taratura e salvale su questo computer",
-  "Read the current folder again": "Rileggi la cartella corrente",
   "Read the front-panel lock state from the instrument": "Leggi lo stato di blocco del pannello frontale dallo strumento",
   "Read the instrument's eight segments back into the editor": "Rileggi gli otto segmenti dello strumento nell'editor",
   "Read the instrument's error log": "Leggi il registro errori dello strumento",
@@ -673,7 +669,6 @@
   "Send": "Invia",
   "Send %d to instrument": "Invia %d allo strumento",
   "Send %s to:": "Invia %s a:",
-  "Send a file from this computer to this folder": "Invia un file da questo computer a questa cartella",
   "Send anyway?": "Inviare comunque?",
   "Send as a mask": "Invia come maschera",
   "Send its setup too?": "Inviare anche le sue impostazioni?",
@@ -1198,5 +1193,7 @@
   "%(file)s was taken from a %(theirs)s and this instrument says it is a %(mine)s. Calibration constants belong to one acquisition board, and another board's will leave this instrument measuring wrongly.\n\nRestore it anyway?": "%(file)s proviene da un %(theirs)s e questo strumento dichiara di essere un %(mine)s. Le costanti di taratura appartengono a una sola scheda di acquisizione; quelle di un'altra scheda farebbero misurare male questo strumento.\n\nRipristinare comunque?",
   "Different model": "Modello diverso",
   "%s is not the file the catalogue listed - it has changed since it was scanned. Nothing has been written. Refresh the list and try again.": "%s non è il file elencato nel catalogo: è cambiato dopo la scansione. Non è stato scritto nulla. Aggiornare l'elenco e riprovare.",
-  "%s has four numbers on a line where two were expected - if the decimals are commas, separate the columns with semicolons": "%s ha quattro numeri su una riga dove ne erano attesi due - se i decimali usano la virgola, separare le colonne con il punto e virgola"
+  "%s has four numbers on a line where two were expected - if the decimals are commas, separate the columns with semicolons": "%s ha quattro numeri su una riga dove ne erano attesi due - se i decimali usano la virgola, separare le colonne con il punto e virgola",
+  "%(file)s could not be written:\n\n%(why)s\n\nSave it somewhere else?": "Impossibile scrivere %(file)s:\n\n%(why)s\n\nSalvarlo altrove?",
+  "Nothing was saved": "Non è stato salvato nulla"
 }
