@@ -105,8 +105,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pre-rendered PNGs rather than drawn pixel by pixel at start-up; the
   settings files are read and written through one pair of functions; the
   address argument is parsed by `argparse`; and dead code (an unused scroll
-  helper, a redundant word reader, unreachable filters) is gone. No
-  behaviour changed; the icons are pixel-identical.
+  helper, a redundant word reader, unreachable filters, and two
+  calibration-restore messages for results the restore never produces)
+  is gone. No behaviour changed; the icons are pixel-identical.
 - **The Klingon translation is complete again.** 195 messages added in
   1.2.3 had been left in English.
 - **Translations reviewed.** Every entry in the seven other languages was

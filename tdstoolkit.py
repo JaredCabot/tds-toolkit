@@ -17988,26 +17988,6 @@ def run_gui():
                             "words already written are the file's; the "
                             "rest are whatever the instrument held "
                             "before. Restore it again to finish."))
-                    elif payload.get("unchecked"):
-                        # The writes went in; only the second read
-                        # was given up on. Said as the difference
-                        # it is, because "restore stopped" would
-                        # send the reader looking for a half
-                        # written block that is not there.
-                        lines.append(_(
-                            "Every word was written. Reading the "
-                            "whole block back to check it was "
-                            "stopped, so what is on the instrument "
-                            "now has not been checked."))
-                    elif payload.get("lost"):
-                        lines.append(_(
-                            "%(count)d word(s) took the write and read "
-                            "differently when the whole block was "
-                            "read again, the first of them word "
-                            "%(first)d. Those cells are not holding "
-                            "what was put in them.")
-                            % {"count": len(payload["lost"]),
-                               "first": payload["lost"][0]})
                     # Transferred is not stored. The words go into a
                     # working copy in the instrument's RAM and reading
                     # them back proves only that they arrived;
