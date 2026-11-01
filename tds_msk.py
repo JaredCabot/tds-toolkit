@@ -27,6 +27,8 @@ instrument's own FAT filesystem beside files it wrote itself, and be
 readable on a PC. The instrument's filesystem is 8.3, so the name a mask
 is stored under is not the name it carries inside it - hence NAME.
 """
+from i18n import say
+
 
 # What the instrument will accept, measured on a 784D and a 784C rather
 # than read out of a manual:
@@ -288,9 +290,9 @@ class Mask(object):
         except (IndexError, ValueError):
             version = VERSION
         if version > VERSION:
-            raise MaskError("this mask was written by a later version of "
-                            "the program (%d, and this reads %d)"
-                            % (version, VERSION))
+            raise MaskError(say("this mask was written by a later version "
+                                "of the program (%d, and this reads %d)",
+                                version, VERSION))
         mask = cls()
         segments = {}
         for line in lines[1:]:

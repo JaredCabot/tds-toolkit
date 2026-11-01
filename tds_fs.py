@@ -20,6 +20,8 @@ import time
 
 import pyvisa
 
+from i18n import say
+
 DEFAULT_ADDR = "GPIB0::3::INSTR"
 
 
@@ -298,8 +300,8 @@ class TdsFs(object):
         cost that long to find out about.
         """
         if self.reader is None:
-            raise IOError("This instrument's firmware has no command for "
-                          "reading a file's contents over GPIB.")
+            raise IOError(say("This instrument's firmware has no command "
+                              "for reading a file's contents over GPIB."))
         old = self.inst.timeout
         if timeout:
             self.inst.timeout = int(timeout * 1000)
@@ -320,8 +322,8 @@ class TdsFs(object):
                 # stops at one.
                 self.inst.write(':FILESYSTEM:READF "%s"' % path)
                 if not self._wait_mav(start):
-                    raise IOError("The instrument did not answer a read "
-                                  "of %s." % path)
+                    raise IOError(say("The instrument did not answer a "
+                                      "read of %s.", path))
                 got = bytes(self.inst.read_raw())
                 # If the first was only slow, both are answered, and the
                 # second copy would be read as the reply to whatever is
@@ -396,10 +398,10 @@ class TdsFs(object):
                 return bytes(self.inst.read_raw())
             except Exception as exc:
                 last = "%s while reading" % type(exc).__name__
-        raise IOError("%s could not be read: %s (tried twice; not trying "
-                      "again, because repeated failures put this "
-                      "instrument's filesystem out of action until it is "
-                      "power cycled)." % (path, last))
+        raise IOError(say("%s could not be read: %s (tried twice; not "
+                          "trying again, because repeated failures put this "
+                          "instrument's filesystem out of action until it "
+                          "is power cycled).", path, last))
 
     #: Bytes per second a WRITEFILE is budgeted at. Measured on a TDS
     #: 784D at 2842, 2957, 2973, 2974 and 2992 B/s for payloads of 4 kB
@@ -428,9 +430,9 @@ class TdsFs(object):
         the first big file in it.
         """
         if not self.can_write:
-            raise IOError("This instrument's firmware has no "
-                          "FILESYSTEM:WRITEFILE command, so files cannot "
-                          "be uploaded to it over GPIB.")
+            raise IOError(say("This instrument's firmware has no "
+                              "FILESYSTEM:WRITEFILE command, so files cannot "
+                              "be uploaded to it over GPIB."))
         header = ('FILESYSTEM:WRITEFILE "%s", #0' % path).encode("ascii")
         old = self.inst.timeout
         self.inst.timeout = max(old, int(len(data) * 1000.0 / self.WRITE_RATE)

@@ -594,8 +594,17 @@ def build(ui):
                          % got["slow_pages"])
         if got["faults"]:
             lines.append("")
-            lines.append(_("The flash does NOT match the image. The first "
-                           "difference is at 0x%06X.") % got["faults"][0])
+            if got["faults"][0] >= got["wrote"]:
+                # The image went in; it is the part above it, which the
+                # erase takes too, that still holds something.
+                lines.append(_("The flash matches the image, but above it, "
+                               "at 0x%06X, it is not erased: part of the "
+                               "array did not take the erase.")
+                             % got["faults"][0])
+            else:
+                lines.append(_("The flash does NOT match the image. The "
+                               "first difference is at 0x%06X.")
+                             % got["faults"][0])
             lines.append(_("Nothing is lost: switch off, leave the switch "
                            "unprotected, switch on and write it again."))
             ui.say(_("Firmware written but it does not verify"))

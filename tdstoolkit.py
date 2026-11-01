@@ -37,6 +37,8 @@ import ast
 import atexit
 import hashlib
 import json
+import logging
+import logging.handlers
 import os
 import queue
 import re
@@ -253,10 +255,11 @@ def take_process_lock(addr=""):
                 held = int((raw.read(64).split() or [b"0"])[0])
         except Exception:
             held = 0
-        return ("Another copy of TDS Toolkit (process %d) is using the "
-                "instrument. Only one may at a time - a second program's "
-                "commands would land inside a file being transferred. Close "
-                "the other copy, then connect again." % held)
+        return i18n.say(
+            "Another copy of TDS Toolkit (process %d) is using the "
+            "instrument. Only one may at a time - a second program's "
+            "commands would land inside a file being transferred. Close "
+            "the other copy, then connect again.", held)
     try:
         fh.seek(0)
         fh.truncate()
@@ -441,82 +444,29 @@ def N_(text):
     return text
 
 
-#: What the modules below the window say that reaches a user. They have
-#: no gettext and should not have one (see tds_wfm.plot_png), so their
-#: words arrive already formatted, in English. Each is matched back to
-#: its template here by localise() and shown in the user's language. A
-#: sentence reworded in its module simply stops matching and appears in
-#: English, as everything from the modules did before; one added there
-#: is added here when it matters to someone reading it.
-LIBRARY_SAYS = (
-    # tds_wfm.py
-    N_('%s has no waveform that can be read. A channel has to be displayed on the instrument before it can be read; a reference has to have something stored in it.'),
-    N_('fewer than two numeric rows - is this a CSV of time and amplitude?'),
-    N_('%s has four numbers on a line where two were expected - if the decimals are commas, separate the columns with semicolons'),
-    N_('This is a waveform file from a TDS5000/6000/7000 or a DPO/MSO - a different and much later format from the one the TDS500/600/700 write. It is not handled here.'),
-    N_('Waveform capture is not supported in DPO mode.\nDisable DPO and try again or perform a screen capture.'),
-    N_('Only a stored reference can be deleted; %s is a live source.'),
-    N_('%s is empty, and an empty reference cannot be written to. A live channel is needed once to bring it into being.'),
-    # tds_scr.py
-    N_('This instrument offers no image format that can be decoded here.'),
-    N_('The instrument would not send its screen to the bus: HARDCOPY:PORT is %s.'),
-    # tds_fs.py
-    N_("This instrument's firmware has no command for reading a file's contents over GPIB."),
-    N_('The instrument did not answer a read of %s.'),
-    N_("%s could not be read: %s (tried twice; not trying again, because repeated failures put this instrument's filesystem out of action until it is power cycled)."),
-    N_("This instrument's firmware has no FILESYSTEM:WRITEFILE command, so files cannot be uploaded to it over GPIB."),
-    # tds_err.py
-    N_('This firmware has no ERRLOG subsystem.'),
-    # tds_bak.py
-    N_('%s is a zip file, but not a backup made by this program - there is no %s inside it.'),
-    N_('%s holds an entry this will not write: %s'),
-    # tds_fw.py
-    N_('the flash did not finish erasing within %d seconds; status 0x%08X'),
-    N_('Erasing the flash ... %d s'),
-    N_('the flash reported an erase failure at 0x%08X (status 0x%08X). The part is not taking the erase; nothing has been written.'),
-    N_('the flash reported its programming voltage low at 0x%08X (status 0x%08X). Nothing has been written.'),
-    N_('Reading %s of %s'),
-    N_('the NVRAM did not take a write at 0x%X - it read back as it was. Nothing has been changed. On this family that is the memory protection switch: it has to be moved to unprotected before anything can be written.'),
-    N_('Writing %s of %s'),
-    N_('the on-instrument helper refused page %d of %d, and %s has no page buffer to write it from here. The flash is erased or part written and has to be programmed again'),
-    N_('Checking %s of %s'),
-    N_('Reading %s (%d of %d)'),
-    # tds_cal.py
-    N_('Reading the calibration constants - word %d of %d'),
-    # tds_msk.py
-    N_('this mask was written by a later version of the program (%d, and this reads %d)'),
-    # tdstoolkit.py
-    N_("Another copy of TDS Toolkit (process %d) is using the instrument. Only one may at a time - a second program's commands would land inside a file being transferred. Close the other copy, then connect again."),
-    # tds_cal.py
-    N_('word %d of %d'),
-)
+def exc_words(exc):
+    """str(exc), keeping the Said a module raised it with."""
+    first = exc.args[0] if len(exc.args) == 1 else None
+    return first if isinstance(first, i18n.Said) else str(exc)
 
 
 def localise(text):
     """`text` in the current language, including the modules' words.
 
-    A string the catalogue knows is translated as _() would. One of
-    LIBRARY_SAYS with its values filled in is matched to that template,
-    and the same values are put into the translation - by position,
-    which --check-translations already holds every language to.
-    Anything else comes back unchanged.
+    The modules below the window have no gettext and should not have one
+    (see tds_wfm.plot_png); what they say to a user they make with
+    i18n.say(), which keeps the template and the values, and that is
+    translated here. An exception raised with one counts as it. A string
+    the catalogue knows is translated as _() would; anything else comes
+    back unchanged.
     """
+    if isinstance(text, BaseException):
+        text = exc_words(text)
+    if isinstance(text, i18n.Said):
+        return text.translated()
     if not isinstance(text, str):
         return text
-    got = _(text)
-    if got != text:
-        return got
-    for english in LIBRARY_SAYS:
-        parts = i18n._PLACEHOLDER.split(english)
-        if len(parts) < 2:
-            continue
-        found = re.match("(?s)" + "(.*?)".join(map(re.escape, parts))
-                         + r"\Z", text)
-        if found:
-            values = iter(found.groups())
-            return i18n._PLACEHOLDER.sub(lambda _m: next(values),
-                                         _(english))
-    return text
+    return _(text)
 
 
 #: Chinese and Japanese marks that may not begin a line, and those that
@@ -835,8 +785,6 @@ DELETE_OPS = ("rmdir", "delete", "deletes")
 MASS_STORAGE = 250
 
 
-_LOGGED_BANNER = []
-
 # Facts about this session, held rather than written. See log_context.
 _LOGGED_CONTEXT = {}
 
@@ -847,29 +795,28 @@ _LOGGED_CONTEXT = {}
 # a fault report is attach four megabytes of successful startups.
 LOGMAX = 512 * 1024
 
+_log = logging.getLogger("tdstoolkit")
+_log.setLevel(logging.INFO)
+_log.propagate = False
 
-def log_rotate(path=None):
-    """Move the log aside if it has grown past LOGMAX. Never raises.
 
-    The path is an argument so this can be tried on a file of its own
-    rather than on the log the run is writing to: a check that rotates
-    the real log to prove rotation works has thrown away the evidence
-    of the run that was checking.
+def log_handler(path=None):
+    """The log file: opened at the first line written (delay), so a
+    session with nothing to say leaves no file, and moved aside to .old
+    once it passes LOGMAX.
+
+    The path is an argument so rotation can be tried on a file of its
+    own rather than on the log the run is writing to: a check that
+    rotates the real log to prove rotation works has thrown away the
+    evidence of the run that was checking.
     """
-    path = path or LOGFILE
-    try:
-        if os.path.getsize(path) < LOGMAX:
-            return False
-    except OSError:
-        return False
-    try:
-        old = path + ".old"
-        if os.path.exists(old):
-            os.remove(old)
-        os.rename(path, old)
-        return True
-    except OSError:
-        return False
+    handler = logging.handlers.RotatingFileHandler(
+        path or LOGFILE, maxBytes=LOGMAX, backupCount=1, encoding="utf-8",
+        delay=True)
+    handler.namer = lambda name: name[:-len(".1")] + ".old"
+    handler.setFormatter(logging.Formatter(
+        "%(asctime)s  %(where)-22s %(message)s", "%Y-%m-%d %H:%M:%S"))
+    return handler
 
 
 def log_context(where, text):
@@ -904,26 +851,19 @@ def log_note(where, text):
     it. It is written lazily rather than at startup so that an uneventful
     session still writes nothing at all.
     """
-    if not _LOGGED_BANNER:
-        log_rotate()
     try:
-        now = time.strftime("%Y-%m-%d %H:%M:%S")
-        with open(LOGFILE, "a", encoding="utf-8",
-                  errors="replace") as fh:
-            if not _LOGGED_BANNER:
-                _LOGGED_BANNER.append(True)
-                fh.write("\n=== TDS Toolkit %s (%s) started %s ===\n"
-                         % (__version__,
-                            "exe" if getattr(sys, "frozen", False)
-                            else "python %s" % sys.version.split()[0],
-                            now))
-            # Drained, not copied: whatever is still held goes out in
-            # front of the fault, and a fact that changes after this
-            # goes out in front of the next one.
-            for key in list(_LOGGED_CONTEXT):
-                fh.write("%s  %-22s %s\n"
-                         % (now, key, _LOGGED_CONTEXT.pop(key)))
-            fh.write("%s  %-22s %s\n" % (now, where, text))
+        if not _log.handlers:
+            _log.addHandler(log_handler())
+            _log.info("TDS Toolkit %s (%s) started", __version__,
+                      "exe" if getattr(sys, "frozen", False)
+                      else "python %s" % sys.version.split()[0],
+                      extra={"where": "==="})
+        # Drained, not copied: whatever is still held goes out in
+        # front of the fault, and a fact that changes after this
+        # goes out in front of the next one.
+        for key in list(_LOGGED_CONTEXT):
+            _log.info(_LOGGED_CONTEXT.pop(key), extra={"where": key})
+        _log.info(text, extra={"where": where})
     except Exception:
         pass
 
@@ -3495,8 +3435,8 @@ class Worker(object):
             # watch - which reads as a hang rather than as care.
             if tds_cal.read(self.wfm.q, base,
                             note=lambda t, f: self._progress(
-                                _("Checking the calibration constants - %s")
-                                % localise(t.split(" - ")[-1]), f)) != got:
+                                _("Checking the calibration constants - "
+                                  "word %d of %d") % t.args, f)) != got:
                 raise RuntimeError(
                     _("The calibration constants read differently the "
                     "second time. That is the bus, not the instrument. "
@@ -4351,17 +4291,7 @@ class Worker(object):
             flash = tds_fw.Flash(mon)
             report["flash"] = flash.identify()
 
-            # The whole NVRAM window, always: it holds user settings,
-            # saved waveforms, limits, masks and on the earlier
-            # instruments the calibration constants, and a backup that
-            # judged part of it not worth reading is one that cannot put
-            # the instrument back.
-            for what, base, length in (
-                    ("NVRAM", tds_fw.NVRAM_BASE, tds_fw.NVRAM_LEN),
-                    ("Firmware", tds_fw.FLASH_BASE, plan["backup_len"])):
-                self.fw_keep(flash, what, base, length, plan, report)
-
-            # Does it fit? Measured now, while the part still holds
+            # Does it fit? Measured first, while the part still holds
             # something to measure - after the erase every boundary
             # reads 0xFF and span() can only fall back to the
             # catalogued size, which is the number this is checking.
@@ -4384,6 +4314,18 @@ class Worker(object):
                     "that the image is the right one for this model.")
                     % (tds_fw._size(len(image)), tds_fw._size(room)))
             report["span"] = room
+
+            # The whole NVRAM window, always: it holds user settings,
+            # saved waveforms, limits, masks and on the earlier
+            # instruments the calibration constants, and a backup that
+            # judged part of it not worth reading is one that cannot put
+            # the instrument back. And all of the flash just measured,
+            # not the size measured at Connect: the erase below takes
+            # the whole part, so the backup has to hold the whole part.
+            for what, base, length in (
+                    ("NVRAM", tds_fw.NVRAM_BASE, tds_fw.NVRAM_LEN),
+                    ("Firmware", tds_fw.FLASH_BASE, room)):
+                self.fw_keep(flash, what, base, length, plan, report)
             # The helper is what makes this take minutes rather than
             # hours, but it is code running on the instrument. Asking
             # for the host's own page loop instead is how a first flash
@@ -4407,11 +4349,17 @@ class Worker(object):
             if not flash.paged and flash.helper is None:
                 flash._refuse()
             self._progress(_("Erasing the flash ..."), None)
-            flash.erase(len(image), note=lambda t: self._progress(t, None))
+            # The whole part, not the devices the image reaches: an old
+            # firmware longer than the new one would otherwise stay in
+            # the array above it, and the check after the write could
+            # not tell an instrument holding one image from one holding
+            # the remains of two.
+            flash.erase(room, note=lambda t: self._progress(t, None))
             report["slow_pages"], report["blank_pages"] = flash.program(
                 image, note=self._progress)
             self._progress(_("Checking what was written ..."), 0.0)
-            report["faults"] = flash.verify(image, note=self._progress)
+            report["faults"] = flash.verify(image, note=self._progress,
+                                            length=room)
         finally:
             try:
                 inst.close()
@@ -4492,7 +4440,7 @@ class Worker(object):
                     log_note(label, "  " + traceback.format_exc()
                              .strip().replace("\n", "\n  "))
                 self.out.put((label, False,
-                              str(exc) or type(exc).__name__))
+                              exc_words(exc) or type(exc).__name__))
 
     def stop(self):
         self._stop.set()
@@ -5916,13 +5864,7 @@ def run_gui():
         after the fact, and tells the user in as many words that the
         instrument is fine and it is this program that is at fault.
         """
-        try:
-            with open(LOGFILE, "a", encoding="utf-8",
-                  errors="replace") as fh:
-                fh.write("\n==== %s: %s ====\n%s"
-                         % (time.strftime("%Y-%m-%d %H:%M:%S"), where, text))
-        except Exception:
-            pass
+        log_note(where, "FAULT\n" + text)
         # Under pythonw there is no console and sys.stderr is None, so this
         # is a guard and not politeness.
         if sys.stderr is not None:
@@ -6030,7 +5972,7 @@ def run_gui():
             title,
             text % (len(failed),
                     "\n".join("    %s\n        %s"
-                              % (p.rsplit("/", 1)[-1], localise(str(e)))
+                              % (p.rsplit("/", 1)[-1], localise(e))
                               for p, e in failed[:6])))
 
     def report_losses(payload):
@@ -8937,10 +8879,9 @@ def translatable_strings():
     # hardcopy formats are defined in tds_scr.py and translated here, so
     # a search of this file alone reports every one of them as an entry
     # for a string the program no longer has.
-    for name in ["tdstoolkit.py", "tds_scr.py", "tds_wfm.py", "tds_fs.py",
-                 "winicons.py", "i18n.py"] + sorted(
-                     n for n in os.listdir(here)
-                     if n.startswith("ui_") and n.endswith(".py")):
+    for name in ["tdstoolkit.py", "winicons.py", "i18n.py"] + sorted(
+            n for n in os.listdir(here)
+            if n.startswith(("ui_", "tds_")) and n.endswith(".py")):
         try:
             with open(os.path.join(here, name), encoding="utf-8") as fh:
                 tree = ast.parse(fh.read())
@@ -8955,20 +8896,27 @@ def translatable_strings():
             # a moment later, so they are spoken as surely as a direct
             # call is, and a table is where it is easiest to add a
             # string and forget the catalogues.
-            if (isinstance(node, ast.Tuple) and len(node.elts) == 2
+            # Not in the modules below the window, where a pair like
+            # (bit, "NAK") is data and speaks only through say().
+            if (not name.startswith("tds_")
+                    and isinstance(node, ast.Tuple) and len(node.elts) == 2
                     and isinstance(node.elts[0], ast.Name)
                     and isinstance(node.elts[1], ast.Constant)
                     and isinstance(node.elts[1].value, str)
                     and node.elts[1].value):
                 spoken.add(node.elts[1].value)
-            if not (isinstance(node, ast.Call)
-                    and isinstance(node.func, ast.Name)):
+            if not isinstance(node, ast.Call):
                 continue
-            # _("...") and N_("...") say their first argument; says(w,
-            # "...") and hints(w, "...") say their second, and the zoom
-            # buttons' _zoombtn(key, cmd, "...") its third.
-            at = {"_": 0, "N_": 0, "says": 1, "hints": 1,
-                  "_zoombtn": 2}.get(node.func.id)
+            func = node.func
+            called = (func.id if isinstance(func, ast.Name) else
+                      func.attr if isinstance(func, ast.Attribute) and
+                      func.attr == "say" else None)
+            # _("..."), N_("...") and a module's say("...") say their
+            # first argument; says(w, "...") and hints(w, "...") their
+            # second, and the zoom buttons' _zoombtn(key, cmd, "...") its
+            # third. Read as an attribute too: i18n.say(...).
+            at = {"_": 0, "N_": 0, "say": 0, "says": 1, "hints": 1,
+                  "_zoombtn": 2}.get(called)
             if (at is not None and len(node.args) > at
                     and isinstance(node.args[at], ast.Constant)
                     and isinstance(node.args[at].value, str)):

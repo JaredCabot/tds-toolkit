@@ -2078,7 +2078,7 @@ def build(ui):
                 _("Error"),
                 _("%(name)s could not be read as a waveform.\n\n%(why)s")
                 % {"name": os.path.basename(path),
-                   "why": localise(str(exc))})
+                   "why": localise(exc)})
             return
         slots = wfm_picked_refs()
         staged = state.setdefault("staged", {})

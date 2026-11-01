@@ -30,6 +30,8 @@ which is the order getcaldata writes.
 import re
 import struct
 
+from i18n import say
+
 #: Where the librarian keeps them. Right for the TDS 500B, 600A and 700A
 #: families, which is as far as the reference tool claims. Every other
 #: generation is an assumption until an instrument says otherwise, so it
@@ -88,9 +90,8 @@ def read(ask, base=BASE, note=None):
     for n in range(WORDS):
         out += struct.pack(">H", word(ask, n, base))
         if note is not None and not n % 36:
-            note("Reading the calibration constants - word %d of %d"
-                 % (n + 1, WORDS),
-                 n / float(WORDS))
+            note(say("Reading the calibration constants - word %d of %d",
+                     n + 1, WORDS), n / float(WORDS))
     return bytes(out)
 
 

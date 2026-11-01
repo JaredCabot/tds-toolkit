@@ -29,6 +29,8 @@ import struct
 import time
 import zlib
 
+from i18n import say
+
 # The per-source preamble. Asked for one field at a time, by name, because
 # the bulk WFMPRE:<src>? reply is NOT in the same field order on every
 # instrument - a 784D and a 640A disagree, and mapping one onto the other
@@ -92,9 +94,9 @@ class NotReadable(IOError):
         self.source = source
         IOError.__init__(
             self, message or
-            "%s has no waveform that can be read. A channel has to be "
-            "displayed on the instrument before it can be read; a "
-            "reference has to have something stored in it." % source)
+            say("%s has no waveform that can be read. A channel has to be "
+                "displayed on the instrument before it can be read; a "
+                "reference has to have something stored in it.", source))
 
 
 # How a plot is coloured. Held as hex because that is what Tk speaks and
@@ -671,10 +673,10 @@ def from_csv(data, name="file"):
             t, v = float(parts[0]), float(parts[1])
             if (len(parts) == 4 and "." not in line
                     and all(_is_number(p) for p in parts)):
-                raise ValueError(
+                raise ValueError(say(
                     "%s has four numbers on a line where two were expected "
                     "- if the decimals are commas, separate the columns "
-                    "with semicolons" % name)
+                    "with semicolons", name))
         except ValueError:
             if len(parts) == 4 and "." not in line and _is_number(parts[0]):
                 raise
@@ -705,8 +707,8 @@ def from_csv(data, name="file"):
         times.append(t)
         volts.append(v)
     if len(times) < 2:
-        raise ValueError("fewer than two numeric rows - is this a CSV of "
-                         "time and amplitude?")
+        raise ValueError(say("fewer than two numeric rows - is this a "
+                             "CSV of time and amplitude?"))
     lo, hi = min(volts), max(volts)
     if hi == lo:
         hi = lo + 1.0
@@ -1015,10 +1017,10 @@ def load(path):
     if looks_like_llwfm(data):
         return _finite(from_wfm(data, name))
     if data[:2] in (b"\xf0\xf0", b"\x0f\x0f") or b":WFM#" in data[:16]:
-        raise ValueError(
+        raise ValueError(say(
             "This is a waveform file from a TDS5000/6000/7000 or a "
             "DPO/MSO - a different and much later format from the one "
-            "the TDS500/600/700 write. It is not handled here.")
+            "the TDS500/600/700 write. It is not handled here."))
     if b"CURV" in data[:4096] and b"#" in data:
         wave = from_isf(data, name)
     else:
@@ -3145,8 +3147,9 @@ class TdsWfm(object):
         """
         if self.in_dpo():
             raise NotReadable(
-                None, "Waveform capture is not supported in DPO mode.\n"
-                "Disable DPO and try again or perform a screen capture.")
+                None, say("Waveform capture is not supported in DPO mode.\n"
+                          "Disable DPO and try again or perform a screen "
+                          "capture."))
         was = self.acquisition()
         running = was.get("state", "").strip().upper() in ("1", "ON", "RUN")
         # SEQUENCE stops itself when the sequence is done, and STOPAFTER
@@ -3264,8 +3267,8 @@ class TdsWfm(object):
         one that demonstrably holds a waveform.
         """
         if not str(name).upper().startswith("REF"):
-            raise ValueError("Only a stored reference can be deleted; "
-                             "%s is a live source." % name)
+            raise ValueError(say("Only a stored reference can be deleted; "
+                                 "%s is a live source.", name))
         self.inst.write("DELETE:WAVEFORM %s" % name)
         time.sleep(0.8)
 
@@ -3286,10 +3289,10 @@ class TdsWfm(object):
         """
         if not self.exists(dest):
             if not allocate_from:
-                raise IOError(
+                raise IOError(say(
                     "%s is empty, and an empty reference cannot be written "
                     "to. A live channel is needed once to bring it into "
-                    "being." % dest)
+                    "being.", dest))
             self.inst.write("SAVE:WAVEFORM %s,%s" % (allocate_from, dest))
             # Wait, then carry on regardless of what the instrument says
             # about the reference. Measured on a 784C and a 640A: after

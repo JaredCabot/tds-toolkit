@@ -129,6 +129,29 @@ def gettext(text):
     return _catalogue.get(text, text)
 
 
+class Said(str):
+    """English text that remembers the template and values it was made
+    from. It is the English string to everything that handles it - a log,
+    an exception, a comparison - and the window can say it in the user's
+    language without matching the words back to a template."""
+    template, args = "", ()
+
+    def translated(self):
+        try:
+            return gettext(self.template) % self.args
+        except (TypeError, ValueError, KeyError):
+            return str(self)
+
+
+def say(template, *args):
+    """`template % args` in English, as a Said.
+
+    How the modules below the window, which have no gettext, mark what
+    reaches a user. --check-translations reads say("...") as spoken.
+    """
+    said = Said(template % args if args else template)
+    said.template, said.args = template, args
+    return said
 
 
 #: Both spellings the program uses. The named form has to be here too:

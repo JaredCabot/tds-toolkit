@@ -1051,7 +1051,6 @@
   "Reading %s (%d of %d)": "Чтение %s (%d из %d)",
   "Reading the calibration constants - word %d of %d": "Чтение калибровочных констант - слово %d из %d",
   "this mask was written by a later version of the program (%d, and this reads %d)": "эта маска записана более новой версией программы (%d, а эта версия читает %d)",
-  "word %d of %d": "слово %d из %d",
   "tab": "табуляция",
   "extra dot": "лишняя точка",
   "space": "пробел",
@@ -1113,7 +1112,6 @@
   "Asking whether the constants are locked": "Запрос, заблокированы ли константы",
   "Sending the service unlock": "Отправка сервисной разблокировки",
   "Checking the calibration constants": "Проверка калибровочных констант",
-  "Checking the calibration constants - %s": "Проверка калибровочных констант - %s",
   "The calibration constants read differently the second time. That is the bus, not the instrument. Nothing has been written and nothing is lost, but the backup cannot be trusted, so this stopped here.": "При повторном чтении калибровочные константы прочитались иначе. Дело в шине, а не в приборе. Ничего не записано и ничего не потеряно, но резервной копии доверять нельзя, поэтому операция остановлена.",
   "Adding the words up to check them against word 0": "Суммирование слов для сверки со словом 0",
   "Writing the calibration constants - word %d of %d": "Запись калибровочных констант - слово %d из %d",
@@ -1192,5 +1190,7 @@
   "the on-instrument helper refused page %d of %d, and %s has no page buffer to write it from here. The flash is erased or part written and has to be programmed again": "вспомогательная программа прибора отказалась записать страницу %d из %d, а у %s нет страничного буфера, чтобы записать её отсюда. Флеш-память стёрта или записана частично, её нужно запрограммировать заново",
   "The shape changed, so its coordinates box was closed": "Фигура изменилась, поэтому окно её координат закрыто",
   "Are you sure you want to permanently delete these %d files?\n\n%s\n\nThere is no Recycle Bin on the instrument.": "Удалить эти файлы (%d) безвозвратно?\n\n%s\n\nВ приборе нет корзины.",
-  "Busy - drop the files again when this job has finished": "Занято - перетащите файлы снова, когда эта операция завершится"
+  "Busy - drop the files again when this job has finished": "Занято - перетащите файлы снова, когда эта операция завершится",
+  "Checking the calibration constants - word %d of %d": "Проверка калибровочных констант - слово %d из %d",
+  "The flash matches the image, but above it, at 0x%06X, it is not erased: part of the array did not take the erase.": "Содержимое флеш-памяти совпадает с образом, но выше него, по адресу 0x%06X, не стёрто: часть памяти не приняла стирание."
 }

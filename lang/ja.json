@@ -1051,7 +1051,6 @@
   "Reading %s (%d of %d)": "%s を読み出しています (%d / %d)",
   "Reading the calibration constants - word %d of %d": "校正定数を読み出しています - ワード %d / %d",
   "this mask was written by a later version of the program (%d, and this reads %d)": "このマスクは新しいバージョンのプログラムで作成されています (形式 %d、本プログラムが読めるのは %d)",
-  "word %d of %d": "ワード %d / %d",
   "tab": "タブ",
   "extra dot": "余分なドット",
   "space": "スペース",
@@ -1113,7 +1112,6 @@
   "Asking whether the constants are locked": "定数がロックされているかを問い合わせています",
   "Sending the service unlock": "サービス用ロック解除を送信しています",
   "Checking the calibration constants": "校正定数を照合しています",
-  "Checking the calibration constants - %s": "校正定数を照合しています - %s",
   "The calibration constants read differently the second time. That is the bus, not the instrument. Nothing has been written and nothing is lost, but the backup cannot be trusted, so this stopped here.": "2 回目の読み出しで校正定数が異なりました。原因はバスで、測定器ではありません。何も書き込まれておらず、何も失われていませんが、このバックアップは信頼できないため、ここで中止しました。",
   "Adding the words up to check them against word 0": "ワードを合計してワード 0 と照合しています",
   "Writing the calibration constants - word %d of %d": "校正定数を書き込んでいます - ワード %d / %d",
@@ -1192,5 +1190,7 @@
   "the on-instrument helper refused page %d of %d, and %s has no page buffer to write it from here. The flash is erased or part written and has to be programmed again": "測定器内の補助ルーチンが %d / %d ページ目を拒否しました。%s にはここから書き込むためのページバッファがありません。フラッシュは消去済みか一部だけ書き込まれた状態で、もう一度書き込む必要があります",
   "The shape changed, so its coordinates box was closed": "図形が変更されたため、座標ボックスを閉じました",
   "Are you sure you want to permanently delete these %d files?\n\n%s\n\nThere is no Recycle Bin on the instrument.": "これらの %d 個のファイルを完全に削除しますか？\n\n%s\n\n測定器にごみ箱はありません。",
-  "Busy - drop the files again when this job has finished": "処理中です。この処理が終わってから、もう一度ファイルをドロップしてください"
+  "Busy - drop the files again when this job has finished": "処理中です。この処理が終わってから、もう一度ファイルをドロップしてください",
+  "Checking the calibration constants - word %d of %d": "校正定数を照合しています - ワード %d / %d",
+  "The flash matches the image, but above it, at 0x%06X, it is not erased: part of the array did not take the erase.": "フラッシュはイメージと一致していますが、その上の 0x%06X は消去されていません。メモリの一部が消去を受け付けませんでした。"
 }

@@ -124,6 +124,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   produce, so a saved .wfm or CSV held only the top half of what the
   instrument had. Reads now carry the full 16 bits, as backups already
   do; a 50,000-point record takes about 0.3 s longer.
+- **Writing firmware erases and checks the whole flash, not only the
+  part the image fills.** A shorter image written over a longer one left
+  the old firmware's tail in the array above it, where the check after
+  the write never looked. The write now erases every device of the part
+  as measured on the instrument, checks that everything above the image
+  reads erased, and says so if it does not. The firmware backup taken on
+  the way is that whole measured part, read just before the erase, so it
+  holds everything the erase takes.
+- **The log rolls over as it is written.** It moves aside to
+  `tdstoolkit.log.old` whenever it passes 512 KB, during a session as
+  well as between them, and a fault's traceback now goes in with the
+  version line and the session's facts in front of it like any other
+  entry. It is still only written when something goes wrong.
+- **Klingon: "program" is now nIqHom (software).** The word used before,
+  ghantoH, means a model or pattern; it stays where it means "for
+  example".
+- **Internal: the modules below the window mark what they say with
+  `i18n.say()`,** which keeps the template and its values, and the
+  window translates from those. It used to match each finished English
+  sentence back to its template from a list kept in `tdstoolkit.py`.
 - **Internal: the window code is split by tab.** Each tab is now built by
   its own module - `ui_wfm.py`, `ui_msk.py`, `ui_lim.py`, `ui_scr.py`,
   `ui_err.py`, `ui_sys.py`, `ui_bak.py`, `ui_fw.py` and `ui_set.py` - and

@@ -25,6 +25,8 @@ import os
 import time
 import zipfile
 
+from i18n import say
+
 FORMAT = 1
 MANIFEST = "manifest.json"
 SETUP = "setup.set"
@@ -86,10 +88,10 @@ def manifest_of(path):
         try:
             said = z.read(MANIFEST)
         except KeyError:
-            raise ValueError(
+            raise ValueError(say(
                 "%s is a zip file, but not a backup made by this program "
-                "- there is no %s inside it."
-                % (os.path.basename(path), MANIFEST))
+                "- there is no %s inside it.",
+                os.path.basename(path), MANIFEST))
     return json.loads(said.decode("utf-8"))
 
 
@@ -135,8 +137,8 @@ def unpack(path, folder, under=""):
             if under and not (arc == under or arc.startswith(under)):
                 continue
             if not safe_name(arc):
-                raise ValueError("%s holds an entry this will not write: "
-                                 "%s" % (os.path.basename(path), arc))
+                raise ValueError(say("%s holds an entry this will not "
+                                     "write: %s", os.path.basename(path), arc))
             dest = os.path.join(folder, *arc.split("/"))
             os.makedirs(os.path.dirname(dest), exist_ok=True)
             with open(dest, "wb") as fh:

@@ -29,6 +29,8 @@ Measured on all three instruments on the bench:
     to the header rather than a subcommand under it. Verified by
     clearing a 640A that had 31 entries in it and reading back none.
 """
+from i18n import say
+
 
 # A log with more entries than this is not being read to the end. The
 # number is a guard against a firmware that never says it has finished,
@@ -146,7 +148,7 @@ class TdsErr(object):
         """
         first = self._ask("ERRLOG:FIRST?")
         if first is None:
-            raise NoErrorLog("This firmware has no ERRLOG subsystem.")
+            raise NoErrorLog(say("This firmware has no ERRLOG subsystem."))
         out = []
         if not first:
             return out

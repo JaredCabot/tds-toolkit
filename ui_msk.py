@@ -2929,7 +2929,7 @@ def build(ui):
         except Exception as exc:
             messagebox.showerror(_("Error"), "%s\n\n%s"
                                      % (_("Could not load that file"),
-                                        localise(str(exc))))
+                                        localise(exc)))
             return
         state[which + "wave"] = wave
         state[which + "wavefrom"] = "pc"

@@ -1051,7 +1051,6 @@
   "Reading %s (%d of %d)": "正在读取 %s（第 %d 个，共 %d 个）",
   "Reading the calibration constants - word %d of %d": "正在读取校准常数 - 第 %d 个字，共 %d 个",
   "this mask was written by a later version of the program (%d, and this reads %d)": "此掩模由更新版本的程序写入（格式版本 %d，本程序只能读取 %d）",
-  "word %d of %d": "第 %d 个字，共 %d 个",
   "tab": "制表符",
   "extra dot": "多余的点",
   "space": "空格",
@@ -1113,7 +1112,6 @@
   "Asking whether the constants are locked": "正在查询校准常数是否已锁定",
   "Sending the service unlock": "正在发送维修解锁命令",
   "Checking the calibration constants": "正在核对校准常数",
-  "Checking the calibration constants - %s": "正在核对校准常数 - %s",
   "The calibration constants read differently the second time. That is the bus, not the instrument. Nothing has been written and nothing is lost, but the backup cannot be trusted, so this stopped here.": "第二次读取的校准常数与第一次不同。这是总线的问题，不是仪器的问题。没有写入任何内容，也没有丢失任何内容，但备份不可信，因此在此停止。",
   "Adding the words up to check them against word 0": "正在累加各字，与字 0 核对",
   "Writing the calibration constants - word %d of %d": "正在写入校准常数 - 第 %d 个字，共 %d 个",
@@ -1192,5 +1190,7 @@
   "the on-instrument helper refused page %d of %d, and %s has no page buffer to write it from here. The flash is erased or part written and has to be programmed again": "仪器内的辅助程序拒绝了第 %d 页（共 %d 页），而 %s 没有页缓冲区，无法从这里写入。闪存已被擦除或只写入了一部分，必须重新编程",
   "The shape changed, so its coordinates box was closed": "形状已更改，因此其坐标框已关闭",
   "Are you sure you want to permanently delete these %d files?\n\n%s\n\nThere is no Recycle Bin on the instrument.": "确定要永久删除这 %d 个文件吗？\n\n%s\n\n仪器上没有回收站。",
-  "Busy - drop the files again when this job has finished": "正忙 - 请在此任务完成后再次拖放这些文件"
+  "Busy - drop the files again when this job has finished": "正忙 - 请在此任务完成后再次拖放这些文件",
+  "Checking the calibration constants - word %d of %d": "正在核对校准常数 - 第 %d 个字，共 %d 个",
+  "The flash matches the image, but above it, at 0x%06X, it is not erased: part of the array did not take the erase.": "闪存与映像一致，但其上方 0x%06X 处未被擦除：存储器的一部分没有接受擦除。"
 }

@@ -1051,7 +1051,6 @@
   "Reading %s (%d of %d)": "%s wird gelesen (%d von %d)",
   "Reading the calibration constants - word %d of %d": "Kalibrierkonstanten werden gelesen - Wort %d von %d",
   "this mask was written by a later version of the program (%d, and this reads %d)": "diese Maske wurde von einer neueren Programmversion geschrieben (%d, diese liest %d)",
-  "word %d of %d": "Wort %d von %d",
   "tab": "Tabulator",
   "extra dot": "zusätzlicher Punkt",
   "space": "Leerzeichen",
@@ -1113,7 +1112,6 @@
   "Asking whether the constants are locked": "Abfrage, ob die Konstanten gesperrt sind",
   "Sending the service unlock": "Service-Entsperrung wird gesendet",
   "Checking the calibration constants": "Kalibrierkonstanten werden geprüft",
-  "Checking the calibration constants - %s": "Kalibrierkonstanten werden geprüft - %s",
   "The calibration constants read differently the second time. That is the bus, not the instrument. Nothing has been written and nothing is lost, but the backup cannot be trusted, so this stopped here.": "Die Kalibrierkonstanten wurden beim zweiten Mal anders gelesen. Das liegt am Bus, nicht am Gerät. Es wurde nichts geschrieben und nichts geht verloren, aber der Sicherung kann nicht vertraut werden, daher wurde hier abgebrochen.",
   "Adding the words up to check them against word 0": "Die Wörter werden addiert und mit Wort 0 verglichen",
   "Writing the calibration constants - word %d of %d": "Kalibrierkonstanten werden geschrieben - Wort %d von %d",
@@ -1192,5 +1190,7 @@
   "the on-instrument helper refused page %d of %d, and %s has no page buffer to write it from here. The flash is erased or part written and has to be programmed again": "die Hilfsroutine im Gerät hat Seite %d von %d abgelehnt, und %s hat keinen Seitenpuffer, um sie von hier aus zu schreiben. Der Flash ist gelöscht oder teilweise beschrieben und muss erneut programmiert werden",
   "The shape changed, so its coordinates box was closed": "Die Form hat sich geändert, daher wurde ihr Koordinatenfenster geschlossen",
   "Are you sure you want to permanently delete these %d files?\n\n%s\n\nThere is no Recycle Bin on the instrument.": "Möchten Sie diese %d Dateien wirklich endgültig löschen?\n\n%s\n\nDas Gerät hat keinen Papierkorb.",
-  "Busy - drop the files again when this job has finished": "Beschäftigt - legen Sie die Dateien erneut ab, wenn dieser Auftrag fertig ist"
+  "Busy - drop the files again when this job has finished": "Beschäftigt - legen Sie die Dateien erneut ab, wenn dieser Auftrag fertig ist",
+  "Checking the calibration constants - word %d of %d": "Kalibrierkonstanten werden geprüft - Wort %d von %d",
+  "The flash matches the image, but above it, at 0x%06X, it is not erased: part of the array did not take the erase.": "Der Flash stimmt mit dem Abbild überein, ist darüber, bei 0x%06X, aber nicht gelöscht: ein Teil des Speichers hat das Löschen nicht angenommen."
 }

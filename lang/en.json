@@ -1051,7 +1051,6 @@
   "Reading %s (%d of %d)": "Reading %s (%d of %d)",
   "Reading the calibration constants - word %d of %d": "Reading the calibration constants - word %d of %d",
   "this mask was written by a later version of the program (%d, and this reads %d)": "this mask was written by a later version of the program (%d, and this reads %d)",
-  "word %d of %d": "word %d of %d",
   "tab": "tab",
   "extra dot": "extra dot",
   "space": "space",
@@ -1113,7 +1112,6 @@
   "Asking whether the constants are locked": "Asking whether the constants are locked",
   "Sending the service unlock": "Sending the service unlock",
   "Checking the calibration constants": "Checking the calibration constants",
-  "Checking the calibration constants - %s": "Checking the calibration constants - %s",
   "The calibration constants read differently the second time. That is the bus, not the instrument. Nothing has been written and nothing is lost, but the backup cannot be trusted, so this stopped here.": "The calibration constants read differently the second time. That is the bus, not the instrument. Nothing has been written and nothing is lost, but the backup cannot be trusted, so this stopped here.",
   "Adding the words up to check them against word 0": "Adding the words up to check them against word 0",
   "Writing the calibration constants - word %d of %d": "Writing the calibration constants - word %d of %d",
@@ -1192,5 +1190,7 @@
   "the on-instrument helper refused page %d of %d, and %s has no page buffer to write it from here. The flash is erased or part written and has to be programmed again": "the on-instrument helper refused page %d of %d, and %s has no page buffer to write it from here. The flash is erased or part written and has to be programmed again",
   "The shape changed, so its coordinates box was closed": "The shape changed, so its coordinates box was closed",
   "Are you sure you want to permanently delete these %d files?\n\n%s\n\nThere is no Recycle Bin on the instrument.": "Are you sure you want to permanently delete these %d files?\n\n%s\n\nThere is no Recycle Bin on the instrument.",
-  "Busy - drop the files again when this job has finished": "Busy - drop the files again when this job has finished"
+  "Busy - drop the files again when this job has finished": "Busy - drop the files again when this job has finished",
+  "Checking the calibration constants - word %d of %d": "Checking the calibration constants - word %d of %d",
+  "The flash matches the image, but above it, at 0x%06X, it is not erased: part of the array did not take the erase.": "The flash matches the image, but above it, at 0x%06X, it is not erased: part of the array did not take the erase."
 }

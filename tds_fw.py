@@ -42,6 +42,8 @@ import sys
 import zipfile
 import time
 
+from i18n import say
+
 # ---------------------------------------------------------------- the map
 FLASH_BASE = 0x01000000
 NVRAM_BASE = 0x04000000
@@ -370,12 +372,12 @@ class Flash(object):
                 if status & self._flag(0x80) == self._flag(0x80):
                     break
                 if time.time() - began > limit:
-                    raise FirmwareError(
+                    raise FirmwareError(say(
                         "the flash did not finish erasing within %d seconds; "
-                        "status 0x%08X" % (limit, status))
+                        "status 0x%08X", limit, status))
                 if note:
-                    note("Erasing the flash ... %d s"
-                         % int(time.time() - start))
+                    note(say("Erasing the flash ... %d s",
+                             int(time.time() - start)))
                 time.sleep(0.5)
             # Ready is not the same as done. The part reports a failed
             # erase in its own status, and without this a block that
@@ -383,15 +385,15 @@ class Flash(object):
             # an unexplained verify failure - or, worse, as a page this
             # skipped because the image said it was blank.
             if status & self._flag(0x20):
-                raise FirmwareError(
+                raise FirmwareError(say(
                     "the flash reported an erase failure at 0x%08X "
                     "(status 0x%08X). The part is not taking the erase; "
-                    "nothing has been written." % (here, status))
+                    "nothing has been written.", here, status))
             if status & self._flag(0x08):
-                raise FirmwareError(
+                raise FirmwareError(say(
                     "the flash reported its programming voltage low at "
-                    "0x%08X (status 0x%08X). Nothing has been written."
-                    % (here, status))
+                    "0x%08X (status 0x%08X). Nothing has been written.",
+                    here, status))
             self.mon.poke(here, _both(0x5050))      # clear the status bits
             self.mon.poke(here, 0xFFFFFFFF)
 
@@ -404,8 +406,7 @@ class Flash(object):
             want = min(CHUNK, length - len(out))
             out += self.mon.read(base + len(out), want)
             if note and len(out) % 0x10000 < CHUNK:
-                note("Reading %s of %s"
-                     % (_size(len(out)), _size(length)),
+                note(say("Reading %s of %s", _size(len(out)), _size(length)),
                      len(out) / float(length))
         return bytes(out)
 
@@ -432,12 +433,12 @@ class Flash(object):
             for probe in PROBES:
                 self.mon.write(a, probe)
                 if self.mon.read(a, len(probe)) != probe:
-                    raise FirmwareError(
+                    raise FirmwareError(say(
                         "the NVRAM did not take a write at 0x%X - it read "
                         "back as it was. Nothing has been changed. On this "
                         "family that is the memory protection switch: it "
                         "has to be moved to unprotected before anything "
-                        "can be written." % a)
+                        "can be written.", a))
                 if self.mon.read(b, len(probe)) != probe:
                     return False
             return True
@@ -520,7 +521,7 @@ class Flash(object):
             self.mon.write(base + at, piece)
             at += len(piece)
             if note and at % 0x10000 < WCHUNK:
-                note("Writing %s of %s" % (_size(at), _size(len(data))),
+                note(say("Writing %s of %s", _size(at), _size(len(data))),
                      at / float(len(data)))
         return len(data) - skip
 
@@ -631,35 +632,43 @@ class Flash(object):
                 # and _refuse() says "not begun" - wrong by now, because
                 # erase() has already blanked it.
                 if not done and not self.paged:
-                    raise FirmwareError(
+                    raise FirmwareError(say(
                         "the on-instrument helper refused page %d of %d, and "
                         "%s has no page buffer to write it from here. The "
                         "flash is erased or part written and has to be "
-                        "programmed again"
-                        % (i + 1, pages, self.name or "this flash"))
+                        "programmed again",
+                        i + 1, pages, self.name or "this flash"))
                 if not done and i == 0:
                     self.helper = None
             if not done:
                 self._page_slow(addr, data)
                 fell_back += 1
             if note and i % 64 == 0:
-                note("Writing %s of %s" % (_size(i * PAGE), _size(len(image))),
-                     i / float(pages))
+                note(say("Writing %s of %s", _size(i * PAGE),
+                         _size(len(image))), i / float(pages))
         return fell_back, untouched
 
-    def verify(self, image, note=None):
-        """Where the part differs from `image`. Empty is a clean write."""
+    def verify(self, image, note=None, length=None):
+        """Where the part differs from `image`. Empty is a clean write.
+
+        `length` takes the check on past the image to that much of the
+        part, which has to read erased: what an old, longer firmware left
+        above a shorter one is still in the array if a device there did
+        not take the erase, and only a read finds that out.
+        """
+        total = max(length or 0, len(image))
         faults = []
-        for at in range(0, len(image), CHUNK):
+        for at in range(0, total, CHUNK):
             want = image[at:at + CHUNK]
+            want += b"\xFF" * (min(CHUNK, total - at) - len(want))
             got = self.mon.read(self.base + at, len(want))
             if got != want:
                 faults.append(at + _first_difference(got, want))
                 if len(faults) >= 16:
                     break
             if note and at % 0x10000 == 0:
-                note("Checking %s of %s" % (_size(at), _size(len(image))),
-                     at / float(len(image)))
+                note(say("Checking %s of %s", _size(at), _size(total)),
+                     at / float(total))
         return faults
 
 
@@ -1138,7 +1147,7 @@ def catalogue(folder, note=None):
     found, seen = {}, set()
     for i, (name, archive, blob, total) in enumerate(_every(folder)):
         if note:
-            note("Reading %s (%d of %d)" % (name, i + 1, total),
+            note(say("Reading %s (%d of %d)", name, i + 1, total),
                  (i + 1) / float(total))
         # A folder holding both the loose images and an archive of them
         # lists each image once. The loose file is taken because it is

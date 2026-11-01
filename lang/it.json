@@ -1051,7 +1051,6 @@
   "Reading %s (%d of %d)": "Lettura di %s (%d di %d)",
   "Reading the calibration constants - word %d of %d": "Lettura delle costanti di taratura - parola %d di %d",
   "this mask was written by a later version of the program (%d, and this reads %d)": "questa maschera è stata scritta da una versione più recente del programma (formato %d; questa versione legge il %d)",
-  "word %d of %d": "parola %d di %d",
   "tab": "tabulazione",
   "extra dot": "punto in più",
   "space": "spazio",
@@ -1113,7 +1112,6 @@
   "Asking whether the constants are locked": "Verifica se le costanti sono bloccate",
   "Sending the service unlock": "Invio dello sblocco di servizio",
   "Checking the calibration constants": "Verifica delle costanti di taratura",
-  "Checking the calibration constants - %s": "Verifica delle costanti di taratura - %s",
   "The calibration constants read differently the second time. That is the bus, not the instrument. Nothing has been written and nothing is lost, but the backup cannot be trusted, so this stopped here.": "La seconda lettura delle costanti di taratura è risultata diversa. La causa è il bus, non lo strumento. Non è stato scritto nulla e non si è perso nulla, ma il backup non è affidabile, quindi l'operazione si è fermata qui.",
   "Adding the words up to check them against word 0": "Somma delle parole per confrontarla con la parola 0",
   "Writing the calibration constants - word %d of %d": "Scrittura delle costanti di taratura - parola %d di %d",
@@ -1192,5 +1190,7 @@
   "the on-instrument helper refused page %d of %d, and %s has no page buffer to write it from here. The flash is erased or part written and has to be programmed again": "la routine ausiliaria dello strumento ha rifiutato la pagina %d di %d, e %s non ha un buffer di pagina per scriverla da qui. La flash è cancellata o scritta in parte e va riprogrammata",
   "The shape changed, so its coordinates box was closed": "La forma è cambiata, quindi la sua finestra delle coordinate è stata chiusa",
   "Are you sure you want to permanently delete these %d files?\n\n%s\n\nThere is no Recycle Bin on the instrument.": "Eliminare definitivamente questi %d file?\n\n%s\n\nLo strumento non ha un cestino.",
-  "Busy - drop the files again when this job has finished": "Occupato - rilasciare di nuovo i file al termine di questa operazione"
+  "Busy - drop the files again when this job has finished": "Occupato - rilasciare di nuovo i file al termine di questa operazione",
+  "Checking the calibration constants - word %d of %d": "Verifica delle costanti di taratura - parola %d di %d",
+  "The flash matches the image, but above it, at 0x%06X, it is not erased: part of the array did not take the erase.": "La flash corrisponde all'immagine, ma sopra di essa, a 0x%06X, non è cancellata: una parte della memoria non ha accettato la cancellazione."
 }

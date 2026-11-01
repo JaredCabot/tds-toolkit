@@ -55,6 +55,7 @@ import struct
 import time
 
 import tds_wfm
+from i18n import say
 
 #: The HARDCOPY fields this module reads and puts back, spelled in full.
 #: settings() names its keys from this list whatever the instrument
@@ -777,8 +778,8 @@ class TdsScr(object):
         was = self.settings()
         keyword = keyword or self.best()
         if not keyword:
-            raise IOError("This instrument offers no image format that "
-                          "can be decoded here.")
+            raise IOError(say("This instrument offers no image format "
+                              "that can be decoded here."))
         old_timeout = getattr(self.inst, "timeout", None)
         try:
             self.inst.write("HARDCOPY:PORT GPIB")
@@ -792,9 +793,9 @@ class TdsScr(object):
             # Not a plain comparison: an instrument may answer in the
             # short form, so a 680B that has taken GPIB says GPI.
             if not tds_wfm.keyword_is(now.get("PORT"), "GPIB"):
-                raise IOError("The instrument would not send its screen to "
-                              "the bus: HARDCOPY:PORT is %s."
-                              % now.get("PORT", "unknown"))
+                raise IOError(say("The instrument would not send its screen "
+                                  "to the bus: HARDCOPY:PORT is %s.",
+                                  now.get("PORT", "unknown")))
             got = now.get("FORMAT", "").upper()
             if progress:
                 progress(got)
