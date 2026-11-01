@@ -667,6 +667,16 @@ class Flash(object):
             done = False
             if self.helper is not None:
                 done = self.mon.branch(self.helper, addr, data)
+                # A part with no page buffer has nothing to fall back on,
+                # and _refuse() says "not begun" - wrong by now, because
+                # erase() has already blanked it.
+                if not done and not self.paged:
+                    raise FirmwareError(
+                        "the on-instrument helper refused page %d of %d, and "
+                        "%s has no page buffer to write it from here. The "
+                        "flash is erased or part written and has to be "
+                        "programmed again"
+                        % (i + 1, pages, self.name or "this flash"))
                 if not done and i == 0:
                     self.helper = None
             if not done:

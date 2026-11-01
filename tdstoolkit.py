@@ -444,6 +444,7 @@ LIBRARY_SAYS = (
     N_('the write was abandoned %s in - what is in the instrument now is part the backup and part what was there before'),
     N_('Writing %s of %s'),
     N_('programming abandoned after %d of %d pages - the flash is part written and has to be programmed again'),
+    N_('the on-instrument helper refused page %d of %d, and %s has no page buffer to write it from here. The flash is erased or part written and has to be programmed again'),
     N_('verify abandoned part way through'),
     N_('Checking %s of %s'),
     N_('Reading %s (%d of %d)'),
@@ -1371,6 +1372,7 @@ class Worker(object):
         # than breaking.
         folder = paths[0].rsplit("/", 1)[0] if paths else None
         before = self._folder_names(folder) if folder else []
+        skipped, running = [], 0
         for i, p in enumerate(paths, 1):
             self._progress(_("Deleting %d of %d: %s")
                            % (i, len(paths), p.rsplit("/", 1)[-1]),
@@ -1378,12 +1380,26 @@ class Worker(object):
             try:
                 self.delete(p)
                 done.append(p)
+                running = 0
             except Exception as exc:
                 failed.append((p, str(exc)))
+                # The rule uploads follow: one failure is a file, two in
+                # a row is the instrument. DELETE is what wears this
+                # firmware's mass storage out, so ploughing on through
+                # forty of them into a filesystem that has stopped only
+                # makes it worse.
+                running += 1
+                if running >= GIVE_UP_AFTER and i < len(paths):
+                    skipped = paths[i:]
+                    log_note("delete_many", "stopped after %d consecutive"
+                             " failures with %d file(s) not attempted"
+                             % (running, len(skipped)))
+                    break
         lost = self._lost(folder, before,
-                          [p.rsplit("/", 1)[-1] for p in paths])
+                          [p.rsplit("/", 1)[-1] for p in paths
+                           if p not in skipped])
         return {"done": done, "failed": failed, "lost": lost,
-                "folder": folder}
+                "folder": folder, "skipped": skipped}
 
     def upload_many(self, items):
         """`items` is [(path on the PC, destination path on the instrument)].
@@ -10119,6 +10135,10 @@ def run_gui():
         # whole point of it, and doing that unasked to an instrument
         # somebody is watching would be rude.
         setup = msk_setup_path(mask)
+        # Asked now, sent with the mask. Sent here, a No to "Send anyway?"
+        # or Cancel in the dialog below left the instrument's timebase and
+        # channel changed for a mask that never went.
+        queued = []
         if setup and messagebox.askyesno(
                 _("Send its setup too?"),
                 "%s\n\n%s\n\n%s"
@@ -10135,12 +10155,7 @@ def run_gui():
                      for ln in tds_set.contents(setup).splitlines()
                      if ln.strip() and not ln.strip().lstrip(":").upper()
                      .startswith("REM")]
-            # Kept so the answer can be compared with the question when
-            # the instrument has finished with it.
-            state["msetup"] = asked
-            say(_("Sending the setup ..."))
-            w.submit("set_send", lambda k, ln=lines,
-                     s=asked.get("source", "CH1"): k.set_send(ln, s))
+            queued.append((asked, lines))
         odd = mask.redrawn()
         if odd and not messagebox.askyesno(
                 _("Send anyway?"),
@@ -10192,6 +10207,13 @@ def run_gui():
                 return
             mask.source = against.get()
             dlg.destroy()
+            for asked, lines in queued:
+                # Kept so the answer can be compared with the question
+                # when the instrument has finished with it.
+                state["msetup"] = asked
+                say(_("Sending the setup ..."))
+                w.submit("set_send", lambda k, ln=lines,
+                         s=asked.get("source", "CH1"): k.set_send(ln, s))
             state["msent"] = mask.name or _("untitled")
             busy(True, "wait")
             say(_("Sending %(name)s to the instrument's mask "
@@ -12387,6 +12409,11 @@ def run_gui():
         """
         if dialog_open():
             return
+        # The ticks below are this instrument's. The dialog is not modal,
+        # so another one can be connected while it is open - and Write
+        # then sent this one's option set to that one, switching off
+        # whatever this one did not have.
+        opened_for = (state.get("addr"), state.get("idn"))
         dlg, pad = popup(_("Factory options"), resizable=(False, False))
         left = ttk.Frame(pad)
         left.pack(side="left", fill="y")
@@ -12546,6 +12573,15 @@ def run_gui():
             ).pack(anchor="w")
 
         def write():
+            if (state.get("addr"), state.get("idn")) != opened_for:
+                messagebox.showerror(_("Error"), _(
+                    "These options were read from %s, and a different "
+                    "instrument is connected now. Nothing has been "
+                    "written. Open Options... again to read this one.")
+                    % (model_of(opened_for[1]) or opened_for[0]),
+                    parent=dlg)
+                dlg.destroy()
+                return
             wants = [(word, on if var.get() else 0)
                      for word, (var, on) in boxes.items()]
             if not messagebox.askyesno(
@@ -15168,6 +15204,9 @@ def run_gui():
             state.pop(key, None)
         lim_verdict()
         bak_relabel()
+        # The System tab's identity line is only rewritten by a read, and
+        # it went on naming the last instrument while the next was in use.
+        lbl_sysidn.config(text="-")
         root.title("TDS Toolkit %s - %s"
                    % (__version__, _("connecting to %s") % addr))
         busy(True, "wait")
@@ -18609,14 +18648,23 @@ def run_gui():
                              if c not in state["seen_events"]]
                     state["seen_events"].update(payload["codes"])
                     if fresh:
-                        messagebox.showwarning(
-                            _("The instrument reported something"),
-                            _("While doing '%s' the instrument reported:\n\n%s"
+                        # Shown from its own turn of the event loop, not
+                        # from in here. The job that raised it is usually
+                        # still running, and a box opened inside the pump
+                        # held up its progress, its result and the busy
+                        # release until somebody found the box and closed
+                        # it - which is how a long listing stalled the
+                        # screenshot run.
+                        root.after(0, lambda said=_(
+                            "While doing '%s' the instrument reported:\n\n%s"
                             "\n\nThis was not expected. It has been written "
                             "to:\n%s\n\nIf anything looks wrong on the "
                             "instrument, stop and say so before deleting "
                             "anything else.")
-                            % (payload["where"], payload["detail"], LOGFILE))
+                            % (payload["where"], payload["detail"], LOGFILE):
+                            messagebox.showwarning(
+                                _("The instrument reported something"),
+                                said))
                 elif label == "download":
                     busy(False)
                     set_size(os.path.basename(payload["path"]),
@@ -18651,6 +18699,17 @@ def run_gui():
                     busy(False)
                     say(_("Deleted %d files") % len(payload["done"]))
                     report_failures("delete", payload["failed"])
+                    if payload.get("skipped"):
+                        messagebox.showwarning(
+                            _("Delete"),
+                            _("The delete stopped after %(failed)d file(s) "
+                              "failed one after another, and %(skipped)d "
+                              "file(s) were not attempted.\n\nThat pattern "
+                              "means the instrument stopped answering "
+                              "rather than that those files are bad.\n\n"
+                              "Power cycle the instrument, then try again.")
+                            % {"failed": len(payload["failed"]),
+                               "skipped": len(payload["skipped"])})
                     report_losses(payload)
                     navigate(state["cwd"], force=True)
                 elif label == "survey":

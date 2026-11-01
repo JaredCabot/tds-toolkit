@@ -1195,5 +1195,8 @@
   "%s is not the file the catalogue listed - it has changed since it was scanned. Nothing has been written. Refresh the list and try again.": "%s — не тот файл, который был показан в списке: он изменился после сканирования. Ничего не записано. Обновите список и повторите попытку.",
   "%s has four numbers on a line where two were expected - if the decimals are commas, separate the columns with semicolons": "%s: в строке четыре числа вместо ожидаемых двух - если десятичный разделитель — запятая, разделяйте столбцы точкой с запятой",
   "%(file)s could not be written:\n\n%(why)s\n\nSave it somewhere else?": "Не удалось записать %(file)s:\n\n%(why)s\n\nСохранить в другом месте?",
-  "Nothing was saved": "Ничего не сохранено"
+  "Nothing was saved": "Ничего не сохранено",
+  "These options were read from %s, and a different instrument is connected now. Nothing has been written. Open Options... again to read this one.": "Эти опции были прочитаны с %s, а сейчас подключён другой прибор. Ничего не записано. Откройте «Опции...» снова, чтобы прочитать этот прибор.",
+  "The delete stopped after %(failed)d file(s) failed one after another, and %(skipped)d file(s) were not attempted.\n\nThat pattern means the instrument stopped answering rather than that those files are bad.\n\nPower cycle the instrument, then try again.": "Удаление остановлено: файлов с ошибкой подряд — %(failed)d, не предпринималось — %(skipped)d.\n\nТакая картина означает, что прибор перестал отвечать, а не что эти файлы повреждены.\n\nВыключите и снова включите прибор, затем повторите попытку.",
+  "the on-instrument helper refused page %d of %d, and %s has no page buffer to write it from here. The flash is erased or part written and has to be programmed again": "вспомогательная программа прибора отказалась записать страницу %d из %d, а у %s нет страничного буфера, чтобы записать её отсюда. Флеш-память стёрта или записана частично, её нужно запрограммировать заново"
 }

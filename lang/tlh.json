@@ -1195,5 +1195,8 @@
   "%s is not the file the catalogue listed - it has changed since it was scanned. Nothing has been written. Refresh the list and try again.": "%s tetlh ngaSbogh De'wI' 'oHbe'. nejDI' choH. pagh ghItlhlu'. tetlh chu'moH 'ej nID qa'.",
   "%s has four numbers on a line where two were expected - if the decimals are commas, separate the columns with semicolons": "%s: wa' tlheghDaq loS mI'mey tu'lu', 'ach cha' pIHlu'pu' - mI' 'ay'mey tlhegh mach lo'chugh, Daq mach tlhegh mach je lo'taHvIS tetlh 'ay'mey yIchev",
   "%(file)s could not be written:\n\n%(why)s\n\nSave it somewhere else?": "%(file)s ghItlhlaHbe'lu':\n\n%(why)s\n\nlatlh DaqDaq Dapol'a'?",
-  "Nothing was saved": "pagh pollu'"
+  "Nothing was saved": "pagh pollu'",
+  "These options were read from %s, and a different instrument is connected now. Nothing has been written. Open Options... again to read this one.": "%s janvo' DuHmeyvam laDlu'pu', 'ach DaH latlh jan rarlu'. pagh ghItlhlu'. janvam DalaDmeH wIvmey ... yIpoSmoHqa'.",
+  "The delete stopped after %(failed)d file(s) failed one after another, and %(skipped)d file(s) were not attempted.\n\nThat pattern means the instrument stopped answering rather than that those files are bad.\n\nPower cycle the instrument, then try again.": "teqlu'taHvIS %(failed)d ghItlh tlhoS Qaghpu', vaj mevlu'; %(skipped)d ghItlh nIDlu'be'.\n\njan jangbe'chu'mo' Qagh, ghItlhmey QIHlu'pu'mo' Qaghbe'.\n\njan yIchu'Ha' 'ej yIchu'qa', ghIq nID qa'.",
+  "the on-instrument helper refused page %d of %d, and %s has no page buffer to write it from here. The flash is erased or part written and has to be programmed again": "%d 'ay' (naQ %d) lajQo' jan boQwI'; %s Daq 'ay' ngaSwI' tu'lu'be', vaj naDev ghItlhlaHbe'lu'. flash teqlu'pu' pagh bID ghItlhlu'pu'; ghItlhqa'nIS"
 }

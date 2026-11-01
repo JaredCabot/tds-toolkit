@@ -125,6 +125,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   zip** was listed but could not be written. **A setup line** read later
   commands under the first command's path (`EDGE:SOURCE CH2;SLOPE FALL`
   lost its slope) and took a channel switched off as the mask's source.
+- **The Factory options dialog could write one instrument's options to
+  another.** Left open while a different scope was connected, Write sent
+  the first scope's ticks to the second and switched off whatever the first
+  did not have. It now refuses and says so.
+- **The setup beside a mask was sent before the last question.** Answering
+  No to "Send anyway?", or Cancel in the send dialog, still changed the
+  instrument's timebase and channel. Nothing is sent until Send is pressed.
+- **A multi-file delete carried on through failures.** It now stops after
+  two in a row, as an upload does, and says how many were not attempted.
+- **The "instrument reported something" warning held up the job behind
+  it** until it was closed; it now opens once the result loop has had its
+  turn. **A refused page after the erase on a part with no page buffer**
+  was reported as a write that had not begun; it now says the flash has to
+  be programmed again.
 - Smaller: a malformed block length or a waveform file whose time step is
   NaN, infinite or zero is refused rather than loaded; an ISF save no
   longer fails on a non-ASCII name; a saved error log no longer ends its

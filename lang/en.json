@@ -1195,5 +1195,8 @@
   "%s is not the file the catalogue listed - it has changed since it was scanned. Nothing has been written. Refresh the list and try again.": "%s is not the file the catalogue listed - it has changed since it was scanned. Nothing has been written. Refresh the list and try again.",
   "%s has four numbers on a line where two were expected - if the decimals are commas, separate the columns with semicolons": "%s has four numbers on a line where two were expected - if the decimals are commas, separate the columns with semicolons",
   "%(file)s could not be written:\n\n%(why)s\n\nSave it somewhere else?": "%(file)s could not be written:\n\n%(why)s\n\nSave it somewhere else?",
-  "Nothing was saved": "Nothing was saved"
+  "Nothing was saved": "Nothing was saved",
+  "These options were read from %s, and a different instrument is connected now. Nothing has been written. Open Options... again to read this one.": "These options were read from %s, and a different instrument is connected now. Nothing has been written. Open Options... again to read this one.",
+  "The delete stopped after %(failed)d file(s) failed one after another, and %(skipped)d file(s) were not attempted.\n\nThat pattern means the instrument stopped answering rather than that those files are bad.\n\nPower cycle the instrument, then try again.": "The delete stopped after %(failed)d file(s) failed one after another, and %(skipped)d file(s) were not attempted.\n\nThat pattern means the instrument stopped answering rather than that those files are bad.\n\nPower cycle the instrument, then try again.",
+  "the on-instrument helper refused page %d of %d, and %s has no page buffer to write it from here. The flash is erased or part written and has to be programmed again": "the on-instrument helper refused page %d of %d, and %s has no page buffer to write it from here. The flash is erased or part written and has to be programmed again"
 }
