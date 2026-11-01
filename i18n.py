@@ -71,11 +71,19 @@ def discover(appdir=None):
             try:
                 with open(path, encoding="utf-8") as fh:
                     data = json.load(fh)
-                meta = data.get("_meta", {})
+                meta = data.get("_meta")
+                if not isinstance(meta, dict):
+                    meta = {}
+                # A name that is not text - null, a number - would reach
+                # available()'s .upper() and take every language with it.
+                name = meta.get("name")
+                name = name if isinstance(name, str) and name else code
+                native = meta.get("native")
+                native = native if isinstance(native, str) and native else name
                 found[code] = {
                     "code": code,
-                    "name": meta.get("name", code),
-                    "native": meta.get("native", meta.get("name", code)),
+                    "name": name,
+                    "native": native,
                     "path": path,
                 }
             except Exception:

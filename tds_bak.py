@@ -145,6 +145,31 @@ def unpack(path, folder, under=""):
     return out
 
 
+def split_commands(text):
+    """`text` cut at every ';' that is not inside a quoted string.
+
+    *LRN? carries channel labels, hardcopy file names and MESSAGE text
+    in quotes, and any of them can hold a ';'. Cut there, the string was
+    sent as two commands, the second a fragment under the previous path.
+    A quote inside a string is doubled, which this reads as the string
+    closing and opening again - the same thing for finding the cuts.
+    """
+    out, cur, quote = [], [], None
+    for ch in text:
+        if quote:
+            if ch == quote:
+                quote = None
+        elif ch in "\"'":
+            quote = ch
+        elif ch == ";":
+            out.append("".join(cur))
+            cur = []
+            continue
+        cur.append(ch)
+    out.append("".join(cur))
+    return out
+
+
 def setup_lines(text):
     """*LRN? split into commands that can be sent one at a time.
 
@@ -155,7 +180,7 @@ def setup_lines(text):
     takes the rest of the message with it and there is no saying which.
     """
     out, path = [], []
-    for chunk in (text or "").strip().split(";"):
+    for chunk in split_commands((text or "").strip()):
         chunk = chunk.strip()
         if not chunk:
             continue

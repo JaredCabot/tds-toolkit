@@ -235,7 +235,7 @@ class Mask(object):
                 if not part:
                     continue
                 try:
-                    numbers.append(float(part))
+                    numbers.append(finite(part))
                 except ValueError:
                     numbers = []
                     break
@@ -312,7 +312,7 @@ class Mask(object):
                 mask.margin = bool(bits) and bits[0] not in ("0", "OFF")
                 if len(bits) > 1:
                     try:
-                        mask.margin_percent = float(bits[1])
+                        mask.margin_percent = finite(bits[1])
                     except ValueError:
                         pass
             elif word.startswith("SEG"):
@@ -329,7 +329,7 @@ class Mask(object):
                     if not part:
                         continue
                     try:
-                        numbers.append(float(part))
+                        numbers.append(finite(part))
                     except ValueError:
                         raise MaskError("segment %d has %r in it, which is "
                                         "not a number" % (n, part[:20]))
@@ -344,6 +344,21 @@ class Mask(object):
         return mask
 
 
+def finite(text):
+    """float(), refusing what float() lets through and a mask cannot hold.
+
+    'nan', 'inf' and '1e999' all parse. Let into a Mask they got past
+    every check except the one before sending, then failed in bounds(),
+    the drawing and to_msk (math.floor(nan) is a ValueError, inf an
+    OverflowError) instead of as a MaskError.
+    """
+    import math
+    value = float(text)
+    if not math.isfinite(value):
+        raise ValueError("%r is not a finite number" % (text,))
+    return value
+
+
 def clean_name(name, taken=()):
     """An 8.3 file name for a mask, unique among those already there.
 
@@ -356,7 +371,9 @@ def clean_name(name, taken=()):
     """
     keep = []
     for ch in (name or "MASK").upper():
-        if ch.isalnum():
+        # ASCII only: str.isalnum() is Unicode-aware, and a name in
+        # Japanese or with an accent gave a file name that is not 8.3.
+        if ch.isascii() and ch.isalnum():
             keep.append(ch)
         elif keep and keep[-1] != "_":
             keep.append("_")
@@ -950,7 +967,11 @@ def env_pairs(text):
         for one in body.split(","):
             one = one.strip()
             if one:
-                nums.append(int(float(one)))
+                try:
+                    nums.append(int(finite(one)))
+                except ValueError:
+                    raise MaskError("the CURVE in this file has %r in it, "
+                                    "which is not a number" % one[:20])
         return [(nums[i], nums[i + 1]) for i in range(0, len(nums) - 1, 2)]
     return []
 
@@ -984,9 +1005,10 @@ def from_envelope(data, name=""):
         yoff = int(float(fields.get("YOFF") or 0))
     except ValueError:
         yoff = 0
-    # An eight-bit file would carry YOFF and YMULT 256 times the
-    # sixteen-bit pair; the curve itself says which, since a genuine
-    # eight-bit read cannot reach past 127.
+    # Read as sixteen-bit counts. Every template met so far - the
+    # shipped ones and this program's own - is sixteen-bit, and nothing
+    # here tells an eight-bit file apart: one would read 256 times too
+    # narrow.
     runs, current = [], []
     for lo, hi in pairs:
         if lo <= -ENV_NO_LIMIT or hi >= ENV_NO_LIMIT:

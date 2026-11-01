@@ -401,6 +401,11 @@ def decode_pcx(data):
     width, height = _shape(xmax - xmin + 1, ymax - ymin + 1, bits, (1, 8))
     if not 0 < stride <= MAX_SIDE:
         raise ValueError("a PCX row of %r bytes is not a screen" % (stride,))
+    # A row shorter than the width it declares sent the 1-bit unpacking
+    # past the end of the row and shrank the 8-bit picture under it.
+    if stride < (width * bits + 7) // 8:
+        raise ValueError("a PCX row of %d bytes cannot hold %d pixels"
+                         % (stride, width))
     end = len(data)
     palette = []
     if bits == 8 and len(data) > 769 and data[-769] == 0x0C:

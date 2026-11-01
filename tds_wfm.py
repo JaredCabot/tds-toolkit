@@ -460,10 +460,17 @@ class Waveform(object):
         struct.pack_into(">d", head, LLWFM_DURATION,
                          xincr * count if span is None else span)
         struct.pack_into(">d", head, LLWFM_XINCR, xincr)
-        struct.pack_into(">d", head, LLWFM_POSITION,
-                         offset / LLWFM_COUNTS_PER_DIV)
+        # The same for the scale and the position: from_wfm divides them
+        # by 6400 and this multiplies back, which does not always give
+        # the same double. The file's own numbers are written back when
+        # the record still says the same thing, so a .WFM opened and
+        # saved is the file it was (E9).
+        struct.pack_into(">d", head, LLWFM_POSITION, _kept(
+            getattr(self, "llwfm_position", None),
+            offset / LLWFM_COUNTS_PER_DIV))
         struct.pack_into(">d", head, LLWFM_YZERO, self.number("YZERO"))
-        struct.pack_into(">d", head, LLWFM_PERDIV, per_div)
+        struct.pack_into(">d", head, LLWFM_PERDIV, _kept(
+            getattr(self, "llwfm_perdiv", None), per_div))
         struct.pack_into(">i", head, LLWFM_COUNT, count)
         struct.pack_into(">H", head, LLWFM_COUNT16, count & 0xFFFF)
         struct.pack_into(">H", head, LLWFM_TRIGGER,
@@ -542,7 +549,8 @@ def from_isf(data, name="file"):
     dropped, since the only thing that must be understood to plot it is
     the handful of scaling fields.
     """
-    at = data.find(b"CURVE")
+    # CURV is the short form, and CURVE starts with it.
+    at = data.find(b"CURV")
     if at < 0:
         raise ValueError("no CURVE block - this is not an ISF file")
     head = data[:at].decode("latin-1")
@@ -558,7 +566,14 @@ def from_isf(data, name="file"):
         if not field or " " not in field:
             continue
         key, _sep, value = field.partition(" ")
-        pre[key.split(":")[-1].upper()] = value.strip()
+        key = key.split(":")[-1].upper()
+        # Short-form headers (YMU, XIN, PT_O, BYT_N ...) under the long
+        # names everything else looks the fields up by.
+        for long_name in ISF_KEYS:
+            if len(key) >= 3 and long_name.startswith(key):
+                key = long_name
+                break
+        pre[key] = value.strip()
     width = 1
     try:
         width = max(1, min(2, int(float(pre.get("BYT_NR", "1")))))
@@ -566,8 +581,49 @@ def from_isf(data, name="file"):
         pass
     if width == 2 and len(body) % 2:
         raise ValueError("an odd number of bytes for a 16-bit waveform")
+    body = _as_signed_msb(body, pre, width)
     source = pre.get("WFID", "").strip('"').split(",")[0].strip() or name
     return Waveform(source, body, pre, width=width)
+
+
+#: The preamble's long names, which a short-form header abbreviates.
+ISF_KEYS = ("BYT_NR", "BIT_NR", "ENCDG", "BN_FMT", "BYT_OR", "NR_PT",
+            "PT_FMT", "XUNIT", "XINCR", "XZERO", "PT_OFF", "YUNIT",
+            "YMULT", "YOFF", "YZERO", "WFID")
+
+
+def _as_signed_msb(body, pre, width):
+    """The curve as signed, most significant byte first - what levels()
+    unpacks - whatever order and sign the file says it is in.
+
+    The instrument writes RI and MSB by default, but both are settable
+    (DATA:ENCDG SRIBINARY, RPBINARY ...), and ISFs from other programs
+    use them. Read as if they were the default, a little-endian file
+    came out as noise and an unsigned one half a screen off. The codes
+    are turned round here and YOFF moved with them, so every volt comes
+    out where the file put it.
+    """
+    order = pre.get("BYT_OR", "MSB").strip().upper()
+    fmt = pre.get("BN_FMT", "RI").strip().upper()
+    if width == 2 and order.startswith("LSB"):
+        swapped = bytearray(body)
+        swapped[0::2], swapped[1::2] = body[1::2], body[0::2]
+        body = bytes(swapped)
+        pre["BYT_OR"] = "MSB"
+    if fmt.startswith("RP"):
+        half = 1 << (8 * width - 1)
+        if width == 2:
+            codes = struct.unpack(">%dH" % (len(body) // 2), body)
+            body = struct.pack(">%dh" % len(codes),
+                               *[c - half for c in codes])
+        else:
+            body = bytes((b - half) & 0xFF for b in bytearray(body))
+        try:
+            pre["YOFF"] = repr(float(pre.get("YOFF", "0")) - half)
+        except ValueError:
+            pass
+        pre["BN_FMT"] = "RI"
+    return body
 
 
 def _is_number(text):
@@ -624,6 +680,13 @@ def from_csv(data, name="file"):
                 raise
             # A header row names the columns and their units.
             low = line.lower()
+            if told and len(parts) == 2 and not times:
+                # This program's own header, under its own comment line:
+                # the units exactly as they were written. Matching words
+                # turned an amps probe's "A" or a math trace's "VV" into
+                # volts on the way back in.
+                xunit, yunit = parts[0] or "s", parts[1] or "V"
+                continue
             for unit, mark in (("s", "second"), ("s", "time")):
                 if mark in low:
                     xunit = unit
@@ -921,7 +984,18 @@ def from_wfm(data, name="file"):
     # what it wrote - eight bytes of difference in a file that is
     # otherwise identical. Measured over seven records on a 784D.
     wave.llwfm_duration = struct.unpack_from(">d", head, LLWFM_DURATION)[0]
+    wave.llwfm_perdiv = perdiv
+    wave.llwfm_position = struct.unpack_from(">d", head, LLWFM_POSITION)[0]
     return wave
+
+
+def _kept(original, worked_out):
+    """The file's own double where the worked-out one is only rounding
+    away from it, and the worked-out one where something changed."""
+    if original is not None and abs(original - worked_out) <= \
+            1e-9 * max(abs(original), abs(worked_out), 1e-300):
+        return original
+    return worked_out
 
 
 def load(path):
@@ -945,7 +1019,7 @@ def load(path):
             "This is a waveform file from a TDS5000/6000/7000 or a "
             "DPO/MSO - a different and much later format from the one "
             "the TDS500/600/700 write. It is not handled here.")
-    if b"CURVE" in data[:4096] and b"#" in data:
+    if b"CURV" in data[:4096] and b"#" in data:
         wave = from_isf(data, name)
     else:
         wave = from_csv(data, name)
@@ -2779,6 +2853,24 @@ class TdsWfm(object):
     def q(self, cmd):
         return self._payload(self.inst.query(cmd)).strip()
 
+    def _missing(self, what):
+        """Has `what` now gone unanswered twice running?
+
+        A firmware without the command and an instrument busy finishing
+        a hardcopy or a SAVE look the same from here: no answer before
+        the short timeout. Taking the first silence for "not on this
+        firmware" switched DPO detection or the mask subsystem off for
+        the rest of the session over one slow moment. Two in a row is
+        the firmware; an answer in between starts the count again.
+        """
+        n = getattr(self, "_misses", {})
+        self._misses = n
+        n[what] = n.get(what, 0) + 1
+        return n[what] >= 2
+
+    def _answered(self, what):
+        getattr(self, "_misses", {}).pop(what, None)
+
     # -- what the instrument draws in ------------------------------------
 
     COLOUR_TIMEOUT_MS = 4000
@@ -3357,11 +3449,13 @@ class TdsWfm(object):
                 self.inst.clear()
             except Exception:
                 pass
-            self._masks = False
+            if self._missing("masks"):
+                self._masks = False
             return None
         finally:
             if was is not None:
                 self.inst.timeout = was
+        self._answered("masks")
         out = []
         for n in range(1, self.MASK_SEGMENTS + 1):
             try:
@@ -3403,11 +3497,13 @@ class TdsWfm(object):
                 self.inst.clear()
             except Exception:
                 pass
-            self._dpo = False          # no such command here
+            if self._missing("dpo"):
+                self._dpo = False      # no such command here
             return False
         finally:
             if was is not None:
                 self.inst.timeout = was
+        self._answered("dpo")
         return mode.startswith("INSTAVU") or mode.startswith("DPO")
 
     def send_mask(self, lines, display=True):
