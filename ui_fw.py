@@ -12,7 +12,7 @@ import tds_fw
 from i18n import gettext as _
 from tds_fs import DEFAULT_ADDR
 from tdstoolkit import (APPDIR, load_settings, log_note, model_of, resource,
-                         save_settings)
+                        save_settings)
 
 
 def build(ui):
@@ -637,7 +637,7 @@ def build(ui):
         fw_say_state()
         fw_buttons()
         ui.say(_("The monitor answered - the flash is %s")
-            % payload["flash"])
+               % payload["flash"])
 
     def pump_fw_catalogue(payload):
         ui.busy(False)
@@ -646,8 +646,8 @@ def build(ui):
             {m for im in payload["images"] for m in im.models}))
         fw_fill()
         ui.say(_("%(count)d firmware images in %(folder)s")
-            % {"count": len(payload["images"]),
-               "folder": payload["folder"]})
+               % {"count": len(payload["images"]),
+                  "folder": payload["folder"]})
 
     def pump_fw_run(payload):
         # The report ends by telling the user to switch off, so
