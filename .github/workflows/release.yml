@@ -46,9 +46,9 @@ jobs:
             asset: tds-toolkit-macos-arm64
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
@@ -110,7 +110,7 @@ jobs:
           "./dist/${{ matrix.asset }}" --version
           "./dist/${{ matrix.asset }}" --check-translations
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.asset }}
           path: dist/${{ matrix.asset }}
@@ -124,9 +124,9 @@ jobs:
     steps:
       # For the release notes below, which are a file in the repository
       # rather than a heredoc in here.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: built
           merge-multiple: true
@@ -155,7 +155,7 @@ jobs:
       # Not available on a user-owned private repository, and a release
       # is not worth failing over a signature that cannot be made. It
       # starts working by itself the day the repository goes public.
-      - uses: actions/attest-build-provenance@v2
+      - uses: actions/attest-build-provenance@v4
         continue-on-error: true
         with:
           # Globbed, so one runner being unavailable costs that binary
