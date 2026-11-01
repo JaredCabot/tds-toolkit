@@ -105,9 +105,15 @@ UPLOADS_FILE = os.path.join(APPDIR, "tdstoolkit-uploads.json")
 
 
 def _json_load(path):
-    """A dict from `path`, or {} for anything else. Never raises."""
+    """A dict from `path`, or {} for anything else. Never raises.
+
+    UTF-8, with or without the byte-order mark Notepad adds, the same
+    as the settings file (A15). The locale's encoding, cp1252 on most
+    Windows machines, read an IDN or a path in the manifest differently
+    from how a hand edit had saved it.
+    """
     try:
-        with open(path, "r") as fh:
+        with open(path, "r", encoding="utf-8-sig") as fh:
             got = json.load(fh)
         return got if isinstance(got, dict) else {}
     except Exception:
@@ -115,12 +121,14 @@ def _json_load(path):
 
 
 def _json_save(path, data):
-    """Best effort: a lost manifest costs a re-upload, not data."""
+    """Best effort: a lost manifest costs a re-upload, not data. True if
+    it was written."""
     try:
-        with open(path, "w") as fh:
+        with open(path, "w", encoding="utf-8") as fh:
             json.dump(data, fh)
+        return True
     except Exception:
-        pass
+        return False
 
 
 def load_uploads():
@@ -146,21 +154,31 @@ def load_transfers():
 
 
 def save_transfers(state):
-    _json_save(TRANSFERS_FILE, state)
+    return _json_save(TRANSFERS_FILE, state)
+
+
+#: The lock-outs this run has set, held in memory as well as in the file.
+#: The file is what carries one past a restart; this is what keeps it in
+#: force when the file cannot be written - a program run from a read-only
+#: folder used to save nothing and so never lock out at all (A12).
+_transfers_here = {}
 
 
 def transfer_blocked(addr):
     """Why this instrument is locked out after a failed transfer, or None."""
-    return load_transfers().get(addr or "")
+    return (load_transfers().get(addr or "")
+            or _transfers_here.get(addr or ""))
 
 
 def set_transfer_block(addr, why):
+    _transfers_here[addr or ""] = why
     state = load_transfers()
     state[addr or ""] = why
     save_transfers(state)
 
 
 def clear_transfer_block(addr):
+    _transfers_here.pop(addr or "", None)
     state = load_transfers()
     if state.pop(addr or "", None) is not None:
         save_transfers(state)
@@ -178,34 +196,35 @@ _formatted = set()
 #: One program on the bus at a time. A second program sending to the
 #: instrument during a transfer lands its command inside the file being
 #: written (FILE-TRANSFER-HARDENING.md section 1), so only one copy may
-#: hold an instrument session at once. A pid file beside the settings: a
-#: pid that is alive and not ours means the bus is taken; a holder that
-#: died leaves a pid that is not, and the lock is taken over rather than
-#: blocking forever.
+#: hold an instrument session at once. The lock is the operating
+#: system's, on a file beside the settings: it goes when the process
+#: goes, however it goes. The pid-file lock it replaced was left behind by
+#: a power cut, Task Manager or a hard crash, and Windows hands pids out
+#: again quickly, so an unrelated program could hold that number and
+#: block every connect until somebody found the file and deleted it (A8).
+#: The pid is still written into the file, for the message.
 LOCKFILE = os.path.join(APPDIR, "tdstoolkit.lock")
 _lock_pid = None
+_lock_fh = None
+#: Where in the file the lock sits: past the pid, so a second copy can
+#: still read who holds it. Windows locks are mandatory, and a lock over
+#: the text would make it unreadable.
+LOCK_AT = 1024
 
 
-def _pid_alive(pid):
-    if pid <= 0:
-        return False
-    if os.name == "nt":
-        import ctypes
-        QUERY = 0x1000                       # PROCESS_QUERY_LIMITED_INFORMATION
-        STILL_ACTIVE = 259
-        k = ctypes.windll.kernel32
-        handle = k.OpenProcess(QUERY, False, pid)
-        if not handle:
-            return False
-        code = ctypes.c_ulong()
-        ok = k.GetExitCodeProcess(handle, ctypes.byref(code))
-        k.CloseHandle(handle)
-        return bool(ok) and code.value == STILL_ACTIVE
+def _os_lock(fh):
+    """Lock one byte of `fh` without waiting. True if this process has it."""
     try:
-        os.kill(pid, 0)
+        if os.name == "nt":
+            import msvcrt
+            fh.seek(LOCK_AT)
+            msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return True
     except OSError:
         return False
-    return True
 
 
 def take_process_lock(addr=""):
@@ -216,41 +235,50 @@ def take_process_lock(addr=""):
     cannot be written - a missing safeguard is better than a program that
     will not start.
     """
-    global _lock_pid
+    global _lock_pid, _lock_fh
     ours = os.getpid()
     if _lock_pid == ours:
         return None
     try:
-        with open(LOCKFILE) as fh:
-            held = int((fh.read().split() or ["0"])[0])
+        fh = open(LOCKFILE, "a+")
     except Exception:
-        held = 0
-    if held and held != ours and _pid_alive(held):
+        return None
+    if not _os_lock(fh):
+        fh.close()
+        # Unbuffered, and only the first 64 bytes: a buffered read asks
+        # Windows for a whole block, which overlaps the locked byte and
+        # is refused, and the message then named process 0.
+        try:
+            with open(LOCKFILE, "rb", buffering=0) as raw:
+                held = int((raw.read(64).split() or [b"0"])[0])
+        except Exception:
+            held = 0
         return ("Another copy of TDS Toolkit (process %d) is using the "
                 "instrument. Only one may at a time - a second program's "
                 "commands would land inside a file being transferred. Close "
                 "the other copy, then connect again." % held)
     try:
-        with open(LOCKFILE, "w") as fh:
-            fh.write("%d %s" % (ours, addr or ""))
-        _lock_pid = ours
-        atexit.register(release_process_lock)
+        fh.seek(0)
+        fh.truncate()
+        fh.write("%d %s" % (ours, addr or ""))
+        fh.flush()
     except Exception:
         pass
+    _lock_fh, _lock_pid = fh, ours
+    atexit.register(release_process_lock)
     return None
 
 
 def release_process_lock():
-    global _lock_pid
-    if _lock_pid != os.getpid():
+    global _lock_pid, _lock_fh
+    if _lock_pid != os.getpid() or _lock_fh is None:
         return
     try:
-        with open(LOCKFILE) as fh:
-            if int((fh.read().split() or ["0"])[0]) == os.getpid():
-                os.remove(LOCKFILE)
+        _lock_fh.close()                 # closing lets the lock go
+        os.remove(LOCKFILE)
     except Exception:
         pass
-    _lock_pid = None
+    _lock_pid, _lock_fh = None, None
 
 
 def address_argument(argv=None):
@@ -443,23 +471,17 @@ LIBRARY_SAYS = (
     N_('%s is a zip file, but not a backup made by this program - there is no %s inside it.'),
     N_('%s holds an entry this will not write: %s'),
     # tds_fw.py
-    N_('erase abandoned part way through - the flash is part erased and has to be programmed again'),
     N_('the flash did not finish erasing within %d seconds; status 0x%08X'),
     N_('Erasing the flash ... %d s'),
     N_('the flash reported an erase failure at 0x%08X (status 0x%08X). The part is not taking the erase; nothing has been written.'),
     N_('the flash reported its programming voltage low at 0x%08X (status 0x%08X). Nothing has been written.'),
-    N_('read abandoned part way through'),
     N_('Reading %s of %s'),
     N_('the NVRAM did not take a write at 0x%X - it read back as it was. Nothing has been changed. On this family that is the memory protection switch: it has to be moved to unprotected before anything can be written.'),
-    N_('the write was abandoned %s in - what is in the instrument now is part the backup and part what was there before'),
     N_('Writing %s of %s'),
-    N_('programming abandoned after %d of %d pages - the flash is part written and has to be programmed again'),
     N_('the on-instrument helper refused page %d of %d, and %s has no page buffer to write it from here. The flash is erased or part written and has to be programmed again'),
-    N_('verify abandoned part way through'),
     N_('Checking %s of %s'),
     N_('Reading %s (%d of %d)'),
     # tds_cal.py
-    N_('reading the calibration constants was abandoned part way through'),
     N_('Reading the calibration constants - word %d of %d'),
     # tds_msk.py
     N_('this mask was written by a later version of the program (%d, and this reads %d)'),
@@ -1432,14 +1454,11 @@ class Worker(object):
                     with open(src, "rb") as fh:
                         data = fh.read()
                 except Exception as exc:
+                    # A file on the PC that will not open says nothing
+                    # about the instrument, so it is not counted towards
+                    # giving up (A10): two unreadable local files used to
+                    # stop a healthy instrument's batch.
                     failed.append((dest, str(exc)))
-                    running += 1
-                    if running >= GIVE_UP_AFTER and i < len(items):
-                        skipped = [d for _s, d in items[i:]]
-                        log_note("upload_many", "stopped after %d consecutive"
-                                 " failures with %d file(s) not attempted"
-                                 % (running, len(skipped)))
-                        break
                     continue
                 # Skip a file already on the instrument byte for byte.
                 # Rewriting what is already there is the churn that takes
@@ -2397,25 +2416,30 @@ class Worker(object):
         # On a scale that shows all of it before anything is read
         # off it: a clipped record has the wrong middle, and the
         # middle is the trigger level.
-        was = self.chan_fits(name)
-        gaps, level = [], 0.0
-        for _try in range(4):
-            try:
-                wave = self.wfm.capture([name])[0][0]
-            except Exception:
-                time.sleep(0.2)
-                continue
-            volts = [v for _t, v in wave.points()]
-            if max(volts) - min(volts) < 0.1:
-                continue
-            level = (max(volts) + min(volts)) / 2.0
-            edges = tds_wfm.crossings_of(wave)
-            gaps += [b - a for a, b in zip(edges, edges[1:])]
-            if len(gaps) >= 4:
-                break
-        self.chan_back(name, was)
-        if not shown:
-            inst.write("SELECT:%s OFF" % name)
+        # Put back in a finally (A11): a timeout on SCALE? or an empty
+        # record part way through left the clock on screen and rescaled.
+        was, gaps, level = None, [], 0.0
+        try:
+            was = self.chan_fits(name)
+            for _try in range(4):
+                try:
+                    wave = self.wfm.capture([name])[0][0]
+                except Exception:
+                    time.sleep(0.2)
+                    continue
+                volts = [v for _t, v in wave.points()]
+                if not volts or max(volts) - min(volts) < 0.1:
+                    continue
+                level = (max(volts) + min(volts)) / 2.0
+                edges = tds_wfm.crossings_of(wave)
+                gaps += [b - a for a, b in zip(edges, edges[1:])]
+                if len(gaps) >= 4:
+                    break
+        finally:
+            if was is not None:
+                self.chan_back(name, was)
+            if not shown:
+                inst.write("SELECT:%s OFF" % name)
         # Every gap half a bit, to within a tenth of one. Data
         # cannot do that: its gaps are whole bits and vary.
         looks = bool(gaps) and all(abs(g - bit / 2.0) < bit / 10.0
@@ -3292,8 +3316,6 @@ class Worker(object):
             end = time.time() + most
             waited, step = 0.0, 5.0
             while waited < settle:
-                if self.cancelled.is_set():
-                    break
                 time.sleep(min(step, settle - waited))
                 waited += step
                 self._progress(
@@ -3424,15 +3446,6 @@ class Worker(object):
 
 
     # ------------------------------------------- calibration constants
-    def _refusals(self):
-        """What the instrument logged, less the line that means nothing.
-
-        The same drain the factory options use, and "0,..." is the reply
-        that means there was nothing to say.
-        """
-        return [str(e) for e in self.fs.errors()]
-
-
     # -- calibration constants -------------------------------------------
 
     def cal_read(self, base=None, check=True):
@@ -3474,8 +3487,7 @@ class Worker(object):
             tds_cal.word(self.wfm.q, 0, base)      # still refused: raise
         finally:
             self.fs.inst.timeout = was
-        got = tds_cal.read(self.wfm.q, base, note=self._progress,
-                           stop=self.cancelled.is_set)
+        got = tds_cal.read(self.wfm.q, base, note=self._progress)
         if check:
             self._progress(_("Checking the calibration constants"), 0.0)
             # Reported like the first pass. Both are 252 queries, so a
@@ -3484,8 +3496,7 @@ class Worker(object):
             if tds_cal.read(self.wfm.q, base,
                             note=lambda t, f: self._progress(
                                 _("Checking the calibration constants - %s")
-                                % localise(t.split(" - ")[-1]), f),
-                            stop=self.cancelled.is_set) != got:
+                                % localise(t.split(" - ")[-1]), f)) != got:
                 raise RuntimeError(
                     _("The calibration constants read differently the "
                     "second time. That is the bus, not the instrument. "
@@ -3507,7 +3518,7 @@ class Worker(object):
                 # backup is the difference between finding that out now
                 # and finding it out while restoring it.
                 "sound": tds_cal.sound(got),
-                "events": self._refusals()}
+                "events": [str(e) for e in self.fs.errors()]}
 
     def _cal_store(self):
         """Commit the working copy, and report what the instrument said.
@@ -3579,9 +3590,6 @@ class Worker(object):
         self.wfm.q("*OPC?")
         report = {"base": base, "wrote": 0, "words": tds_cal.WORDS}
         for n in range(tds_cal.WORDS):
-            if self.cancelled.is_set():
-                report["cancelled"] = True
-                break
             self._cal_put(n, want[n], base)
             got = tds_cal.word(self.wfm.q, n, base)
             if got != want[n]:
@@ -3602,7 +3610,7 @@ class Worker(object):
             report["check"] = want[0]
             report["sum"] = tds_cal.checksum(want)
             report.update(self._cal_store())
-        report["events"] = self._refusals()
+        report["events"] = [str(e) for e in self.fs.errors()]
         return report
 
 
@@ -3975,7 +3983,6 @@ class Worker(object):
     # These three open their own session, do their work and close it.
 
     def fw_session(self, resource, normal=""):
-        import pyvisa
         self._progress(_("Opening the bootloader monitor at %s")
                        % resource, None)
         try:
@@ -4012,9 +4019,10 @@ class Worker(object):
         if normal and vanished:
             try:
                 if self.fs is not None:
-                    told = self.fs.idn()
+                    # hello, not idn: a quick question gets the quick
+                    # timeout, not the 45 s a transfer needs (A7).
+                    told = self.fs.hello()
                 else:
-                    import pyvisa
                     one = pyvisa.ResourceManager().open_resource(
                         normal, open_timeout=1500)
                     one.timeout = 2000
@@ -4075,7 +4083,7 @@ class Worker(object):
         return {"images": tds_fw.catalogue(folder, note=self._progress),
                 "folder": folder}
 
-    def fw_keep(self, flash, what, base, length, plan, report, stop):
+    def fw_keep(self, flash, what, base, length, plan, report):
         """Read one region, check it, and write it out as a .bin.
 
         Read twice and compared when the plan asks for it, because the
@@ -4083,12 +4091,12 @@ class Worker(object):
         the part that can be wrong.
         """
         self._progress(_("Reading the existing %s ...") % _(what), 0.0)
-        got = flash.read(length, base=base, stop=stop,
+        got = flash.read(length, base=base,
                          note=lambda t, f, w=what: self._progress(
                              _("Backing up %s - %s") % (_(w), localise(t)), f))
         if plan.get("check_backup"):
             self._progress(_("Reading the %s back to check it") % _(what), 0.0)
-            again = flash.read(length, base=base, stop=stop,
+            again = flash.read(length, base=base,
                                note=lambda t, f, w=what: self._progress(
                                    _("Checking the %s backup - %s") % (_(w), localise(t)), f))
             # Where the two reads differ, and which of those differences
@@ -4168,11 +4176,8 @@ class Worker(object):
         inst = self.fw_session(plan["resource"], plan.get("normal") or "")
         try:
             flash = tds_fw.Flash(tds_fw.Monitor(inst))
-            self._progress(_("Measuring the NVRAM window"), None)
-            keep = flash.nvram_keep_len(stop=self.cancelled.is_set)
             self.fw_keep(flash, "NVRAM", tds_fw.NVRAM_BASE,
-                         keep, plan, report,
-                         self.cancelled.is_set)
+                         tds_fw.NVRAM_LEN, plan, report)
         finally:
             try:
                 inst.close()
@@ -4188,18 +4193,15 @@ class Worker(object):
         backup a write takes on its way past, through the one fw_keep - so a
         backup kept for its own sake is the same bytes and the same proof.
         """
-        stop = self.cancelled.is_set
         report = {"backups": []}
         inst = self.fw_session(plan["resource"], plan.get("normal") or "")
         try:
             flash = tds_fw.Flash(tds_fw.Monitor(inst))
             report["flash"] = flash.identify()
-            self._progress(_("Measuring the NVRAM window"), None)
-            keep = flash.nvram_keep_len(stop=stop)
             for what, base, length in (
-                    ("NVRAM", tds_fw.NVRAM_BASE, keep),
+                    ("NVRAM", tds_fw.NVRAM_BASE, tds_fw.NVRAM_LEN),
                     ("Firmware", tds_fw.FLASH_BASE, plan["backup_len"])):
-                self.fw_keep(flash, what, base, length, plan, report, stop)
+                self.fw_keep(flash, what, base, length, plan, report)
         finally:
             try:
                 inst.close()
@@ -4218,10 +4220,16 @@ class Worker(object):
         says so before anything is written.
 
         The clock is not written. `write_span` skips it - see there.
+
+        The bytes come in the plan, the ones the window read, sized and
+        checksummed before it asked (C13/F6). Reading the file again here
+        wrote whatever was in it by then, unchecked. `path` alone, with
+        no `data`, still reads the file - for the report and the tests.
         """
-        stop = self.cancelled.is_set
-        with open(plan["path"], "rb") as fh:
-            data = fh.read()
+        data = plan.get("data")
+        if data is None:
+            with open(plan["path"], "rb") as fh:
+                data = fh.read()
         report = {"path": plan["path"], "wrote": 0, "backups": []}
         inst = self.fw_session(plan["resource"], plan.get("normal") or "")
         try:
@@ -4244,7 +4252,7 @@ class Worker(object):
             # to be in hand first, and that backup is the undo.
             self._progress(_("Measuring what the window really holds"), None)
             here = flash.measure_distinct(tds_fw.NVRAM_BASE,
-                                          tds_fw.NVRAM_LEN, stop=stop)
+                                          tds_fw.NVRAM_LEN)
             # And what the file says about itself, as corroboration
             # rather than as the measurement. A dump that repeats
             # somewhere this instrument does not came off a differently
@@ -4264,11 +4272,11 @@ class Worker(object):
             wrote_to = min(len(data), here)
             report["wrote"] = flash.write_span(
                 data[:wrote_to], base=tds_fw.NVRAM_BASE,
-                skip=tds_fw.RTC_LEN, stop=stop,
+                skip=tds_fw.RTC_LEN,
                 note=lambda t, f: self._progress(
                     _("Restoring NVRAM - %s") % localise(t), f))
             self._progress(_("Reading it back to check it"), 0.0)
-            back = flash.read(len(data), base=tds_fw.NVRAM_BASE, stop=stop,
+            back = flash.read(len(data), base=tds_fw.NVRAM_BASE,
                               note=lambda t, f: self._progress(
                                   _("Checking the NVRAM - %s") % localise(t), f))
             # From the clock upwards, because the clock was not written
@@ -4315,15 +4323,14 @@ class Worker(object):
 
         One job rather than five, because the instrument is only in this
         state once and every step after the first depends on the one
-        before it. It is cancellable between chunks; the report says how
-        far it got.
+        before it. It is not cancellable: a flash stopped part way is a
+        flash that has to be programmed again, so it runs to the end.
 
         The backups themselves are fw_keep, which the Backup tab's NVRAM
         button calls on its own. One reader, so a backup taken for its
         own sake is the same bytes and the same check as the one taken
         on the way to a write.
         """
-        stop = self.cancelled.is_set
         image = tds_fw.read_image(plan["image"], plan.get("archive") or "")
         if not image.startswith(tds_fw.IMAGE_HEAD):
             raise RuntimeError(
@@ -4344,22 +4351,15 @@ class Worker(object):
             flash = tds_fw.Flash(mon)
             report["flash"] = flash.identify()
 
-            # The low 640 kB always, in full - it holds the two memory
-            # parts and everything a backup exists to save: user
-            # settings, saved waveforms, limits, masks, and on the
-            # earlier instruments the calibration constants. What sits
-            # above it is read only if a probe finds bytes there that
-            # the low region does not already carry; on a TDS680B it is
-            # the 512 kB part repeating and on a TDS784C it is empty, and
-            # a restore reproduces either from the low region. So the
-            # trim can only ever drop empty or duplicate bytes - the one
-            # part nobody can re-derive is never in the part trimmed.
-            self._progress(_("Measuring the NVRAM window"), None)
-            nvram_keep = flash.nvram_keep_len(stop=stop)
+            # The whole NVRAM window, always: it holds user settings,
+            # saved waveforms, limits, masks and on the earlier
+            # instruments the calibration constants, and a backup that
+            # judged part of it not worth reading is one that cannot put
+            # the instrument back.
             for what, base, length in (
-                    ("NVRAM", tds_fw.NVRAM_BASE, nvram_keep),
+                    ("NVRAM", tds_fw.NVRAM_BASE, tds_fw.NVRAM_LEN),
                     ("Firmware", tds_fw.FLASH_BASE, plan["backup_len"])):
-                self.fw_keep(flash, what, base, length, plan, report, stop)
+                self.fw_keep(flash, what, base, length, plan, report)
 
             # Does it fit? Measured now, while the part still holds
             # something to measure - after the erase every boundary
@@ -4407,13 +4407,11 @@ class Worker(object):
             if not flash.paged and flash.helper is None:
                 flash._refuse()
             self._progress(_("Erasing the flash ..."), None)
-            flash.erase(len(image), note=lambda t: self._progress(t, None),
-                        stop=stop)
+            flash.erase(len(image), note=lambda t: self._progress(t, None))
             report["slow_pages"], report["blank_pages"] = flash.program(
-                image, stop=stop, note=self._progress)
+                image, note=self._progress)
             self._progress(_("Checking what was written ..."), 0.0)
-            report["faults"] = flash.verify(image, stop=stop,
-                                            note=self._progress)
+            report["faults"] = flash.verify(image, note=self._progress)
         finally:
             try:
                 inst.close()
@@ -4598,10 +4596,23 @@ class Worker(object):
         self.fs.clear()
         try:
             told = self.fs.hello()
+            # Everything after the hello inside the same guard (A9). One
+            # of the later steps raising - the drain, idn(), the transfer
+            # probe, the cwd - used to leave the session half set up:
+            # self.fs present, capabilities never settled, and jobs that
+            # need the filesystem let through against an instrument the
+            # window had been told was not connected.
+            return self._settle(told, addr)
         except Exception:
-            self.fs.close()
+            try:
+                self.fs.close()
+            except Exception:
+                pass
             self.fs = self.wfm = self.scr = self.err = self.set = None
             raise
+
+    def _settle(self, told, addr):
+        """The rest of connect, once the instrument has said hello."""
         # One VISA session serves both subsystems; the waveform side
         # borrows the filesystem side's header-stripping rule so there is
         # only one place that knows about HEADER ON.
@@ -4704,7 +4715,6 @@ class Worker(object):
         already known, and opening a second session to it could disturb a
         transfer in progress.
         """
-        import pyvisa
         rm = pyvisa.ResourceManager()
         try:
             addresses = list(rm.list_resources())
@@ -4736,7 +4746,7 @@ class Worker(object):
                 # raise would end the scan and report nothing about any
                 # of the other addresses.
                 try:
-                    idn = self.fs.idn()
+                    idn = self.fs.hello()
                 except Exception as exc:
                     note = describe_visa_error(exc)
             else:
@@ -5274,7 +5284,7 @@ def run_gui():
              # until they are sent: {"REF2": Waveform}.
              "staged": {},
              "screen": None, "shotpng": None, "shotimg": None,
-             "sformats": [], "errtext": "", "errlog": None, "idn": ""}
+             "sformats": [], "errlog": None, "idn": ""}
     script_font(i18n.current())
 
     def fit_text(widget, text):
@@ -5852,6 +5862,10 @@ def run_gui():
         if not on:
             wfm_buttons()
             lim_buttons()
+            # Start measurement is in `buttons` and so was switched on by
+            # every busy(False), whatever msk_buttons had decided - no
+            # mask, no Option 2C (C5).
+            ui.msk_buttons()
         # Write firmware and Back up... are not in `buttons` and decide for
         # themselves - but both read busy, so they have to be asked on the
         # way in too. Asked only on the way out, Write stayed live through
@@ -6071,6 +6085,7 @@ def run_gui():
         # A back or forward step sets this flag so it does not record the
         # move it is itself making.
         hist, at = state["history"], state["hist_at"]
+        state.pop("hist_was", None)
         if state.pop("no_record", False):
             pass
         elif hist and at > 0 and hist[at - 1] == path:
@@ -6164,15 +6179,18 @@ def run_gui():
             n += 1
         show_sort_arrow()
 
-    HEADINGS = (("#0", "name", _("Name")), ("size", "size", _("Size")),
-                ("type", "type", _("Type")))
+    # English here and translated as drawn, so the headings follow a
+    # language change (D9): translated once at build time, they were
+    # put back in the old language by every sort and every redraw.
+    HEADINGS = (("#0", "name", N_("Name")), ("size", "size", N_("Size")),
+                ("type", "type", N_("Type")))
 
     def show_sort_arrow():
         """Mark the sorted column, the way Explorer marks it."""
         col, rev = state["sort"]
         for ident, key, label in HEADINGS:
             mark = ("  ▲" if not rev else "  ▼") if key == col else ""
-            lst.heading(ident, text=label + mark)
+            lst.heading(ident, text=_(label) + mark)
 
     def sort_by(key):
         """Click a heading to sort by it; click the same one to reverse."""
@@ -6658,6 +6676,8 @@ def run_gui():
     def do_back(_evt=None):
         if state["busy"] or state["hist_at"] <= 0:
             return
+        # Where it was, so a listing that fails can put it back (D8).
+        state["hist_was"] = state["hist_at"]
         state["hist_at"] -= 1
         state["no_record"] = True
         navigate(state["history"][state["hist_at"]])
@@ -6665,6 +6685,7 @@ def run_gui():
     def do_forward(_evt=None):
         if state["busy"] or state["hist_at"] >= len(state["history"]) - 1:
             return
+        state["hist_was"] = state["hist_at"]
         state["hist_at"] += 1
         state["no_record"] = True
         navigate(state["history"][state["hist_at"]])
@@ -6817,7 +6838,7 @@ def run_gui():
         w.submit("upload",
                  lambda k: k.write_verified(join(state["cwd"], name), data))
 
-    def est_time(nbytes, nfiles):
+    def est_time(nbytes, nfiles, dest=None):
         """A rough figure for how long an upload will take, in words.
 
         Throughput depends on the medium, not the instrument: a hard disk
@@ -6842,7 +6863,9 @@ def run_gui():
         half on a floppy as it is on a hard disk. The old 4,000 made a
         floppy upload look two and a half times quicker than it is.
         """
-        floppy = (state["cwd"] or "").lower().startswith("fd")
+        # The drive being written to, which a drop onto the tree can make
+        # a different one from the folder on show (D13).
+        floppy = (dest or state["cwd"] or "").lower().startswith("fd")
         read_rate = 4000.0 if floppy else 33000.0
         write_rate = 1600.0 if floppy else 2900.0
         secs = nfiles * 1.6 + nbytes / write_rate + nbytes / read_rate
@@ -6919,6 +6942,9 @@ def run_gui():
         subject to 8.3, and roughly how long it will take.
         """
         if state["busy"]:
+            # Said, not swallowed (D11): a drop made while a job runs used
+            # to vanish without a word.
+            say(_("Busy - drop the files again when this job has finished"))
             return
         if not dest_folder:
             return
@@ -6964,7 +6990,7 @@ def run_gui():
             lines.append(_("    ...and %d more") % (len(plan) - 12))
         lines += ["", _("%(bytes)s bytes, %(time)s.")
                   % {"bytes": format(total, ","),
-                     "time": est_time(total, len(plan))}]
+                     "time": est_time(total, len(plan), dest_folder)}]
         if renamed:
             lines.append(_("%d name(s) were shortened to fit the "
                            "instrument's 8.3 limit.") % len(renamed))
@@ -6994,9 +7020,14 @@ def run_gui():
         w.submit("uploads",
                  lambda k, m=made, it=plan: k.upload_plan(m, it))
 
+    # The drop is handled after the <<Drop>> callback has returned (D11).
+    # On Windows, Explorer waits inside DoDragDrop until the target's Drop
+    # returns, so asking the upload question from inside it froze the
+    # Explorer window for as long as the question was open.
     def on_drop_list(evt):
         """Dropped on the file pane: into the folder currently shown."""
-        do_drop(list(root.tk.splitlist(evt.data)), state["cwd"])
+        paths = list(root.tk.splitlist(evt.data))
+        root.after(0, lambda: do_drop(paths, state["cwd"]))
 
     def on_drop_tree(evt):
         """Dropped on the tree: into the folder actually under the pointer,
@@ -7004,7 +7035,8 @@ def run_gui():
         node = tree.identify_row(evt.y_root - tree.winfo_rooty())
         if not node or node.endswith("/~"):
             return
-        do_drop(list(root.tk.splitlist(evt.data)), node)
+        paths = list(root.tk.splitlist(evt.data))
+        root.after(0, lambda: do_drop(paths, node))
 
     if DND:
         for widget, handler in ((lst, on_drop_list), (tree, on_drop_tree)):
@@ -7114,9 +7146,10 @@ def run_gui():
                          "There is no Recycle Bin on the instrument.")
                        % names[0])
             else:
-                msg = ("Are you sure you want to permanently delete these "
-                       "%d files?\n\n%s\n\nThere is no Recycle Bin on the "
-                       "instrument." % (len(names), name_list(names)))
+                msg = (_("Are you sure you want to permanently delete "
+                         "these %d files?\n\n%s\n\nThere is no Recycle Bin "
+                         "on the instrument.")
+                       % (len(names), name_list(names)))
             if not messagebox.askyesno(_("Delete File"), msg,
                                        icon="warning", default="no"):
                 return
@@ -7276,15 +7309,19 @@ def run_gui():
         say(_("Formatting %s ...") % drive)
         w.submit("format", lambda k, d=drive: k.format_volume({"drive": d}))
 
-    def do_mkdir():
+    def do_mkdir(where=None):
         """Ask for a folder name, and keep asking until it is a legal one.
+
+        `where` is the folder it goes in: the one on show unless the tree's
+        right-click menu names another.
 
         The instrument accepts an illegal name without complaint and then
         does nothing with it, so the name is checked here and the reason is
         shown with the offending characters named. The typed text is put
         back in the box so it can be corrected rather than retyped.
         """
-        if state["busy"] or not state["cwd"]:
+        where = where or state["cwd"]
+        if state["busy"] or not where:
             return
         name = ""
         while True:
@@ -7299,19 +7336,19 @@ def run_gui():
                 break
             messagebox.showwarning(_("Cannot use that name"), why)
 
-        existing = state["cache"].get(state["cwd"])
+        existing = state["cache"].get(where)
         if existing:
             taken = [n.upper() for n in existing["dirs"] + existing["files"]]
             if name.upper() in taken:
                 messagebox.showwarning(
                     _("Name already in use"),
                     _("'%s' already exists in %s. Choose another name.")
-                    % (name.upper(), state["cwd"]))
+                    % (name.upper(), where))
                 return
         busy(True)
         say(_("Creating %s ...") % name.upper())
         w.submit("mkdir",
-                 lambda k, n=name: k.mkdir(join(state["cwd"], n.upper())))
+                 lambda k, n=name, d=where: k.mkdir(join(d, n.upper())))
 
     def do_goto(_evt=None):
         p = ent_path.get().strip()
@@ -7366,8 +7403,6 @@ def run_gui():
         for again in relabel:
             again()
         show_sort_arrow()
-        lst.heading("size", text=_("Size"))
-        lst.heading("type", text=_("Type"))
         btn_lang.config(text="")
         if state.get("globe"):
             btn_lang.config(image=state["globe"])
@@ -7388,8 +7423,7 @@ def run_gui():
         flow_buttons()
         # Send counts what is waiting to be sent, so it is not a fixed
         # string and cannot be relabelled from the list alone.
-        show_sources({"all": state.get("wall") or [],
-                      "sources": state.get("wsources") or []})
+        ui.refresh_sources()
         # The three boxes on the Screen tab are filled from lists of
         # translated labels, so they have to be built again - keeping
         # whatever was chosen, which is what the keywords are for.
@@ -7813,13 +7847,28 @@ def run_gui():
     menu_empty.add_command(label=_("Upload files..."),
                            command=lambda: do_upload())
 
+    def menus_relabel():
+        """The right-click menus, in the language now in use (D9)."""
+        for menu, words in (
+                (menu_empty, ("New folder...", None, "Refresh",
+                              "Upload files...")),
+                (menu_dir, ("Open", "Refresh", None, "New folder...",
+                            "Delete"))):
+            for at, word in enumerate(words):
+                if word:
+                    menu.entryconfigure(at, label=_(word))
+
     menu_dir = tk.Menu(root, tearoff=0)
     menu_dir.add_command(label=_("Open"),
                          command=lambda: navigate(tree.focus()))
-    menu_dir.add_command(label=_("Refresh"), command=do_refresh)
+    # The folder right-clicked, not the one on show (D7).
+    menu_dir.add_command(label=_("Refresh"),
+                         command=lambda: navigate(tree.focus(), force=True))
     menu_dir.add_separator()
-    menu_dir.add_command(label=_("New folder..."), command=do_mkdir)
+    menu_dir.add_command(label=_("New folder..."),
+                         command=lambda: do_mkdir(tree.focus()))
     menu_dir.add_command(label=_("Delete"), command=do_delete)
+    relabel.append(menus_relabel)
 
     def on_list_click(evt):
         """Clicking the empty area below the rows clears the selection.
@@ -7847,6 +7896,9 @@ def run_gui():
         if row not in lst.selection():
             lst.selection_set(row)
         lst.focus(row)
+        # The keyboard as well as the focused row: Delete decides what it
+        # acts on from which widget has the keyboard (D7).
+        lst.focus_set()
         # Rebuilt each time rather than reconfigured by index: the menu has
         # a different shape for a folder than for a selection of files, and
         # index bookkeeping across the two is a bug waiting to happen.
@@ -7877,6 +7929,7 @@ def run_gui():
         if row:
             tree.selection_set(row)
             tree.focus(row)
+            tree.focus_set()
             menu_dir.tk_popup(evt.x_root, evt.y_root)
 
     lst.bind("<Button-3>", popup_list)
@@ -7892,6 +7945,24 @@ def run_gui():
     # for it. pump() takes results off the queue and hands each to its
     # handler here; a failure goes to pump_failed whatever the job was.
 
+    def forget_listings(*paths):
+        """Drop the cached listings of these folders and all beneath them.
+
+        navigate() serves a cached folder without asking the instrument,
+        so a job that changes more than one folder has to forget every
+        one it touched (D5). Forgetting only the folder on show left a
+        formatted drive's subfolders, a removed tree's children and an
+        upload's new folders listed as they had been.
+        """
+        for path in paths:
+            top = (path or "").rstrip("/")
+            if not top:
+                continue
+            for key in list(state["cache"]):
+                held = key.rstrip("/")
+                if held == top or held.startswith(top + "/"):
+                    state["cache"].pop(key, None)
+
     def pump_failed(label, payload):
         # Four jobs run without taking busy - they are asked
         # in passing, beside whatever else is on the bus -
@@ -7901,6 +7972,14 @@ def run_gui():
             busy(False)
         if label == "scan":
             scanning(False)
+        if label == "split" and "hist_was" in state:
+            # Back or Forward to a folder that would not list: the
+            # history goes back to where it was, and the next folder
+            # reached is recorded as usual (D8). Left, it pointed at a
+            # folder never reached and the next navigation went
+            # unrecorded.
+            state["hist_at"] = state.pop("hist_was")
+            state.pop("no_record", None)
         if label in ("lim_build", "lim_picture"):
             # The flags a Learn or a Load set for the
             # picture that follows, or the next unrelated
@@ -8262,7 +8341,7 @@ def run_gui():
         gone = payload["path"]
         if tree.exists(gone):
             tree.delete(gone)
-        state["cache"].pop(gone, None)
+        forget_listings(gone, parent_of(gone))
         say(_("Removed %s") % gone + mass_storage_note(payload))
         report_losses(payload)
         navigate(parent_of(gone) or state["cwd"], force=True)
@@ -8271,7 +8350,7 @@ def run_gui():
         busy(False)
         dest = payload["dest"]
         say(_("Copied to %s") % dest.rsplit("/", 1)[-1])
-        state["cache"].pop(state["cwd"], None)
+        forget_listings(state["cwd"], dest.rsplit("/", 1)[0], dest)
         navigate(state["cwd"], force=True)
 
     def pump_uploads(payload):
@@ -8347,6 +8426,8 @@ def run_gui():
                   "to it again - power cycle the instrument and "
                   "check its files before doing anything else.")
                 % payload["unhealthy"])
+        forget_listings(*sorted(set(d.rsplit("/", 1)[0]
+                                    for d, _n in payload["done"])))
         navigate(state["cwd"], force=True)
 
     def pump_format(payload):
@@ -8369,7 +8450,7 @@ def run_gui():
         # The cache is of a volume that no longer has
         # anything in it, so it goes rather than being
         # trusted for the redraw.
-        state["cache"].pop(payload["drive"], None)
+        forget_listings(payload["drive"])
         navigate(payload["drive"], force=True)
 
     def pump_written(label, payload):
@@ -8380,14 +8461,14 @@ def run_gui():
         done = {"upload": _("Uploaded"),
                 "delete": _("Deleted"),
                 "mkdir": _("Folder created")}[label]
-        say("%s: %s%s" % (done, payload,
-                          mass_storage_note(payload)))
+        # The path, not the whole result: every one of these jobs
+        # answers with a dict, and the status bar showed its repr (D6).
+        wrote = payload.get("path") or ""
+        say("%s: %s%s" % (done, wrote, mass_storage_note(payload)))
         # What was written may not be in the folder on show
         # - a waveform goes to WAVEFORM on the drive - so
         # that folder's cached listing goes too, rather
         # than being kept and shown stale later.
-        wrote = (payload.get("path") or ""
-                 if isinstance(payload, dict) else "")
         if "/" in wrote:
             state["cache"].pop(wrote.rsplit("/", 1)[0], None)
         navigate(state["cwd"], force=True)

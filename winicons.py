@@ -273,7 +273,6 @@ def globe(tk):
 #: and the waveform tab's zoom column - one family, drawn in dark grey
 #: ink (the zoom heads lighter) so they sit on a Toolbutton without
 #: shouting.
-TOOLS = tuple(k for k in PNG if not k.startswith("_") and k != "globe")
 
 
 def tool(tk, name):

@@ -756,10 +756,6 @@ class TdsScr(object):
         self._offers = out
         return out
 
-    def has_palette(self):
-        """PALETTE exists only on the instruments that have colour."""
-        return "PALETTE" in self.settings()
-
     def best(self):
         """The format a screenshot is taken in unless told otherwise."""
         taken = dict((e["keyword"], e) for e in self.offers())

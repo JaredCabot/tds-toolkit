@@ -104,11 +104,15 @@ def build(ui):
         the layout return without packing anything.
         """
         state.pop("wflow", None)
-        state.pop("mflow", None)
-        state.pop("lflow", None)
+        for key in ("mflow", "lflow", "mbarflow", "lbarflow"):
+            state.pop(key, None)
         flow_buttons()
         mask_flow()
         ui.lim_flow()
+        # The option bars too, under keys of their own (B10): sharing the
+        # toolbars' keys, each compared its split with the other bar's.
+        mbar_flow()
+        ui.lbar_flow()
         root.update_idletasks()
 
     # A plain frame, not a paned window, so the left column is a fixed width
@@ -374,10 +378,11 @@ def build(ui):
                                   variable=state["mnodots"],
                                   command=lambda: edit_redraw())
     says(chk_mnodots, "Hide points")
-    mbar.bind("<Configure>", flowing(
+    mbar_flow = flowing(
         mbar, mrow1, mrow2,
         (mgridpair, chk_mshowgrid, chk_msnap, chk_mgrat, chk_mcross,
-         chk_mfill, chk_mhide, chk_mnodots), (), "mflow", gap=10))
+         chk_mfill, chk_mhide, chk_mnodots), (), "mbarflow", gap=10)
+    mbar.bind("<Configure>", mbar_flow)
     # A mask goes to the instrument as a mask, and nothing else. It
     # used to be able to go as a limit template instead, for an
     # instrument with no Option 2C - but a limit template is what the
@@ -588,8 +593,13 @@ def build(ui):
             divs = typed(state["mgrid"].get())
         except (TypeError, ValueError):
             return (0.0, 0.0)
-        if divs <= 0:
+        # Written so NaN fails it too, and inf; the box can be typed in.
+        if not 0 < divs < float("inf"):
             return (0.0, 0.0)
+        # No finer than a tenth of a division (B3). edit_grid draws an item
+        # per crossing on every redraw of either editor - eight thousand
+        # at a tenth, and 0.001 asked for eighty million.
+        divs = max(divs, 0.1)
         return (divs * 100.0 / tds_wfm.DIVS_X,
                 divs * 100.0 / tds_wfm.DIVS_Y)
 
@@ -879,9 +889,16 @@ def build(ui):
         about = [x for x in (body, rate) if x]
         setup = msk_setup_path(mask)
         if setup:
+            # Read and parsed once per change to the file, not once per
+            # redraw (B7): this runs on every hover and every drag frame.
             try:
-                about.append(tds_set.summary(tds_set.parse(
-                    tds_set.contents(setup))) or os.path.basename(setup))
+                key = (setup, os.path.getmtime(setup))
+                held = state.get("msetupsaid")
+                if not held or held[0] != key:
+                    held = (key, tds_set.summary(tds_set.parse(
+                        tds_set.contents(setup))) or os.path.basename(setup))
+                    state["msetupsaid"] = held
+                about.append(held[1])
             except OSError:
                 pass
         notes = mask.complaints() + ["segment %d: %s" % (n, why)
@@ -1266,10 +1283,24 @@ def build(ui):
             return "break"
         across, up = mask_step()
         across, up = across or 1.0, up or 1.0
+        # One step along so the copy can be seen - the other way where that
+        # would leave the graticule, and not at all where neither way fits
+        # (B11). Nothing else drawn here can go off the graticule, and a
+        # point that is off it cannot be dragged back.
+        xs = [x for shape in held for x, _y in shape]
+        ys = [y for shape in held for _x, y in shape]
+
+        def along(step, lo, hi):
+            for move in (step, -step):
+                if lo + move >= 0.0 and hi + move <= 100.0:
+                    return move
+            return 0.0
+        dx = along(across, min(xs), max(xs))
+        dy = along(-up, min(ys), max(ys))
         msk_remember()
         picks = []
         for at, shape in zip(room, held):
-            mask.segments[at] = [(round(x + across, 2), round(y - up, 2))
+            mask.segments[at] = [(round(x + dx, 2), round(y + dy, 2))
                                  for x, y in shape]
             picks += [(at, i) for i in range(len(shape))]
         state["mpicks"] = picks
@@ -1504,8 +1535,15 @@ def build(ui):
         mask = edit_mask()
         if mask is None:
             return
+        # Only shapes still selected, in the order they were chosen (B8).
+        # The order list outlived the selection - Delete, the eraser,
+        # undo, a tool change and opening another mask all cleared the
+        # picks and left it - so a join could act on shapes nothing
+        # showed as chosen.
+        chosen = set(n for n, _i in msk_picked())
         order = [n for n in (state.get("morder") or [])
-                 if n < len(mask.segments) and len(mask.segments[n]) >= 3]
+                 if n in chosen and n < len(mask.segments)
+                 and len(mask.segments[n]) >= 3]
         if len(order) < 2:
             messagebox.showinfo(
                 _("Two shapes are needed"),
@@ -2119,23 +2157,33 @@ def build(ui):
     # nothing worth measuring.
     UNDO_DEEP = 20
 
-    def msk_shapes():
+    # `which` is "m" or "l" where the caller knows the drawing it means,
+    # and None for whichever tab is in front - right for a gesture, wrong
+    # for a pump result (C7, B9): a read off the instrument, a setup sent
+    # or a band taken arrives after a bus job the user may have changed
+    # tab during, and it then cleared or stacked the other drawing's
+    # history.
+    def hist_key(name, which=None):
+        return which + name if which else edit_key(name)
+
+    def msk_shapes(which=None):
         """The mask's geometry, copied, or None when none is open."""
-        mask = edit_mask()
+        mask = (state.get("lmask" if which == "l" else "mask") if which
+                else edit_mask())
         return None if mask is None else [list(seg) for seg in mask.segments]
 
-    def msk_keep(shapes):
+    def msk_keep(shapes, which=None):
         """Put a kept copy of the geometry on the undo stack."""
         if shapes is None:
             return
-        state[edit_key("dirty")] = True
-        state.setdefault(edit_key("undo"), []).append(shapes)
-        del state[edit_key("undo")][:-UNDO_DEEP]
-        state[edit_key("redo")] = []         # a new edit forks the future
+        state[hist_key("dirty", which)] = True
+        state.setdefault(hist_key("undo", which), []).append(shapes)
+        del state[hist_key("undo", which)][:-UNDO_DEEP]
+        state[hist_key("redo", which)] = []  # a new edit forks the future
         state["mrun"] = None                 # and ends any run of nudges
         msk_undo_buttons()
 
-    def msk_remember():
+    def msk_remember(which=None):
         """Keep the mask as it stands, before something changes it.
 
         Called at the start of every edit rather than at the end: what
@@ -2144,12 +2192,13 @@ def build(ui):
         the press and hands it over at the release, so a press that only
         selected something is not an edit.
         """
-        msk_keep(msk_shapes())
+        msk_keep(msk_shapes(which), which)
 
-    def msk_forget():
+    def msk_forget(which=None):
         """A different mask is open; the old one's history is not its own."""
-        state[edit_key("undo")], state[edit_key("redo")] = [], []
-        state[edit_key("dirty")] = False
+        state[hist_key("undo", which)] = []
+        state[hist_key("redo", which)] = []
+        state[hist_key("dirty", which)] = False
         # Nor is the old one's verdict: the instrument counted those
         # hits against whatever was in its segments a moment ago.
         state.pop("mhits", None)
@@ -2327,6 +2376,10 @@ def build(ui):
         if gone:
             edit_redraw()
 
+    def msk_undo_key(evt):
+        """Ctrl+Z undoes and Ctrl+Shift+Z redoes, whatever Caps Lock says."""
+        return (do_msk_redo if evt.state & 0x0001 else do_msk_undo)(evt)
+
     def edit_bindings(canvas):
         """Point the drawing tools at a canvas.
 
@@ -2350,12 +2403,16 @@ def build(ui):
         # the instrument to delete whatever the file list had selected.
         canvas.bind("<Delete>", lambda e: do_msk_remove(e) or "break")
         canvas.bind("<BackSpace>", lambda e: do_msk_remove(e) or "break")
-        canvas.bind("<Control-x>", lambda e: do_msk_copy(e, cut=True))
-        canvas.bind("<Control-c>", do_msk_copy)
-        canvas.bind("<Control-v>", do_msk_paste)
-        canvas.bind("<Control-z>", do_msk_undo)
-        canvas.bind("<Control-y>", do_msk_redo)
-        canvas.bind("<Control-Z>", do_msk_redo)     # Ctrl+Shift+Z as well
+        # Both cases of each letter (B12). With Caps Lock on, Tk reports
+        # the capital for an unshifted key, so Ctrl+Z came in as redo and
+        # Ctrl+C, X, V and Y did nothing at all. Undo or redo is decided
+        # by Shift itself rather than by the letter's case - see
+        # msk_undo_key.
+        for letter, act in (("x", lambda e: do_msk_copy(e, cut=True)),
+                            ("c", do_msk_copy), ("v", do_msk_paste),
+                            ("z", msk_undo_key), ("y", do_msk_redo)):
+            canvas.bind("<Control-%s>" % letter, act)
+            canvas.bind("<Control-%s>" % letter.upper(), act)
         # Up is up: percent counts from the bottom of the graticule
         # here, the way a person means it, and the flip to the
         # instrument's own upside-down numbering happens once, in
@@ -2582,6 +2639,10 @@ def build(ui):
         path = (state.get("mpcfiles") or {}).get(chosen[0])
         if not path:
             return
+        # Asked like New mask asks (C8): a double-click replaced unsaved
+        # work without a word.
+        if not msk_may_discard():
+            return
         try:
             with open(path, "rb") as fh:
                 raw = fh.read()
@@ -2698,7 +2759,7 @@ def build(ui):
                                  % (_("Could not save"), exc))
             mask.origin = None
         state["mask"] = mask
-        msk_forget()
+        msk_forget("m")
         state["mpicks"] = []
         state.pop("mdrawing", None)
         draw_mask()
@@ -2925,11 +2986,15 @@ def build(ui):
         full speed mask against 1 us/div gave 116,921,796 hits over
         345,839 acquisitions, and no clock was found either.
         """
+        return msk_setup_number("secdiv", mask)
+
+    def msk_setup_number(field, mask=None):
+        """One number from the setup beside the mask, or None (C15)."""
         setup = msk_setup_path(mask)
         if not setup:
             return None
         try:
-            return float(tds_set.parse(tds_set.contents(setup)).get("secdiv"))
+            return float(tds_set.parse(tds_set.contents(setup)).get(field))
         except (TypeError, ValueError):
             return None
 
@@ -2945,13 +3010,7 @@ def build(ui):
         at the scale the mask means rather than the one the instrument
         happens to be showing it at.
         """
-        setup = msk_setup_path(mask)
-        if not setup:
-            return None
-        try:
-            return float(tds_set.parse(tds_set.contents(setup)).get("scale"))
-        except (TypeError, ValueError):
-            return None
+        return msk_setup_number("scale", mask)
 
     def do_msk_measure():
         """Set the instrument up to judge the mask, and start counting.
@@ -2970,6 +3029,15 @@ def build(ui):
         mask = state.get("mask")
         if state["busy"] or mask is None or state.get("cannot") is None:
             return
+        # Mask testing is Option 2C; without it there is nothing to
+        # count with (C5).
+        if not state.get("masks"):
+            return
+        # Both routes write LIMIT:STATE OFF, so a limit test running on
+        # the Limits tab is over from here (C5).
+        if state.pop("lrun", None) is not None:
+            ui.lim_verdict()
+            ui.lim_buttons()
         source = mask.source or (state.get("wsources") or ["CH1"])[0]
         bit = msk_unit_interval()
         if bit is None:
@@ -3358,7 +3426,7 @@ def build(ui):
                      "Stretch this one to match? Undo puts it back.")),
                 parent=root, default="yes"):
             return
-        msk_remember()
+        msk_remember("m")
         mask.segments[:] = [[(round(x, 2), round(y, 2)) for x, y in seg]
                             for seg in fitted]
         state["mpicks"] = []

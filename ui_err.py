@@ -129,7 +129,6 @@ def build(ui):
         errtxt.delete("1.0", "end")
         errtxt.insert("1.0", "\n".join(lines))
         errtxt.see("1.0")
-        state["errtext"] = "\n".join(lines)
         if count is None:
             lbl_ecount.config(text="")
         elif count:
@@ -147,11 +146,6 @@ def build(ui):
 
     def show_err_result(payload):
         found = payload["entries"]
-        # What arrived, kept so a test can ask whether the pane shows all
-        # of it. Not an independent measurement of the instrument - it
-        # cannot be - but it does catch the pane quietly showing the
-        # first twenty of forty, which is the failure worth catching.
-        state["wanted_entries"] = len(found)
         head = ["%s" % (state.get("idn") or ""),
                 _("Error log read %s") % time.strftime("%Y-%m-%d %H:%M")]
         if not found:
@@ -178,7 +172,7 @@ def build(ui):
         ui.say(_("%d entries read in %.1f s") % (len(found), payload["secs"]))
 
     def do_err_save():
-        if not state.get("errtext"):
+        if not state.get("errlines"):
             messagebox.showinfo(_("Nothing to save"),
                                 _("Download the error log first."))
             return
@@ -195,7 +189,7 @@ def build(ui):
             # Text mode already turns "\n" into the platform's line end;
             # replacing it first as well wrote "\r\r\n" on Windows.
             with open(path, "w", encoding="utf-8") as fh:
-                fh.write(state["errtext"])
+                fh.write("\n".join(state["errlines"]))
         except Exception as exc:
             messagebox.showerror(_("Error"), "%s\n\n%s"
                                      % (_("Could not save"), exc))

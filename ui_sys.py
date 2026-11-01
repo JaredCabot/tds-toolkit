@@ -384,7 +384,6 @@ def build(ui):
             if "++" in text or text.startswith("ERROR"):
                 txt_sysdiag.tag_add("bad", "%d.0" % n, "%d.end" % n)
         txt_sysdiag.see("1.0")
-        state["sysdiaglines"] = lines
 
     # ---- memory
     sys_rule(sysright)

@@ -463,6 +463,9 @@ def build(ui):
         path = (state.get("lpcfiles") or {}).get(chosen[0])
         if not path:
             return
+        # Asked like New template asks (C8).
+        if not msk_may_discard():
+            return
         try:
             with open(path, "rb") as fh:
                 raw = fh.read()
@@ -652,9 +655,10 @@ def build(ui):
                              command=lambda: edit_redraw())
         says(cb, english)
         lchecks[key] = cb
-    lbar.bind("<Configure>", flowing(
+    lbar_flow = flowing(
         lbar, lrow1, lrow2, (lgridpair,) + tuple(lchecks.values()), (),
-        "lflow", gap=10))
+        "lbarflow", gap=10)
+    lbar.bind("<Configure>", lbar_flow)
     # Explicit hints() calls so the translation audit sees each literal.
     hints(lchecks["mshowgrid"], "Show or hide the drawing grid")
     hints(lchecks["msnap"], "Snap points to the grid")
@@ -919,7 +923,7 @@ def build(ui):
         # handles, which is the thing the slider exists to avoid.
         most = max(2, min(half - 1, state["ldetail"].get() // 2))
         if remember:
-            msk_remember()
+            msk_remember("l")
         # Away from the band, never into it: the upper edge is
         # first and nothing may be drawn above it, the lower edge
         # second and nothing below. Thinned plainly, the corners
@@ -1115,11 +1119,8 @@ def build(ui):
         widened by the vertical tolerance.
 
         Returns [(seconds, low volts, high volts)], which is what
-        lim_band and lim_lines already take.
-
-        ponytail: a plain window scan, O(points x window). 500 points
-        is nothing; if a 15,000-point record at five divisions ever
-        feels slow, a running min-max deque is the upgrade.
+        lim_band and lim_lines already take. One pass however wide the
+        window - see tds_msk.window_extremes.
         """
         volts = [v for _t, v in wave.points()]
         times = [t for t, _v in wave.points()]
@@ -1131,13 +1132,9 @@ def build(ui):
         # the record is the 500 points it shows.
         reach = int(round(horizontal * wave.seconds_per_div / xincr))
         margin = vertical * (wave.volts_per_div or 1.0)
-        out = []
-        for i, t in enumerate(times):
-            lo = max(0, i - reach)
-            hi = min(len(volts), i + reach + 1)
-            window = volts[lo:hi]
-            out.append((t, min(window) - margin, max(window) + margin))
-        return out
+        lows, highs = tds_msk.window_extremes(volts, reach)
+        return [(t, low - margin, high + margin)
+                for t, low, high in zip(times, lows, highs)]
 
     def do_lim_learn():
         """Build a template - from the loaded trace, or from the scope.

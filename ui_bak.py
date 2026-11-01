@@ -449,9 +449,9 @@ def build(ui):
         if not cal_running():
             return
         settings = load_settings()
-        name = tds_cal.names((model_of(state.get("idn")) or "TDS")
-                             .replace(" ", ""),
-                             time.strftime("%Y%m%d-%H%M%S"))[2]
+        name = tds_cal.name((model_of(state.get("idn")) or "TDS")
+                            .replace(" ", ""),
+                            time.strftime("%Y%m%d-%H%M%S"))
         path = filedialog.asksaveasfilename(
             parent=root, initialfile=name,
             title=_("Where to save the calibration constants"),
@@ -607,8 +607,8 @@ def build(ui):
         state["bakfolder"] = os.path.dirname(path)
         ui.busy(True, "steps")
         ui.say(_("Restoring the NVRAM ..."))
-        w.submit("bak_nvram_put", lambda k: k.fw_nvram_put({
-            "path": path,
+        w.submit("bak_nvram_put", lambda k, d=data: k.fw_nvram_put({
+            "path": path, "data": d,
             "resource": tds_fw.bootloader_resource(state.get("addr")
                                                    or DEFAULT_ADDR),
             "normal": state.get("addr") or DEFAULT_ADDR,
@@ -658,7 +658,7 @@ def build(ui):
                   "Restore it anyway?") % {"file": os.path.basename(path)},
                 icon="warning", default="no"):
             return
-        # The file names the model it came off (tds_cal.names), and the
+        # The file names the model it came off (tds_cal.name), and the
         # constants belong to one acquisition board. Another model's go
         # in all the same, if asked twice, because a converted instrument
         # may well be carrying a backup under its old name.
@@ -759,14 +759,6 @@ def build(ui):
                 % payload["stuck"])
         lines.append(_("%(wrote)d of %(words)d word(s) "
                        "written and read back.") % payload)
-        if payload.get("cancelled"):
-            # Stopped part way, so the block is now
-            # neither the file nor what was there.
-            lines.append(_(
-                "This was stopped part way through. The "
-                "words already written are the file's; the "
-                "rest are whatever the instrument held "
-                "before. Restore it again to finish."))
         # Transferred is not stored. The words go into a
         # working copy in the instrument's RAM and reading
         # them back proves only that they arrived;
@@ -812,9 +804,6 @@ def build(ui):
         ui.say(_("The instrument would not take every "
                  "calibration word")
                if payload.get("stuck") else
-               _("The calibration restore was stopped part "
-                 "way through")
-               if payload.get("cancelled") else
                _("Calibration constants restored and stored")
                if payload.get("stored") is True else
                _("The constants were sent but the instrument "

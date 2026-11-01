@@ -129,22 +129,6 @@ def gettext(text):
     return _catalogue.get(text, text)
 
 
-def strings(code):
-    """Every source string a language file has an entry for.
-
-    Read from the file rather than from whatever is loaded, so it can be
-    asked about one language while another is in use.
-    """
-    entry = _languages.get(code)
-    if not entry:
-        return []
-    try:
-        with open(entry["path"], encoding="utf-8") as fh:
-            data = json.load(fh)
-    except Exception:
-        return []
-    data.pop("_meta", None)
-    return [k for k, v in data.items() if isinstance(v, str) and v]
 
 
 #: Both spellings the program uses. The named form has to be here too:

@@ -359,6 +359,39 @@ def finite(text):
     return value
 
 
+def window_extremes(values, reach):
+    """The lowest and highest of `values` within `reach` of each index.
+
+    Returns (lows, highs), each as long as `values`: lows[i] is
+    min(values[i - reach : i + reach + 1]), clipped at the ends, and
+    highs[i] the max. A running min and max kept in two queues, so it is
+    one pass however wide the window - the plain scan it replaces was
+    points times window, quadratic in the record, and ran on the window's
+    own thread (C11): a long record at five divisions froze it.
+    """
+    from collections import deque
+    n = len(values)
+    lows, highs = [0.0] * n, [0.0] * n
+    least, most = deque(), deque()
+    j = 0
+    for i in range(n):
+        while j < n and j <= i + reach:
+            v = values[j]
+            while least and values[least[-1]] >= v:
+                least.pop()
+            least.append(j)
+            while most and values[most[-1]] <= v:
+                most.pop()
+            most.append(j)
+            j += 1
+        while least[0] < i - reach:
+            least.popleft()
+        while most[0] < i - reach:
+            most.popleft()
+        lows[i], highs[i] = values[least[0]], values[most[0]]
+    return lows, highs
+
+
 def clean_name(name, taken=()):
     """An 8.3 file name for a mask, unique among those already there.
 
@@ -427,11 +460,6 @@ def held(x, y):
     instrument cannot draw and nobody can see to drag back.
     """
     return (min(100.0, max(0.0, x)), min(100.0, max(0.0, y)))
-
-
-def holds(points):
-    """Is every one of these on the graticule?"""
-    return all(0.0 <= x <= 100.0 and 0.0 <= y <= 100.0 for x, y in points)
 
 
 def snapped(value, step):

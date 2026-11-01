@@ -1205,6 +1205,18 @@ def step_125(value, direction):
     return ladder[0]
 
 
+def trace_key(wave):
+    """What a trace stands for on the plot: its label, else its source.
+
+    A file loaded from the PC keeps the source its own header names -
+    "Ch1" - whatever reference it is going to, and the window keys every
+    trace by the label (wave_name). Keyed here by source, two files from
+    one channel staged into two references shared one vertical shift,
+    and dragging one moved both (B4).
+    """
+    return getattr(wave, "label", None) or getattr(wave, "source", None)
+
+
 class PlotView(object):
     """Which part of a set of records is on the graticule, and at what
     scale.
@@ -1363,7 +1375,7 @@ class PlotView(object):
         """How far above the centre line a sample sits, in divisions."""
         per_div = wave.counts_per_div or 1.0
         return (level / per_div * self.zoom - self.offset
-                + self.shifts.get(getattr(wave, "source", None), 0.0))
+                + self.shifts.get(trace_key(wave), 0.0))
 
     def y_of_level(self, wave, level, top, bottom):
         per_y = (bottom - top) / float(DIVS_Y)
@@ -1476,7 +1488,7 @@ class PlotView(object):
         away = self.divisions_off_centre(wave)
         if away == 0.0 or abs(away) > tolerance:
             return False
-        name = getattr(wave, "source", None)
+        name = trace_key(wave)
         self.shifts[name] = self.shifts.get(name, 0.0) - away
         return True
 
@@ -2079,74 +2091,6 @@ def encode_png_indexed(pixels, palette, width, height):
             + _chunk(b"PLTE", b"".join(bytes(c) for c in colours))
             + _chunk(b"IDAT", zlib.compress(_filtered(rows, stride), 9))
             + _chunk(b"IEND", b""))
-
-
-def png_pixels(data):
-    """Read back a PNG this module wrote. Returns [(r, g, b), ...].
-
-    Here so that a test can ask the only question that matters about an
-    exported picture - are these the pixels that were captured? - which
-    inspecting the encoder's own variables cannot answer. Handles the
-    indexed and RGBA images written above and all five scanline
-    filters; returns None for anything else rather than guessing.
-    """
-    if data[:8] != b"\x89PNG\r\n\x1a\n":
-        return None
-    at, palette, idat = 8, [], bytearray()
-    width = height = depth = kind = 0
-    while at + 8 <= len(data):
-        length = struct.unpack_from(">I", data, at)[0]
-        tag = data[at + 4:at + 8]
-        body = data[at + 8:at + 8 + length]
-        at += 12 + length
-        if tag == b"IHDR":
-            width, height, depth, kind = struct.unpack_from(">IIBB", body, 0)
-        elif tag == b"PLTE":
-            palette = [tuple(body[i:i + 3]) for i in range(0, len(body), 3)]
-        elif tag == b"IDAT":
-            idat += body
-        elif tag == b"IEND":
-            break
-    if kind not in (3, 6):
-        return None
-    raw = zlib.decompress(bytes(idat))
-    channels = 4 if kind == 6 else 1
-    stride = (width * depth * channels + 7) // 8
-    step = max(1, depth * channels // 8)
-    out, previous, at = [], bytearray(stride), 0
-    for _y in range(height):
-        if at >= len(raw):
-            return None
-        filt, line = raw[at], bytearray(raw[at + 1:at + 1 + stride])
-        at += 1 + stride
-        for i in range(stride):
-            left = line[i - step] if i >= step else 0
-            up = previous[i]
-            upleft = previous[i - step] if i >= step else 0
-            if filt == 1:
-                line[i] = (line[i] + left) & 0xFF
-            elif filt == 2:
-                line[i] = (line[i] + up) & 0xFF
-            elif filt == 3:
-                line[i] = (line[i] + (left + up) // 2) & 0xFF
-            elif filt == 4:
-                p = left + up - upleft
-                pa, pb, pc = abs(p - left), abs(p - up), abs(p - upleft)
-                near = left if (pa <= pb and pa <= pc) else (
-                    up if pb <= pc else upleft)
-                line[i] = (line[i] + near) & 0xFF
-        previous = line
-        if kind == 6:
-            out += [tuple(line[x * 4:x * 4 + 3]) for x in range(width)]
-            continue
-        per_byte = 8 // depth
-        mask = (1 << depth) - 1
-        for x in range(width):
-            byte = line[x // per_byte]
-            shift = 8 - depth - (x % per_byte) * depth
-            index = (byte >> shift) & mask
-            out.append(palette[index] if index < len(palette) else (0, 0, 0))
-    return out
 
 
 def png_height_for(width, pad=34, room=MARKER_ROOM):
@@ -3641,8 +3585,3 @@ class TdsWfm(object):
         return {"verified": got == wanted, "sent": wanted[:8],
                 "got": got[:8], "count": len(got)}
 
-
-# The class as this module defines it, kept under a second name.
-# TdsWfm is replaceable, so anything that has to have the real one -
-# whatever else is bound to the name - reaches for this.
-SHIPPED = TdsWfm

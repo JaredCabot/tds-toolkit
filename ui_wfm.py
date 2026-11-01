@@ -541,7 +541,6 @@ def build(ui):
         # wire defaults to a different captured source, which a real bus wants.
         srow = ttk.Frame(wdecctl)
         srow.pack(fill="x")
-        state["decsrow"] = srow            # exposed for the layout self-check
         ttk.Label(srow, text=_("Source:"), foreground="#555").pack(
             side="left", padx=(0, 6))
         si = 0
@@ -569,7 +568,6 @@ def build(ui):
         # two auto-sized boxes sit side by side without clipping or spilling.
         prow = ttk.Frame(wdecctl)
         prow.pack(fill="x", pady=(4, 0))
-        state["decprow"] = prow            # exposed for the layout self-check
         for i, param in enumerate(one.PARAMS):
             cell = ttk.Frame(prow)
             cell.grid(row=i // 2, column=i % 2, sticky="w", padx=(0, 10),
@@ -656,6 +654,36 @@ def build(ui):
         draw_plot()
         ui.say(_("Decoded %d event(s)") % len(frames))
 
+    # A plugin's own methods are called through these (B5). colour() was
+    # the only one guarded; a label(), row() or columns() that raised took
+    # the strip, the table or the whole Waveforms tab's layout with it,
+    # and dec_table_width asks every installed decoder, not only the one
+    # in use. One bad plugin must not hide the others.
+    def dec_columns(one):
+        try:
+            cols = [(str(head), int(wide)) for head, wide in one.columns()]
+        except Exception as exc:                  # noqa: BLE001
+            log_note("decode", "%s columns(): %s"
+                     % (getattr(one, "NAME", "?"), exc))
+            cols = []
+        return cols or [("", 200)]
+
+    def dec_row(one, frame, ascii_on):
+        try:
+            return [str(c) for c in one.row(frame, ascii_on)]
+        except Exception as exc:                  # noqa: BLE001
+            log_note("decode", "%s row(): %s"
+                     % (getattr(one, "NAME", "?"), exc))
+            return ["?"]
+
+    def dec_label(one, frame, ascii_on):
+        try:
+            return str(one.label(frame, ascii_on))
+        except Exception as exc:                  # noqa: BLE001
+            log_note("decode", "%s label(): %s"
+                     % (getattr(one, "NAME", "?"), exc))
+            return "?"
+
     def dec_set_columns(one):
         """Give the table the columns a protocol declares, or clear them.
         Called on selection as well as on decode, so the headers show the
@@ -663,7 +691,7 @@ def build(ui):
         if one is None:
             dectree["columns"] = ()
             return
-        cols = one.columns()
+        cols = dec_columns(one)
         ids = ["c%d" % i for i in range(len(cols))]
         dectree["columns"] = ids
         last = len(cols) - 1
@@ -680,7 +708,7 @@ def build(ui):
         controls beside it keep the same room - enough for four equal source
         dropdowns on one line."""
         ds = state.get("decoders") or {}
-        sums = [sum(w for _h, w in d.columns()) for d in ds.values()]
+        sums = [sum(w for _h, w in dec_columns(d)) for d in ds.values()]
         return (max(sums) if sums else 260) + 18 + 12
 
     def dec_table_fit():
@@ -717,8 +745,8 @@ def build(ui):
         ascii_on = bool(state["decascii"].get())
         dec_set_columns(one)
         for k, frame in enumerate(res["frames"]):
-            cells = [tds_wfm.eng(frame.time, "s")] + list(
-                one.row(frame, ascii_on))
+            cells = [tds_wfm.eng(frame.time, "s")] + dec_row(one, frame,
+                                                             ascii_on)
             dectree.insert("", "end", iid=str(k), values=cells)
         dec_table_fit()
 
@@ -756,6 +784,10 @@ def build(ui):
         # it is kept inside the graticule either way.
         y1 = bottom - 2 - state.get("decoffset", 0.0)
         y1 = min(bottom - 2, max(top + band, y1))
+        # And the offset kept to where the band is drawn (B13), so a drag
+        # past the edge does not pile up travel that has to be undone
+        # before the band moves again.
+        state["decoffset"] = bottom - 2 - y1
         y0 = y1 - band
         mid = (y0 + y1) / 2.0
         # Every chevron's colour comes from the decoder itself: the app has
@@ -779,7 +811,7 @@ def build(ui):
                     x1 - notch, y1, x0 + notch, y1]
             plot.create_polygon(*spot, outline=colour, fill="",
                                 width=1, tags="decode")
-            _decode_label(one.label(frame, ascii_on),
+            _decode_label(dec_label(one, frame, ascii_on),
                           (x0 + x1) / 2.0, mid, (x1 - x0) - 4, colour)
         # The marker: a pointed flag at the band's level, drawn the same way
         # a channel's marker is - the protocol's colour, the name on it in
@@ -908,18 +940,15 @@ def build(ui):
             str(getattr(wave, "source", "") or "").upper())
         if own and preset_name() == "Instrument":
             return own
-        order = [w.source for w in shown_waves()]
-        at = order.index(wave.source) if wave.source in order else 0
+        # By what each trace stands for, as everywhere else (B4): two
+        # files from one channel staged into two references took one hue.
+        order = [wave_name(w) for w in shown_waves()]
+        at = order.index(wave_name(wave)) if wave_name(wave) in order else 0
         return tds_wfm.shifted_hue(pick["trace"], at)
 
     def shown_waves():
         """Every trace on the graticule, the primary one first."""
         return [w for w in (state.get("waves") or []) if w is not None]
-
-    def traces_by_name():
-        """Colours for the PNG export, which has no colour scheme of
-        its own to work out."""
-        return dict((w.source, trace_colour(w)) for w in shown_waves())
 
     def plot_soon():
         """Redraw once the pointer stops arriving, not once per event.
@@ -1249,8 +1278,8 @@ def build(ui):
             # be pulled straight back every time.
             moved = division_at(evt.y) - drag["from_div"]
             for one in picked:
-                view.shifts[one.source] = (drag["held"].get(one.source, 0.0)
-                                           + moved)
+                view.shifts[wave_name(one)] = (
+                    drag["held"].get(wave_name(one), 0.0) + moved)
             view.clamp()
             for one in picked:
                 view.snap_middle(one)
@@ -2062,8 +2091,7 @@ def build(ui):
             held.origin = os.path.basename(path)
             staged[slot] = held
         wave.label = slots[0]
-        show_sources({"all": state.get("wall") or [],
-                      "sources": state.get("wsources") or []})
+        refresh_sources()
         # Beside whatever else is on the graticule, not in place of it:
         # loading a file into a reference is not a reason to take the
         # channel it is going to be compared against off the screen.
@@ -2097,8 +2125,7 @@ def build(ui):
             # against.
             forget_source(name)
         if down:
-            show_sources({"all": state.get("wall") or [],
-                          "sources": state.get("wsources") or []})
+            refresh_sources()
             ui.say(_("%s put down - it was never sent, so nothing on the "
                      "instrument changed") % ", ".join(down))
         gone = [n for n in picked

@@ -205,6 +205,11 @@ class TdsFs(object):
     #: files is nearly two minutes of waiting for an instrument that
     #: was ready in a tenth of a second.
     READ_START = 4.0
+    #: The same wait anywhere but hd0:, where the drive has to spin up
+    #: first - the reference proxy itself waits 3 s off hd0: against 1 s
+    #: on it (F11). Taken for swallowed at 4 s, a floppy read that was
+    #: only slow was asked for a second time.
+    READ_START_FLOPPY = 9.0
 
     # A name that cannot be on any disk: illegal under 8.3, and unlikely
     # in any case. Used to ask a question, never to read anything.
@@ -302,7 +307,9 @@ class TdsFs(object):
             if self.reader == "PRINT":
                 return self._read_by_print(path)
             self.inst.write(':FILESYSTEM:READF "%s"' % path)
-            if not self._wait_mav(self.READ_START):
+            start = (self.READ_START if path.lower().startswith("hd0")
+                     else self.READ_START_FLOPPY)
+            if not self._wait_mav(start):
                 # Swallowed, the same way PRINT swallows the command
                 # after a large transfer - and READFILE does it too.
                 # Measured on a TDS 784D: a 1.2 KB read straight after a
@@ -312,9 +319,16 @@ class TdsFs(object):
                 # retry and one only, for the same reason the print path
                 # stops at one.
                 self.inst.write(':FILESYSTEM:READF "%s"' % path)
-                if not self._wait_mav(self.READ_START):
+                if not self._wait_mav(start):
                     raise IOError("The instrument did not answer a read "
                                   "of %s." % path)
+                got = bytes(self.inst.read_raw())
+                # If the first was only slow, both are answered, and the
+                # second copy would be read as the reply to whatever is
+                # asked next. Taken off the bus here.
+                if self._wait_mav(1.0):
+                    self.inst.read_raw()
+                return got
             return bytes(self.inst.read_raw())
         finally:
             self.inst.timeout = old

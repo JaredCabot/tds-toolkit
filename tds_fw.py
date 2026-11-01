@@ -50,15 +50,6 @@ NVRAM_BASE = 0x04000000
 #: boundary, and on a TDS784C, verified over the bus, it is empty past
 #: the parts. See INSTRUMENT-NOTES.
 NVRAM_LEN = 0x100000
-#: The most distinct NVRAM any instrument in this family holds: a 128 kB
-#: part at the base and a 512 kB part above it. Verified on a TDS784C
-#: (the peek reads 0x9FFFE and then zeros) and it is the two parts'
-#: datasheet sizes added. A backup always reads at least this much in
-#: full - it is where everything that cannot be re-derived lives - and
-#: only ever trims ABOVE it, and only what a restore of the low region
-#: would reproduce anyway. So trimming can drop empty or duplicate bytes
-#: and nothing else.
-NVRAM_KEEP = 0xA0000
 #: Scratch RAM the monitor is not using. The helper is parked here.
 SCRATCH_BASE = 0x05010000
 #: How far apart the flash devices sit. Commands reach one device, so
@@ -351,7 +342,7 @@ class Flash(object):
         raise FirmwareError("the flash has not been identified yet")
 
     # --------------------------------------------------------------- erase
-    def erase(self, length, note=None, stop=None, limit=300.0):
+    def erase(self, length, note=None, limit=300.0):
         """Erase every device under `length` bytes from the base.
 
         One command erases all of a part's unlocked blocks at once, so
@@ -375,10 +366,6 @@ class Flash(object):
             self.mon.poke(here, _both(0xD0D0))
             began = time.time()
             while True:
-                if stop is not None and stop():
-                    raise FirmwareError(
-                        "erase abandoned part way through - the flash is "
-                        "part erased and has to be programmed again")
                 status = self.mon.peek(here)
                 if status & self._flag(0x80) == self._flag(0x80):
                     break
@@ -409,13 +396,11 @@ class Flash(object):
             self.mon.poke(here, 0xFFFFFFFF)
 
     # ------------------------------------------------------------- reading
-    def read(self, length, base=None, note=None, stop=None):
+    def read(self, length, base=None, note=None):
         """`length` bytes out of the part."""
         base = self.base if base is None else base
         out = bytearray()
         while len(out) < length:
-            if stop is not None and stop():
-                raise FirmwareError("read abandoned part way through")
             want = min(CHUNK, length - len(out))
             out += self.mon.read(base + len(out), want)
             if note and len(out) % 0x10000 < CHUNK:
@@ -459,7 +444,7 @@ class Flash(object):
         finally:
             self.mon.write(a, was)
 
-    def measure_distinct(self, base, length, stop=None):
+    def measure_distinct(self, base, length):
         """How many bytes from `base` are distinct cells, measured.
 
         A TDS680B answers for a megabyte and holds 640 kB of it: a
@@ -491,8 +476,6 @@ class Flash(object):
         for candidate in ALIAS_STRIDES:
             if candidate >= length:
                 continue
-            if stop is not None and stop():
-                raise FirmwareError("measuring was abandoned part way")
             try:
                 if self.same_cell(top - candidate, top):
                     stride = candidate
@@ -509,25 +492,11 @@ class Flash(object):
         if self.same_cell(base + RTC_LEN, base + stride + RTC_LEN):
             return stride
         for at in range(stride + PROBE_GRID, length, PROBE_GRID):
-            if stop is not None and stop():
-                raise FirmwareError("measuring was abandoned part way")
             if self.same_cell(base + at - stride, base + at):
                 return at
         return length
 
-    def nvram_keep_len(self, note=None, stop=None):
-        """How much of the NVRAM window a backup should read: all of it."""
-        # The whole window, always. This used to sample 512 bytes at
-        # each 128 kB step above NVRAM_KEEP and keep the low region alone
-        # when every sample was uniform or a copy of what sat a part-size
-        # lower - which is a judgement about 384 kB made on three
-        # glimpses of it, and a wrong one is a backup that cannot put the
-        # instrument back. A minute more on the bus buys the whole
-        # megabyte; nvram_check still ignores the all-zero sections and
-        # measure_distinct still finds the aliasing on the way in.
-        return NVRAM_LEN
-
-    def write_span(self, data, base=None, skip=0, note=None, stop=None):
+    def write_span(self, data, base=None, skip=0, note=None):
         """`data` into memory from `base`, leaving the first `skip` bytes.
 
         Plain M writes, not the flash's erase-and-program: NVRAM is
@@ -547,11 +516,6 @@ class Flash(object):
         base = self.base if base is None else base
         at = skip
         while at < len(data):
-            if stop is not None and stop():
-                raise FirmwareError(
-                    "the write was abandoned %s in - what is in the "
-                    "instrument now is part the backup and part what was "
-                    "there before" % _size(at))
             piece = data[at:at + WCHUNK]
             self.mon.write(base + at, piece)
             at += len(piece)
@@ -630,7 +594,7 @@ class Flash(object):
         raise FirmwareError("the flash's %s never reached 0x%04X"
                             % (what, want))
 
-    def program(self, image, note=None, stop=None):
+    def program(self, image, note=None):
         """Write `image` from the base of the part.
 
         The helper does the page loop where it can and this drives it where
@@ -654,11 +618,6 @@ class Flash(object):
         pages = (len(image) + PAGE - 1) // PAGE
         fell_back, untouched = 0, 0
         for i in range(pages):
-            if stop is not None and stop():
-                raise FirmwareError(
-                    "programming abandoned after %d of %d pages - the flash "
-                    "is part written and has to be programmed again"
-                    % (i, pages))
             data = image[i * PAGE:(i + 1) * PAGE]
             data += b"\xFF" * (PAGE - len(data))
             if data == BLANK:
@@ -688,12 +647,10 @@ class Flash(object):
                      i / float(pages))
         return fell_back, untouched
 
-    def verify(self, image, note=None, stop=None):
+    def verify(self, image, note=None):
         """Where the part differs from `image`. Empty is a clean write."""
         faults = []
         for at in range(0, len(image), CHUNK):
-            if stop is not None and stop():
-                raise FirmwareError("verify abandoned part way through")
             want = image[at:at + CHUNK]
             got = self.mon.read(self.base + at, len(want))
             if got != want:

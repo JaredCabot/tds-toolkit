@@ -278,7 +278,6 @@ def build(ui):
         if not formats:
             ui.say(_("This instrument offers no image format this program "
                      "can read."))
-        if not formats:
             ui.unavailable(btn_sget)
         btn_sget.config(state="normal" if formats else "disabled")
 

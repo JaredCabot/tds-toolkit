@@ -25,6 +25,97 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Dragging or wheel-zooming a long record lagged behind the pointer.**
   Every pointer event redrew the whole plot. A burst of events now costs one
   redraw, as it already did in the mask editor; letting go draws at once.
+- **A program that died without closing could lock out every later
+  connect.** The single-copy check was a file holding a process number,
+  and Windows soon gives that number to some other program. The check is
+  now a lock the operating system lets go of when the program ends,
+  however it ends.
+- **A connect that failed part way left the program half connected,**
+  with jobs allowed through on capabilities never measured. Any failure
+  after the first answer now closes the session and leaves the program
+  disconnected.
+- **Two quick checks waited 45 seconds** for an instrument that was not
+  there: the bootloader test on the Firmware tab and the scan's look at
+  the instrument already open. Both now use the short hello the other
+  probes use.
+- **Two unreadable files on the PC stopped an upload batch,** counted as
+  if the instrument had failed twice. Only instrument failures count now.
+- **A clock check that failed left a channel switched on and rescaled.**
+  The channel is now put back whatever happens in between.
+- **The safety lock-out after a failed transfer did not engage** when the
+  program's folder could not be written to, as under Program Files. It
+  now holds for the rest of the run even when it cannot be saved.
+- **An uploads record edited in Notepad could not be read.** It is now
+  read and written as UTF-8, with or without a byte-order mark.
+- **Masks and Limits:**
+  - a grid spacing typed as 0, a tiny number or "nan" made the editor
+    draw millions of lines; spacings now have to be finite and at least
+    a tenth of a division.
+  - Union, Intersect and Subtract acted on shapes that were no longer
+    shown as chosen; they now take only the selected shapes.
+  - a paste near the edge could put a shape off the graticule, where it
+    could be neither dragged back nor sent; a paste now stays on it.
+  - with Caps Lock on, Ctrl+Z redid instead of undoing, and Ctrl+C, X, V
+    and Y did nothing. Both cases now work.
+  - double-clicking a mask or template in the library replaced unsaved
+    work without asking.
+  - a reply from the instrument that arrived after the tab changed was
+    recorded in the other drawing's undo history.
+  - Start measurement came back on after every job, even on an
+    instrument without Option 2C.
+  - the option bars kept a stale layout when the window was resized,
+    because they shared a remembered split with the toolbar.
+  - hovering and dragging re-read the setup file from disk on every
+    redraw; it is now read once per change.
+  - Learn here took minutes on a long record. It now runs in linear time.
+- **Waveforms:**
+  - two files from the same channel, loaded into different references,
+    moved and coloured as one trace.
+  - a decoder plugin whose label, row or columns raised took the whole
+    decode with it, as only its colour was guarded.
+  - dragging the decode band past the top or bottom piled up offset that
+    did nothing on screen until dragged back as far.
+- **Files tab:**
+  - after removing, copying, uploading into or formatting a folder, the
+    listings of its subfolders could still be served from memory.
+  - a finished write showed a Python dictionary in the status bar.
+  - New folder and Refresh on a folder's right-click menu acted on the
+    folder being browsed rather than the one clicked.
+  - a Back or Forward that failed left the history pointing at a folder
+    never reached, and the next folder visited was not recorded.
+  - the column headings, the right-click menus and the multi-file delete
+    question stayed in the old language after a language change.
+  - dropping files froze Explorer while the upload question was open,
+    and a drop made while busy was silently ignored; it is now refused
+    with a message.
+  - the time estimate for a drop used the speed of the drive being
+    browsed, not the drive the files were dropped on.
+- **A floppy read could leave a second reply in the bus.** A slow floppy
+  was taken for a lost command and asked again. Floppy reads are now
+  given longer, and a repeated read clears the reply it no longer needs.
+- **An NVRAM restore wrote the file as it was read a second time,** after
+  the size and checksums were checked on the first read. It now writes
+  the bytes that were checked.
+- **Saved waveform files:**
+  - a CSV written by this program lost its units when read back.
+  - re-saving a .WFM could change its volts per division in the last
+    digit.
+  - ISF files with short-form keys, or with little-endian or unsigned
+    data, read wrongly; all are now understood.
+  - a damaged PCX screen image could be drawn from past the end of its
+    rows; it is now refused.
+- **DPO detection and the mask commands were switched off for the
+  session** after one timeout while the instrument was busy finishing a
+  hardcopy or a save. It now takes two silences in a row.
+- **A setup backup split quoted text at its semicolons,** such as a
+  channel label or a hardcopy file name, so the restore sent two broken
+  commands.
+- **A mask file with "nan" or "inf" in it** got past loading and failed
+  later while drawing or saving. It is now refused when read.
+- **The file name offered for a mask with accented or Japanese letters
+  in its name was not 8.3.** It now keeps to ASCII letters and digits.
+- **A language file whose name was not text** broke the language list;
+  it now costs only that language.
 
 ### Changed
 

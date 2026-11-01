@@ -77,7 +77,7 @@ def _value(said, n):
     return int(got[-1]) & 0xFFFF
 
 
-def read(ask, base=BASE, note=None, stop=None):
+def read(ask, base=BASE, note=None):
     """Every calibration word, as the bytes a saved file holds.
 
     `ask` sends one query and hands back the reply. The first word is
@@ -86,9 +86,6 @@ def read(ask, base=BASE, note=None, stop=None):
     """
     out = bytearray(b"\x00" * PAD)
     for n in range(WORDS):
-        if stop is not None and stop():
-            raise CalError("reading the calibration constants was "
-                           "abandoned part way through")
         out += struct.pack(">H", word(ask, n, base))
         if note is not None and not n % 36:
             note("Reading the calibration constants - word %d of %d"
@@ -126,11 +123,9 @@ def setting(n, value, base=BASE):
     return "WORDCONSTANT:ATOFFSET %d,%d,%d" % (base, n, value & 0xFFFF)
 
 
-def names(model, stamp):
-    """What a pair of backups is called, and the combined file."""
-    return ("%s_U1052_%s.bin" % (model, stamp),
-            "%s_U1055_%s.bin" % (model, stamp),
-            "%s_CAL_%s.bin" % (model, stamp))
+def name(model, stamp):
+    """What a calibration backup is called."""
+    return "%s_CAL_%s.bin" % (model, stamp)
 
 
 def checksum(blob):
