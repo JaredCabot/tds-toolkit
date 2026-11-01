@@ -17479,6 +17479,1511 @@ def run_gui():
     #: release it.
     UNBUSIED = ("lim_state", "set_send", "msk_live", "sys_clock_read")
 
+    # What each finished job does to the window, by the worker's label
+    # for it. pump() takes results off the queue and hands each to its
+    # handler here; a failure goes to pump_failed whatever the job was.
+
+    def pump_failed(label, payload):
+        # Four jobs run without taking busy - they are asked
+        # in passing, beside whatever else is on the bus -
+        # so their failing must not hand back buttons that
+        # another job still holds.
+        if label not in UNBUSIED:
+            busy(False)
+        if label == "scan":
+            scanning(False)
+        if label in ("lim_build", "lim_picture"):
+            # The flags a Learn or a Load set for the
+            # picture that follows, or the next unrelated
+            # Refresh would take the band unasked.
+            state.pop("llearn", None)
+            state.pop("lload", None)
+        raw, payload = payload, localise(payload)
+        # A failure is the last line of the run it ends,
+        # and the report is the only place it stays.
+        if label in BAK_JOBS:
+            bak_note(_("Failed - %s") % payload)
+        if label == "connect":
+            if "Another copy of TDS Toolkit" in (raw or ""):
+                # The bus is held by another copy of this
+                # program, not an absent instrument. Say so and
+                # do not open the picker - there is nothing to
+                # pick, and scanning the bus is the very thing
+                # one program at a time exists to prevent.
+                say(payload)
+                root.title("TDS Toolkit %s - %s"
+                           % (__version__, _("not connected")))
+                return
+            # Not an error. The scope being somewhere else, or
+            # switched off, is the ordinary first experience of
+            # anyone whose bus is not the author's, and raising
+            # VISA's own wording at them - "VI_ERROR_RSRC_NFOUND
+            # (-1073807343): Insufficient location information"
+            # - explains nothing they can act on. Say plainly
+            # that nothing answered, then go and look.
+            say(_("Nothing answered at %s")
+                % (state["addr"] or DEFAULT_ADDR))
+            root.title("TDS Toolkit %s - %s"
+                       % (__version__, _("not connected")))
+            do_instrument(reason=(
+                _("Nothing answered at %s.")
+                % (state["addr"] or DEFAULT_ADDR)),
+                quiet=True)
+            return
+        say(_("%(job)s failed - %(why)s")
+            % {"job": label, "why": payload})
+        if label == "fw_probe":
+            # The tab has a line for exactly this, and it is
+            # the line the user was reading when they pressed
+            # Connect. A modal on top of it says the same
+            # thing twice and has to be dismissed first.
+            state["fwmonitor"] = None
+            lbl_fwstate.config(text=str(payload),
+                               foreground="#a00")
+            fw_buttons()
+            say(_("The bootloader did not answer"))
+            return
+        if label == "lim_picture":
+            # A reference that holds nothing refuses to be
+            # read, and that refusal is the answer to the
+            # question. The list is corrected to say empty
+            # and the sentence goes on the status line; a
+            # modal box for the ordinary state of an unused
+            # reference is a box for nothing.
+            state["lhas"] = False
+            lim_refs_note(state["ldest"].get(), 0)
+            lim_buttons()
+            say(str(payload))
+            return
+        if label == "scan" and state.get("scan_failed"):
+            # The picker opens its own scan as it appears. If
+            # that fails there is already a dialog on screen
+            # saying so, and stacking a modal error box on top
+            # of it tells the user the same thing twice.
+            state.pop("scan_into", None)
+            state.pop("scan_failed")(str(payload))
+        else:
+            messagebox.showerror(_("Error"), str(payload))
+
+    def pump_msk_behind(payload):
+        busy(False)
+        # Whichever tab asked for it - see do_msk_behind.
+        at = state.pop("behindfor", "m")
+        state.pop(at + "shotimage", None)
+        # What the instrument counted while the picture was
+        # being taken, which is the verdict in DPO and the
+        # better one anywhere. See msk_verdict. A limit test
+        # has no hit counter, so this is the mask's alone.
+        if at == "m":
+            state["mhits"] = payload.get("hits")
+        if payload.get("shot"):
+            state[at + "shot"] = payload["shot"]
+            state[at + "wave"] = None
+            edit_draw(at)
+            say((_("The instrument is in DPO - its screen is "
+                   "behind the mask instead of a trace")
+                 if at == "m" else
+                 _("The instrument is in DPO - its screen is "
+                   "behind the envelope instead of a trace"))
+                + msk_say_hits())
+        else:
+            state.pop(at + "shot", None)
+            state[at + "wave"] = payload.get("wave")
+            if at == "m":
+                state["mview"] = msk_view_for(state["mwave"])
+            edit_draw(at)
+            held = state.get(at + "wave")
+            say((((_("%s is behind the mask") if at == "m"
+                   else _("%s is behind the envelope"))
+                  % (held.label or held.source)) if held
+                 else _("Nothing to capture"))
+                + msk_say_hits())
+        # Clear screenshot is offered on whether there is
+        # anything behind the mask, so the capture that puts
+        # something there has to say the toolbar is stale.
+        # Without this it stayed greyed with a screenshot on
+        # the canvas until some unrelated click redrew it.
+        msk_buttons()
+        lim_buttons()
+
+    def pump_fw_probe(payload):
+        busy(False)
+        # Never reached on a failure - that is handled above,
+        # in the tab's own line rather than in a dialog.
+        state["fwmonitor"] = payload
+        fw_say_state()
+        fw_buttons()
+        say(_("The monitor answered - the flash is %s")
+            % payload["flash"])
+
+    def pump_fw_catalogue(payload):
+        busy(False)
+        state["fwimages"] = payload["images"]
+        cbo_fwmodel.config(values=sorted(
+            {m for im in payload["images"] for m in im.models}))
+        fw_fill()
+        say(_("%(count)d firmware images in %(folder)s")
+            % {"count": len(payload["images"]),
+               "folder": payload["folder"]})
+
+    def pump_fw_run(payload):
+        # The report ends by telling the user to switch off, so
+        # what Connect measured is about to be stale: Write
+        # waits for a fresh Connect rather than sizing the next
+        # backup by a part that may since have been swapped.
+        state["fwmonitor"] = None
+        busy(False)
+        fw_say_state()
+        fw_report(payload)
+
+    def pump_fw_backup(payload):
+        busy(False)
+        fw_backup_report(payload)
+
+    def pump_connect(payload):
+        state["addr"] = payload.get("addr") or state["addr"]
+        state["idn"] = payload.get("idn") or ""
+        # If this address is not in the dropdown yet - first
+        # run, before any scan - put it there so the box is
+        # never blank while plainly connected to something.
+        if not any(s["addr"] == state["addr"]
+                   for s in state.get("scopes") or []):
+            set_instrument_list(
+                (state.get("scanned") or [])
+                + [{"addr": state["addr"], "idn": payload["idn"],
+                    "note": "", "scope": True}])
+        root.title("TDS Toolkit %s - %s%s"
+                   % (__version__, payload["idn"],
+                      "" if DND else
+                      "   (drag and drop needs tkinterdnd2)"))
+        # What this firmware can and cannot do, decided once
+        # and reflected in the toolbar rather than discovered
+        # halfway through a transfer.
+        cannot = []
+        if not payload.get("can_write", True):
+            cannot.append(by_name["Upload"])
+        if not payload.get("reader"):
+            cannot.append(by_name["Download"])
+        if payload.get("filesystem") is False:
+            # No filesystem means no folders to make and
+            # nothing to delete either, not just no transfers.
+            cannot += [by_name["New folder"], by_name["Delete"]]
+            # And it is the marker for the generation that
+            # has no constant librarian and no service
+            # password: v2.16e answers neither, so the
+            # calibration constants and the factory options
+            # can only time out there. The two are decided
+            # by the same fact and are greyed together.
+            cannot += [btn_bakcalget, btn_bakcalput,
+                       btn_sysopts]
+        state["cannot"] = cannot
+        state["reader"] = payload.get("reader")
+        # Mask testing is Option 2C. Without it the MASK
+        # subsystem answers and draws nothing, so the Masks
+        # tab sends a limit template instead.
+        state["masks"] = bool(payload.get("masks"))
+        log_context("connect options",
+                    "%s; mask testing %s"
+                    % (payload.get("options") or "?",
+                       "yes" if state["masks"] else "no"))
+        # Asked for before anything filesystem-shaped can cut
+        # this short. An instrument with no filesystem is
+        # precisely the one where the waveform tab is the only
+        # thing this program can offer.
+        w.submit("wfm_sources", lambda k: k.wfm_sources())
+        # The screen comes from the hardcopy subsystem, which
+        # every instrument in the range has, so this is asked
+        # for on the same terms as the waveform sources.
+        w.submit("scr_options", lambda k: k.scr_options())
+        # And whether it keeps a service log. Every
+        # instrument on the bench does, but the earliest
+        # firmware in the collection has no ERRLOG at all,
+        # and a Download button that can only apologise is
+        # worse than one that is plainly greyed.
+        w.submit("err_available", lambda k: k.err_available())
+        # And what is in its mask segments. Asked here rather
+        # than with the volumes, because the mask subsystem
+        # has nothing to do with the disk: firmware with no
+        # filesystem at all still has masks, and a scope with
+        # no disk in the drive still has them too.
+        msk_scan_scope()
+        if payload.get("filesystem") is False:
+            # The earliest firmware has no FILESYSTEM subsystem
+            # at all. Saying so beats an empty window and a
+            # string of errors from commands it never had.
+            busy(False)
+            # A seam, not dead state: the smoke checks
+            # read it to know which of the file checks
+            # this instrument can be held to.
+            state["no_filesystem"] = True
+            say(_("This instrument has no filesystem over GPIB"))
+            # Through `after`, like the Limited instrument
+            # box below it, and for a reason worth stating.
+            # A modal box raised from inside the pump runs
+            # Tk's event loop within itself, and the pump is
+            # suspended for as long as it is up - so every
+            # answer the worker sends back queues behind it,
+            # including the waveform sources, the hardcopy
+            # formats, the error log question and the mask
+            # segments asked for a few lines above. On the
+            # one instrument that raises this box, that is
+            # every remaining thing the program can do.
+            root.after(400, lambda: messagebox.showinfo(
+                _("Nothing to browse"),
+                _("This instrument's firmware has no "
+                  "filesystem commands at all - no working "
+                  "directory, no directory listing, no free "
+                  "space.\n\nThere is nothing for this "
+                  "program to show. Firmware v5.0e and later "
+                  "added the file transfer commands; the A "
+                  "and B series can browse and download but "
+                  "not upload.")))
+            return
+        if cannot and not state.get("told_about"):
+            state["told_about"] = True
+            root.after(400, lambda: messagebox.showinfo(
+                _("Limited instrument"),
+                _("This instrument's firmware has no command for "
+                  "transferring file contents over GPIB.\n\n"
+                  "You can browse it, create folders and delete "
+                  "files. Downloading and uploading are greyed "
+                  "out because they cannot work here.")
+                if len(cannot) > 1 else
+                _("This instrument's firmware cannot receive "
+                  "files over GPIB.\n\nYou can browse it, "
+                  "download from it, create folders and delete "
+                  "files. Only uploading is unavailable.")))
+        say(_("Probing volumes ..."))
+        w.submit("volumes", lambda k: k.volumes())
+
+    def pump_scan(payload):
+        busy(False)
+        scanning(False)
+        state.pop("scan_failed", None)
+        into = state.pop("scan_into", None)
+        if into:
+            into(payload)
+        else:
+            say(_("Found %d instrument(s)")
+                % len(payload["found"]))
+        if payload.get("cancelled"):
+            say(_("Scan stopped after %(done)d of %(all)d "
+                  "addresses")
+                % {"done": payload.get("reached", 0),
+                   "all": payload.get("total", 0)})
+
+    def pump_wfm_sources(payload):
+        busy(False)
+        found = payload["sources"]
+        state["wsources"] = found
+        state["wrefs"] = payload.get("refs") or list(tds_wfm.REFS)
+        if payload.get("all"):
+            # Held rather than written. The sources are
+            # re-read after every capture, every send and
+            # every toggle, and a third of a 5000-line log
+            # was once this one line repeated with the same
+            # answer. What matters is which channels were
+            # up when something went wrong, so the latest
+            # answer stands and goes out with a fault if
+            # there is one.
+            log_context("waveform sources",
+                        "instrument reports %s; displayed: %s"
+                        % (", ".join(payload["all"]),
+                           ", ".join(found) or "none"))
+        if payload.get("colours"):
+            state["icolours"] = payload["colours"]
+        show_sources(payload)
+        lim_scan()
+        if found:
+            say(_("%d waveform source(s) on the instrument")
+                % len(found))
+        else:
+            say(_("Nothing is displayed - double-click a "
+                  "source to turn it on"))
+
+    def pump_wfm_select(payload):
+        busy(False)
+        do_wfm_sources()
+
+    def pump_wfm_delete(payload):
+        busy(False)
+        gone = ", ".join(payload["names"])
+        for one in payload["names"]:
+            forget_source(one)
+        say(_("%s has been deleted on the instrument") % gone)
+        do_wfm_sources()
+
+    def pump_err_available(payload):
+        has_log = bool(payload.get("errlog"))
+        state["errlog"] = has_log
+        if not has_log:
+            # Through state["cannot"], not by disabling the
+            # buttons here: busy(False) re-enables everything
+            # in the button set at the end of the next
+            # operation, and would hand back a Download that
+            # cannot work.
+            unavailable(btn_eget, btn_eclr)
+            show_errors([_("This firmware has no error log.")])
+
+    def pump_err_entries(payload):
+        busy(False)
+        show_err_result(payload)
+
+    def pump_err_clear(payload):
+        busy(False)
+        show_errors([_("No errors")], 0)
+        say(_("The instrument's error log has been cleared"))
+
+    def pump_scr_options(payload):
+        busy(False)
+        show_scr_options(payload)
+        names = [f["keyword"]
+                 for f in payload.get("formats") or []]
+        log_context("screen formats",
+                    "%s; chosen %s; palette %s"
+                    % (", ".join(names) or "none",
+                       payload.get("best"),
+                       payload.get("palette")))
+        if names:
+            say(_("%d image format(s) available; %s will be used")
+                % (len(names), payload.get("best")))
+
+    def pump_scr_get(payload):
+        busy(False)
+        progress_off()
+        screen = payload["screen"]
+        # The instrument's own picture is kept as it
+        # arrived, so switching to Inverted and back does
+        # not need another capture.
+        state["sraw"] = screen
+        state["ssecs"] = payload["secs"]
+        # What arrived already honours the layout it was
+        # asked for, so no turning is owed on it.
+        state["sturned"] = 0
+        if state.get("sinvert"):
+            screen = screen.inverted()
+        show_shot(screen, payload["secs"])
+        say(_("Screen read in %s: %d x %d in %.1f s")
+            % (screen.keyword, screen.width, screen.height,
+               payload["secs"]))
+
+    def pump_wfm_get(payload):
+        busy(False)
+        waves = payload["waves"]
+        # Everything captured is kept, whether it is on the
+        # graticule or not: the capture is the instrument's
+        # whole state at one moment, and a source turned on
+        # afterwards should come from that moment too rather
+        # than send us back to the bus for a different one.
+        for one in waves:
+            state.setdefault("fetched", {})[wave_name(one)] = one
+        # Nothing chosen yet, so show what was captured -
+        # otherwise a first press of Get waveform reads the
+        # instrument and appears to do nothing.
+        if not wfm_picked_all():
+            state["wticked"] = wfm_order(
+                [wave_name(x) for x in waves])
+        wfm_pick(*(state.get("wticked") or ()))
+        # A capture is presented at the instrument's own
+        # horizontal scale: the middle of the record at the
+        # scope's points-a-division, so what the app shows
+        # first matches what was on the scope's screen rather
+        # than the whole record squeezed onto ten divisions.
+        # A record no larger than the screen is shown whole.
+        if state.get("view") is not None and state.get("wave"):
+            state["view"].to_scope(state["wave"])
+            draw_plot()
+        missed = [s for s, _why in payload["refused"]]
+        missed += list(state.pop("wskipped", None) or [])
+        how = payload.get("how") or {}
+        state["wacq"] = how
+        if how.get("froze"):
+            held = _("acquisition held for the capture, then "
+                     "released")
+        elif how.get("sequence"):
+            held = _("left running - it is set to single "
+                     "sequence and stopping it would re-arm "
+                     "the trigger")
+        else:
+            held = _("the instrument was already stopped")
+        say(_("Captured %(name)s in %(secs).2f s - %(how)s")
+            % {"name": ", ".join(wave_name(x) for x in waves),
+               "secs": payload["secs"], "how": held}
+            + (_("  -  %s could not be read, being switched "
+                 "off on the instrument") % ", ".join(missed)
+               if missed else ""))
+
+    def pump_wfm_send(payload):
+        busy(False)
+        say(_("Sent %d points to %s, read back and verified")
+            % (payload["points"], payload["dest"]))
+        do_wfm_sources()
+
+    def pump_wfm_send_many(payload):
+        busy(False)
+        sent = payload["sent"]
+        # Put down what landed. A job that failed part way
+        # raises instead of returning, so nothing is put
+        # down and pressing Send again sends the lot -
+        # writing a reference twice costs a second and
+        # leaves it holding the same samples.
+        for out in sent:
+            state.get("staged", {}).pop(out["dest"], None)
+        say(_("Sent %(count)d waveform(s) to %(where)s, read "
+              "back and verified")
+            % {"count": len(sent),
+               "where": ", ".join(o["dest"] for o in sent)})
+        do_wfm_sources()
+
+    def pump_sys_read(payload):
+        busy(False)
+        sys_show(payload)
+        say(_("Read the instrument's settings"))
+
+    def pump_sys_option_read(payload):
+        busy(False)
+        # payload is None when a word would not read, and
+        # the dialog opens anyway with nothing ticked - the
+        # option words are not the only way to work out
+        # what an instrument is carrying, and refusing to
+        # show the dialog would be worse than showing it
+        # the way it always looked.
+        say(_("Read the option words") if payload is not None
+            else _("The option words would not read"))
+        sys_options_dialog(payload)
+
+    def pump_sys_clock_read(payload):
+        # The two clock fields and nothing else, and nothing
+        # said on the status line: this runs every time the
+        # tab is opened, and a message each time would be
+        # noise about something nobody asked for.
+        sys_clock_show(payload.get("date"), SYS_DATE, "-")
+        sys_clock_show(payload.get("time"), SYS_TIME, ":")
+        if state.get("sysnow"):
+            state["sysnow"]["date"] = payload.get("date")
+            state["sysnow"]["time"] = payload.get("time")
+
+    def pump_sys_send(payload):
+        busy(False)
+        sys_show(payload["now"],
+                 clock=not state.pop("syskeepclock", False))
+        refused = payload["refused"]
+        if refused:
+            # Named, with what the instrument said about
+            # each. "Some settings were refused" is not
+            # something anybody can act on.
+            say(_("%(what)s - %(n)d refused")
+                % {"what": state.get("syssaid") or _("Sent"),
+                   "n": len(refused)})
+            messagebox.showwarning(
+                _("The instrument refused these"),
+                "\n".join("%s\n    %s" % (line, why)
+                          for line, why in refused))
+        else:
+            say(_("%d setting(s) sent and read back")
+                % payload["sent"])
+
+    def pump_sys_spc(payload):
+        busy(False)
+        if payload.get("stillgoing"):
+            # Not a failure. The instrument is still
+            # compensating; this program has only stopped
+            # waiting to hear about it.
+            say(_("Signal path compensation is still "
+                  "running on the instrument"))
+            messagebox.showinfo(
+                _("Still compensating"),
+                _("The instrument has been compensating for "
+                  "%d minutes and has not finished.\n\nThat "
+                  "is not a failure - it is still working, "
+                  "and it will finish on its own. Wait until "
+                  "the instrument's own screen says it is "
+                  "done before using it, then run the self "
+                  "test on this tab if you want the verdict.")
+                % int(payload.get("waited", 0) / 60))
+        else:
+            say(_("Signal path compensation passed") if
+                payload["passed"] else
+                _("Signal path compensation returned %s - "
+                  "anything but 0 is a failure")
+                % payload["result"])
+        if not payload["passed"] and not payload.get(
+                "stillgoing"):
+            messagebox.showwarning(
+                _("Compensation did not pass"),
+                _("*CAL? returned %s. Zero means it passed; "
+                  "anything else means the instrument could "
+                  "not compensate itself, and the self test "
+                  "on this tab will say more about why.")
+                % payload["result"])
+
+    def pump_sys_diag(payload):
+        busy(False)
+        sys_diag_show(payload)
+        if not payload.get("back"):
+            # It was left alone for two and a half minutes
+            # and asked slowly after that, so this is no
+            # longer the ordinary "still booting" case it
+            # used to be. Two things are worth saying and
+            # neither can be told apart from the bus.
+            say(_("The instrument has not answered since the "
+                  "self test started. Look at its screen: a "
+                  "diagnostic log wants CLEAR MENU, and a "
+                  "dark or frozen one wants its power "
+                  "cycling."))
+            messagebox.showwarning(
+                _("The instrument has not come back"),
+                _("The self test warm-boots the instrument. "
+                  "It was left alone for two and a half "
+                  "minutes and has still not answered.\n\n"
+                  "Look at the instrument's own screen. If "
+                  "it is showing a diagnostic log, press "
+                  "CLEAR MENU to let it finish starting up. "
+                  "If it is frozen, switch it off and on."
+                  "\n\nNothing is lost either way. The "
+                  "result and the error log survive, so "
+                  "press Run again once it is back to read "
+                  "them."))
+        elif payload["passed"]:
+            say(_("Self test %s: everything passed")
+                % payload["area"])
+        elif payload.get("found"):
+            # Said in words rather than as the flag. With
+            # VERBOSE off the flag is the three characters
+            # "FAI", which is not a sentence to put in
+            # front of somebody.
+            say(_("Self test %(area)s failed - the error "
+                  "log added %(n)d line(s), shown below")
+                % {"area": payload["area"],
+                   "n": len(payload["found"])})
+        else:
+            say(_("Self test %s failed") % payload["area"])
+
+    def pump_sys_secure(payload):
+        busy(False)
+        if payload["failed"]:
+            say(_("Secure erase failed - the instrument could "
+                  "not verify the memory afterwards"))
+        elif payload["passed"]:
+            say(_("Secure erase done - every waveform and "
+                  "setup memory is zeroed"))
+        else:
+            # Neither event arrived. Said plainly rather
+            # than assumed either way: this one is not a
+            # thing to be vague about.
+            say(_("Secure erase sent, but the instrument "
+                  "raised neither the pass nor the fail "
+                  "event - events were %s")
+                % (", ".join(payload["events"]) or _("none")))
+        do_sys_read()
+
+    def pump_cal_read(payload):
+        busy(False)
+        # Where it goes was settled before the read started,
+        # so there is nothing to ask here - only to write.
+        path = keep_file(state.get("calpath"), payload["data"])
+        if not path:
+            return
+        lines = [_("Saved to %s") % os.path.basename(path)]
+        # Shown the way the NVRAM's sections are, and named
+        # for what it is: the calibration block carries one
+        # check word in word 0, not a word per section.
+        lines.append(_(
+            "    Calibration checksum: word 0 holds "
+            "0x%(want)04X, the 251 words after it add up to "
+            "0x%(got)04X")
+            % {"want": payload.get("check", 0),
+               "got": payload.get("sum", 0)})
+        if not payload.get("sound", True):
+            # Word 0 is the sum of the 251 words after it.
+            # A block that disagrees with its own checksum
+            # is damaged, and the file just written is a
+            # copy of the damage - worth knowing before it
+            # is relied on rather than while restoring it.
+            lines.append(_(
+                "The block does not agree with its own "
+                "checksum, so what has been saved is "
+                "already damaged. Keep it as evidence, but "
+                "do not restore it to a working "
+                "instrument."))
+        if payload["flat"]:
+            # Not proof of anything, but the one thing worth
+            # looking at: the librarian's address is right
+            # for the families the reference tool names and
+            # an assumption everywhere else.
+            lines.append(_(
+                "Every word read back the same value, which "
+                "calibration data is not. The address may be "
+                "wrong for this model."))
+        bak_note(*lines)
+        say(_("Calibration constants saved"))
+
+    def pump_cal_write(payload):
+        busy(False)
+        lines = []
+        if payload.get("stuck"):
+            lines.append(_(
+                "Word %(word)d would not take %(wanted)d - "
+                "it reads %(got)d. Stopped there.")
+                % payload["stuck"])
+        lines.append(_("%(wrote)d of %(words)d word(s) "
+                       "written and read back.") % payload)
+        if payload.get("cancelled"):
+            # Stopped part way, so the block is now
+            # neither the file nor what was there.
+            lines.append(_(
+                "This was stopped part way through. The "
+                "words already written are the file's; the "
+                "rest are whatever the instrument held "
+                "before. Restore it again to finish."))
+        # Transferred is not stored. The words go into a
+        # working copy in the instrument's RAM and reading
+        # them back proves only that they arrived;
+        # CALIBRATE:STORE? is what commits the copy to the
+        # acquisition board, and its answer is the only
+        # thing that says the constants will still be there
+        # after the next power cycle.
+        if payload.get("stored") is True:
+            lines.append(_(
+                "Stored on the acquisition board. The "
+                "instrument answered 0, which is what it "
+                "answers when the constants have been "
+                "committed."))
+        elif payload.get("stored") is False:
+            lines.append(_(
+                "NOT stored. The words were sent and read "
+                "back, but the instrument answered %d to "
+                "the command that commits them, so nothing "
+                "was kept: at the next power cycle this "
+                "instrument will hold what it held before. "
+                "The NVRAM protection switch is what stops "
+                "the commit - set it to unprotected, with "
+                "the instrument switched on and without "
+                "rebooting it, and restore again.")
+                % payload.get("store_code", 0))
+        elif "stored" in payload:
+            lines.append(_(
+                "Whether they were stored is not known: the "
+                "command that commits them answered "
+                "%(said)s. The words were sent and read "
+                "back. Power the instrument off and on and "
+                "back the constants up again to see what it "
+                "kept.") % {"said": payload.get("store_said")
+                            or _("nothing")})
+        if "sum" in payload:
+            lines.append(_(
+                "    Calibration checksum: word 0 holds "
+                "0x%(want)04X, the 251 words after it add up to "
+                "0x%(got)04X")
+                % {"want": payload["check"],
+                   "got": payload["sum"]})
+        bak_note(*lines)
+        say(_("The instrument would not take every "
+              "calibration word")
+            if payload.get("stuck") else
+            _("The calibration restore was stopped part "
+              "way through")
+            if payload.get("cancelled") else
+            _("Calibration constants restored and stored")
+            if payload.get("stored") is True else
+            _("The constants were sent but the instrument "
+              "did not store them")
+            if payload.get("stored") is False
+            else _("Calibration constants sent"))
+
+    def pump_bak_survey(payload):
+        busy(False)
+        bak_show_survey(payload)
+        say(_("The instrument answered"))
+
+    def pump_bak_nvram_put(payload):
+        busy(False)
+        bak_note(_("Restored %(size)s of NVRAM from %(file)s")
+                 % {"size": human_bytes(payload["wrote"]),
+                    "file": os.path.basename(payload["path"])},
+                 _("    read back and identical"))
+        # Said whenever the two differ, because otherwise
+        # the line above reports 640 kB restored from a
+        # 1 MB file and reads like a write that stopped
+        # short. It did not: the rest of the window is the
+        # same memory answering a second time.
+        if payload.get("held", 0) > payload.get("distinct", 0):
+            bak_note(_(
+                "    the file is %(held)s and this instrument "
+                "holds %(real)s of distinct memory - the rest "
+                "of the window is the same memory answering "
+                "again, and is not written twice")
+                % {"held": human_bytes(payload["held"]),
+                   "real": human_bytes(payload["distinct"])})
+        say(_("NVRAM restored"))
+
+    def pump_bak_nvram(payload):
+        busy(False)
+        for one in payload["backups"]:
+            bak_note(_("%(what)s: %(size)s to %(file)s")
+                     % {"what": one["what"],
+                        "size": human_bytes(one["bytes"]),
+                        "file": os.path.basename(one["path"])},
+                     "    " + one["sha"])
+        for one in payload.get("ticked") or []:
+            bak_note(_("The clock moved while it was read, in "
+                       "%d byte(s). That is the instrument "
+                       "keeping time, not a fault.")
+                     % one["bytes"])
+        say(_("NVRAM backed up"))
+
+    def pump_bak_make(payload):
+        busy(False)
+        bak_note(_("%(files)d file(s), %(size)s")
+                 % {"files": len(payload["manifest"]["files"]),
+                    "size": human_bytes(payload["bytes"])},
+                 "    " + ", ".join(
+                     "%s (%d)" % (k, n) for k, n
+                     in sorted(payload["holds"].items())))
+        for name, why in payload["failed"]:
+            bak_note(_("%(part)s: %(why)s")
+                     % {"part": name, "why": why})
+        say(_("Backed up to %s")
+            % os.path.basename(payload["path"])
+            if not payload["failed"]
+            else _("Backed up, with %d part(s) missing")
+            % len(payload["failed"]))
+
+    def pump_bak_put(payload):
+        busy(False)
+        for name, what in payload["done"]:
+            bak_note(_("%(part)s: %(what)s restored")
+                     % {"part": name, "what": what})
+        for name, why in payload["failed"]:
+            bak_note(_("%(part)s: %(why)s")
+                     % {"part": name, "why": why})
+        say(_("Restored to the instrument")
+            if not payload["failed"]
+            else _("Restored, with %d part(s) that failed")
+            % len(payload["failed"]))
+
+    def pump_sys_factory(payload):
+        busy(False)
+        say(_("The instrument is back on its factory setup"))
+        do_sys_read()
+
+    def pump_sys_option(payload):
+        busy(False)
+        say(_("Wrote %(n)d option word(s)%(bad)s - power "
+              "cycle the instrument to see what took")
+            % {"n": len(payload["sent"]),
+               "bad": (_(", %d refused")
+                       % len(payload["refused"]))
+               if payload["refused"] else ""})
+        log_note("system", "option words: sent %s, refused %s"
+                 % (payload["sent"], payload["refused"]))
+
+    def pump_msk_live(payload):
+        msk_show_live(payload["segments"])
+
+    def pump_set_read(payload):
+        busy(False)
+        msk_setup_edit(payload["fields"])
+
+    def pump_set_send(payload):
+        msk_setup_landed(payload)
+
+    def pump_msk_eye(payload):
+        busy(False)
+        state.pop("eyeing", None)
+        where, late = payload["where"], payload.get("delayed")
+        bits = []
+        if payload.get("math"):
+            bits.append("MATH1 = CH1-CH2")   # not words
+        if late:
+            # A clock that was asked for and not found is
+            # said out loud. The delayed sweep is a good
+            # answer to having no clock and a poor one to
+            # having a clock nobody could see.
+            if payload.get("adrift"):
+                # A clock the data is not locked to is the
+                # third case, and the one worth naming: it
+                # was found, it was used, and the eye it
+                # gave walked across the mask.
+                bits.append(
+                    _("%(clock)s is not locked to the data, "
+                      "so it was left alone and the sweep "
+                      "delayed %(bits)d bit(s) past the "
+                      "trigger")
+                    % {"clock": payload["adrift"],
+                       "bits": Worker.DELAY_BITS})
+            elif payload.get("nameless"):
+                # They said which input the clock was on and
+                # there was no clock at the bit rate on it.
+                # Named, because "no clock found" reads as
+                # this program's failure when it is a probe
+                # on the wrong channel.
+                bits.append(
+                    _("nothing at the bit rate on %(clock)s, "
+                      "so the data was triggered on and the "
+                      "sweep delayed %(bits)d bit(s) past it")
+                    % {"clock": payload["nameless"],
+                       "bits": Worker.DELAY_BITS})
+            else:
+                bits.append(
+                    _("no clock found, so delayed %(bits)d "
+                      "bit(s) past the trigger")
+                    if payload.get("wanted") else
+                    _("triggered on the data, delayed "
+                      "%(bits)d bit(s) past it"))
+                bits[-1] = bits[-1] % {"bits": Worker.DELAY_BITS}
+            bits.append(_("eye centred") if late["centred"]
+                        else _("not centred - no crossings "
+                               "to measure"))
+        else:
+            bits.append(_("triggered on %(clock)s")
+                        % {"clock": payload["clock"]})
+            bits.append((_("bit centred at %(where).1f%%")
+                         % {"where": where})
+                        if where is not None else
+                        _("not centred - no crossings to "
+                          "measure"))
+        bits.append(_("DPO") if payload["display"] == "INSTAVU"
+                    else _("persistence, no DPO with math")
+                    if payload.get("math") else
+                    _("persistence, no DPO fitted"))
+        if payload["counting"]:
+            bits.append(_("counting hits"))
+        elif payload.get("math"):
+            bits.append(_("judged here, not by the "
+                          "instrument's counter"))
+        say(_("Set up for an eye: %(what)s")
+            % {"what": ", ".join(bits)})
+        # And the same thing held in English and in full. A
+        # bench report of "it does not work" is unanswerable
+        # without knowing which of the three routes was
+        # taken and what the instrument was asked for. The
+        # status line says it and the next press replaces
+        # it; this keeps the last one for a fault to carry.
+        log_context("mask eye", "on %s: %s"
+                    % (payload.get("source") or "?",
+                       ", ".join("%s=%s" % (k, payload[k])
+                                 for k in sorted(payload))))
+        # A sweep that cannot hold an eye is worth saying
+        # out loud rather than leaving somebody to read a
+        # verdict off it: at 1 us/div a USB full speed mask
+        # counted 116,921,796 hits over 345,839
+        # acquisitions, all of them meaningless.
+        held = payload.get("bits")
+        if held is not None and not 0.4 <= held <= 6.0:
+            messagebox.showwarning(
+                _("The sweep is wrong for this mask"),
+                _("The graticule is holding %(bits).3g bit(s), "
+                  "and an eye needs about one. Send the setup "
+                  "beside this mask - it names the timebase "
+                  "the shapes were drawn against - and start "
+                  "the measurement again.")
+                % {"bits": held})
+
+    def pump_msk_count(payload):
+        busy(False)
+        state.pop("mhits", None)
+        draw_mask()
+        say(_("Counting hits from now, in %(display)s")
+            % {"display": _("DPO")
+               if payload["display"] == "INSTAVU"
+               else _("persistence, no DPO fitted")}
+            if payload["counting"] else
+            _("This instrument has no mask counter to start"))
+        log_context("mask count", "no eye: %s" % (payload,))
+
+    def pump_lim_run(payload):
+        busy(False)
+        if not payload["on"]:
+            messagebox.showerror(
+                _("Error"),
+                "%s\n\n%s"
+                % (_("The instrument would not start the "
+                     "limit test."),
+                   "\n".join(payload["why"])
+                   or _("It reported nothing about why.")))
+            say(_("The limit test did not start"))
+            lim_buttons()
+            return
+        state["lrun"] = {"running": True,
+                         "dest": payload["dest"],
+                         "source": payload["source"]}
+        lim_buttons()
+        draw_limits()
+        say(_("Testing %(source)s against %(dest)s - the "
+              "instrument stops if the signal leaves it")
+            % {"source": payload["source"],
+               "dest": payload["dest"]})
+        lim_watch()
+
+    def pump_lim_send(payload):
+        busy(False)
+        # Whether the read-back matched or not, the
+        # instrument has been sent an envelope and there is
+        # something in the destination to test against.
+        state["lhas"] = True
+        lim_buttons()
+        # And read it back once more, so the list says how
+        # many columns it now holds rather than what it held
+        # before. The drawing is on the canvas already, so
+        # this read cannot overwrite it - see the lim_picture
+        # branch.
+        root.after(50, lim_look)
+        if payload.get("verified"):
+            say(_("%(dest)s now holds the envelope drawn "
+                  "here, read back and verified")
+                % {"dest": payload["dest"]})
+        else:
+            # Not called a failure: reading an
+            # envelope back off an instrument is the
+            # part of this route measured least, so
+            # the numbers are shown and the user is
+            # asked to look. See TdsWfm.verify_envelope.
+            say(_("Sent to %(dest)s, but reading it back "
+                  "gave something else - sent %(sent)s, "
+                  "read %(got)s. Check the instrument's "
+                  "screen.")
+                % {"dest": payload["dest"],
+                   "sent": ", ".join(str(v) for v
+                                     in payload.get("sent")
+                                     or []),
+                   "got": ", ".join(str(v) for v
+                                    in payload.get("got")
+                                    or []) or _("nothing")})
+        draw_limits()
+
+    def pump_lim_clear(payload):
+        busy(False)
+        gone = ", ".join(payload["names"])
+        # The template that was on screen came from that
+        # reference, so it is put down too - leaving it drawn
+        # would show a band the instrument no longer has.
+        for one in payload["names"]:
+            forget_source(one)
+        state["lband"] = []
+        state["lwave"] = None
+        # Known empty, not merely unread: this is the one
+        # moment the program is certain there is nothing in
+        # the destination to test against.
+        state["lhas"] = False
+        for one in payload["names"]:
+            lim_refs_note(one, 0)
+        lim_buttons()
+        draw_limits()
+        say(_("%s has been cleared on the instrument") % gone)
+
+    def pump_lim_stop(payload):
+        busy(False)
+        state.pop("lrun", None)
+        lim_buttons()
+        draw_limits()
+        say(_("The limit test is switched off"))
+
+    def pump_lim_state(payload):
+        held = state.get("lrun")
+        if held and payload["running"] is not None:
+            was, held["running"] = held["running"], \
+                payload["running"]
+            if was and not payload["running"]:
+                # It stopped, and nothing here stopped it.
+                lim_verdict()
+                say(_("FAIL - the instrument stopped, so "
+                      "%(source)s left the template")
+                    % {"source": held["source"]})
+
+    def pump_lim_survey(payload):
+        busy(False)
+        # Merged, not replaced: this usually answers about
+        # one reference, and what is already known about
+        # the other three is still true.
+        known = {one["name"]: one
+                 for one in (state.get("lrefs") or [])}
+        known.update({one["name"]: one
+                      for one in payload["refs"]})
+        state["lrefs"] = [known[n] for n in tds_wfm.REFS
+                          if n in known]
+        lim_refs_show(state["lrefs"])
+        # What the survey says about the selected reference
+        # is the same knowledge lim_look would have gone and
+        # fetched. Taking it here saves reading it twice.
+        here = state["ldest"].get()
+        for one in payload["refs"]:
+            if one["name"] == here:
+                state["lhas"] = bool(one["columns"])
+        lim_buttons()
+        held = [one["name"] for one in payload["refs"]
+                if one["columns"]]
+        if len(payload["refs"]) == 1:
+            # One reference, read because it was
+            # double-clicked. Empty is an answer, and it
+            # belongs on the status line rather than in a
+            # box somebody has to dismiss.
+            one = payload["refs"][0]
+            say((_("%(ref)s holds a template of %(n)d "
+                   "column(s)")
+                 % {"ref": one["name"], "n": one["columns"]})
+                if one["columns"]
+                else _("%s is empty") % one["name"])
+        else:
+            say((_("%s holds a template") % ", ".join(held))
+                if held
+                else _("No reference holds a limit template"))
+        # Draw the one that is selected, now it is known to
+        # be worth drawing.
+        if state.get("lhas"):
+            lim_look()
+
+    def pump_lim_picture(payload):
+        busy(False)
+        state["lband"] = payload["band"]
+        # An envelope is two values a column, so anything
+        # shorter than a pair is not one. Read from the
+        # instrument, so this is knowledge either way.
+        state["lhas"] = len(payload["band"] or []) >= 2
+        lim_refs_note(payload["dest"],
+                      len(payload["band"] or []))
+        if payload["wave"] is not None:
+            state["lwave"] = payload["wave"]
+            state["lwavefrom"] = "instrument"
+        # Before anything is thinned from it: how far the
+        # slider can usefully go is this band's business.
+        lim_range()
+        # Only what Learn read goes onto the canvas.
+        # Refresh reads the same two things and must
+        # leave the drawing alone, or an adjustment
+        # would be lost every time the trace was
+        # looked at again.
+        loading = state.pop("lload", None)
+        if state.pop("llearn", None) and payload["band"]:
+            lim_take_band()
+        elif payload["band"] and lim_may_draw(loading):
+            # A template already on the instrument, put on
+            # the canvas so it can be seen and adjusted
+            # rather than made again. Whose idea the read
+            # was decides whether it may replace a drawing;
+            # see lim_may_draw.
+            lim_take_band()
+        lim_buttons()
+        draw_limits()
+        if payload["band"]:
+            say(_("%(dest)s holds a template %(columns)d "
+                  "column(s) wide")
+                % {"dest": payload["dest"],
+                   "columns": len(payload["band"])})
+        else:
+            say(_("%s holds no limit template to draw")
+                % payload["dest"])
+
+    def pump_msk_send(payload):
+        busy(False)
+        want, got = payload["wanted"], payload["got"]
+        wrong = [n for n in sorted(want)
+                 if got.get(n, 0) != want[n]]
+        if not got:
+            say(_("Sent, but this instrument reports no mask "
+                  "subsystem to read back"))
+        elif wrong:
+            # Not a silent success: the instrument kept
+            # something other than what was sent.
+            say(_("Sent, but segment(s) %(which)s came back "
+                  "holding %(got)s point(s) rather than "
+                  "%(want)s")
+                % {"which": ", ".join(str(n) for n in wrong),
+                   "got": ", ".join(str(got.get(n, 0))
+                                    for n in wrong),
+                   "want": ", ".join(str(want[n])
+                                     for n in wrong)})
+        else:
+            say(_("The instrument is showing the mask - "
+                  "%d segment(s), read back and verified")
+                % len([n for n in want if want[n]]))
+        msk_scan_scope()
+
+    def pump_msk_clear(payload):
+        busy(False)
+        state.pop("msent", None)
+        msk_show_live(payload["segments"])
+        left = sum(payload["segments"] or [])
+        say(_("The instrument's mask segments are empty")
+            if not left else
+            _("Emptied, but %d point(s) are still there")
+            % left)
+
+    def pump_msk_read(payload):
+        busy(False)
+        msk_took_live(payload["replies"])
+
+    def pump_lim_build(payload):
+        busy(False)
+        if not payload["made"]:
+            # The instrument's own refusal, word for word.
+            messagebox.showerror(
+                _("Error"),
+                "%s\n\n%s"
+                % (_("The instrument did not write a "
+                     "template."),
+                   "\n".join(payload["why"])
+                   or _("It reported nothing about why.")))
+            say(_("No template was written"))
+            return
+        say(_("%(dest)s now holds a template made from "
+              "%(source)s, allowing %(up)g division(s) up "
+              "and down and %(across)g across")
+            % {"dest": payload["dest"],
+               "source": payload["source"],
+               "up": payload["vertical"],
+               "across": payload["horizontal"]})
+        do_lim_refresh()
+
+    def pump_volumes(payload):
+        vols = payload["volumes"]
+        if not vols:
+            # Nothing to browse: no hard disk fitted and no
+            # floppy in the drive. Saying so beats pretending
+            # hd0: exists and failing to list it.
+            busy(False)
+            say(_("No drives found on this instrument"))
+            messagebox.showinfo(
+                _("No drives found on this instrument"),
+                _("This instrument reports no usable drive.\n\n"
+                  "A TDS with no hard disk option has only its "
+                  "floppy drive, so put a disk in and press "
+                  "Refresh."))
+            return
+        for v in vols:
+            if not tree.exists(v):
+                tree.insert("", "end", iid=v, text=" " + v,
+                            image=icon_for("drive", True))
+                tree.insert(v, "end", iid=v + "/~", text="")
+        # Always open at the root of the hard disk. The
+        # instrument's own current directory is wherever the
+        # last program to talk to it happened to leave it -
+        # which may be three levels inside an application
+        # folder, or fd0: with no floppy in the drive. Neither
+        # is where a file manager should start.
+        start = "hd0:" if "hd0:" in vols else vols[0]
+        say(_("Volumes: %s") % ", ".join(vols))
+        # The connect-then-probe sequence has finished, so the
+        # busy state it was holding has to be released BEFORE
+        # navigating. navigate() declines to do anything while
+        # busy, so leaving this set left the volumes listed but
+        # the panes empty and every button disabled - which
+        # looks exactly like a failure to connect.
+        busy(False)
+        navigate(start)
+        # Now that the volumes are known, the Masks tab can
+        # say where its library lives on this instrument. The
+        # segments were already asked about at connect.
+
+    def pump_split(payload):
+        show(payload)
+
+    def pump_progress(payload):
+        say(payload["text"])
+        progress(payload["frac"])
+        # Every step of a backup or a restore is written to
+        # the report as well, so the tab keeps an account of
+        # what happened rather than only of what is
+        # happening - the status line is gone the moment the
+        # next line replaces it.
+        #
+        # The step, though, not every count inside it. The
+        # readers format their running totals as
+        # "<step> - <n of m>", so the part before the dash
+        # is the step: one line per step rather than one per
+        # chunk, which on a megabyte would be a thousand.
+        if payload.get("job") in BAK_JOBS:
+            step = payload["text"].split(" - ")[0]
+            if step != state.get("bakstep"):
+                state["bakstep"] = step
+                bak_note("    " + step)
+
+    def pump_event(payload):
+        # An event this program did not ask for. Always in the
+        # log and always in the status bar; the dialog only the
+        # first time a given code appears, so a repeating fault
+        # informs rather than buries.
+        say(_("Instrument reported: %s") % payload["detail"])
+        fresh = [c for c in payload["codes"]
+                 if c not in state["seen_events"]]
+        state["seen_events"].update(payload["codes"])
+        if fresh:
+            # Shown from its own turn of the event loop, not
+            # from in here. The job that raised it is usually
+            # still running, and a box opened inside the pump
+            # held up its progress, its result and the busy
+            # release until somebody found the box and closed
+            # it - which is how a long listing stalled the
+            # screenshot run.
+            root.after(0, lambda said=_(
+                "While doing '%s' the instrument reported:\n\n%s"
+                "\n\nThis was not expected. It has been written "
+                "to:\n%s\n\nIf anything looks wrong on the "
+                "instrument, stop and say so before deleting "
+                "anything else.")
+                % (payload["where"], payload["detail"], LOGFILE):
+                messagebox.showwarning(
+                    _("The instrument reported something"),
+                    said))
+
+    def pump_download(payload):
+        busy(False)
+        set_size(os.path.basename(payload["path"]),
+                 len(payload["data"]))
+        where = keep_file(state["saveas"], payload["data"])
+        if where:
+            say(_("Saved %(bytes)s bytes to %(where)s")
+                % {"bytes": format(len(payload["data"]), ","),
+                   "where": where})
+
+    def pump_tree(payload):
+        busy(False)
+        total = sum(n for _, n in payload["done"])
+        say(_("Saved %(files)d file(s) in %(folders)d "
+              "folder(s), %(bytes)s bytes, to %(where)s")
+            % {"files": len(payload["done"]),
+               "folders": payload["folders"],
+               "bytes": format(total, ","),
+               "where": payload["dir"]})
+        report_failures("download", payload["failed"])
+
+    def pump_downloads(payload):
+        busy(False)
+        for dest, n in payload["done"]:
+            set_size(os.path.basename(dest), n)
+        total = sum(n for _, n in payload["done"])
+        say(_("Saved %(files)d files (%(bytes)s bytes) to "
+              "%(where)s")
+            % {"files": len(payload["done"]),
+               "bytes": format(total, ","),
+               "where": payload["dir"]})
+        report_failures("download", payload["failed"])
+
+    def pump_deletes(payload):
+        busy(False)
+        say(_("Deleted %d files") % len(payload["done"]))
+        report_failures("delete", payload["failed"])
+        if payload.get("skipped"):
+            messagebox.showwarning(
+                _("Delete"),
+                _("The delete stopped after %(failed)d file(s) "
+                  "failed one after another, and %(skipped)d "
+                  "file(s) were not attempted.\n\nThat pattern "
+                  "means the instrument stopped answering "
+                  "rather than that those files are bad.\n\n"
+                  "Power cycle the instrument, then try again.")
+                % {"failed": len(payload["failed"]),
+                   "skipped": len(payload["skipped"])})
+        report_losses(payload)
+        navigate(state["cwd"], force=True)
+
+    def pump_survey(payload):
+        confirm_rmdir(payload["path"], payload["names"])
+
+    def pump_rmdir(payload):
+        busy(False)
+        gone = payload["path"]
+        if tree.exists(gone):
+            tree.delete(gone)
+        state["cache"].pop(gone, None)
+        say(_("Removed %s") % gone + mass_storage_note(payload))
+        report_losses(payload)
+        navigate(parent_of(gone) or state["cwd"], force=True)
+
+    def pump_copy(payload):
+        busy(False)
+        dest = payload["dest"]
+        say(_("Copied to %s") % dest.rsplit("/", 1)[-1])
+        state["cache"].pop(state["cwd"], None)
+        navigate(state["cwd"], force=True)
+
+    def pump_uploads(payload):
+        busy(False)
+        if payload.get("blocked"):
+            # Nothing was written - the pre-flight health check
+            # refused. Safe to retry once the instrument is well;
+            # no override needed.
+            messagebox.showwarning(
+                _("Upload"),
+                _("Nothing was written. The instrument's file "
+                  "system was checked first and did not answer "
+                  "normally:\n\n%s\n\nThis is usually a wedged "
+                  "file system. Power cycle the instrument, "
+                  "confirm it lists its files, then try again.")
+                % payload["blocked"])
+            navigate(state["cwd"], force=True)
+            return
+        for dest, n in payload["done"]:
+            # Only rows in the folder on screen. A dropped
+            # folder writes into subfolders as well, and
+            # their leaf names would otherwise be matched
+            # against whatever happens to share a name here.
+            if dest.rsplit("/", 1)[0] == state["cwd"]:
+                set_size(dest.rsplit("/", 1)[-1], n)
+        total = sum(n for _, n in payload["done"])
+        if payload.get("folders"):
+            say(_("Uploaded and verified %(files)d file(s) in "
+                  "%(folders)d folder(s), %(bytes)s bytes")
+                % {"files": len(payload["done"]),
+                   "folders": payload["folders"],
+                   "bytes": format(total, ",")})
+        else:
+            say(_("Uploaded and verified %(files)d file(s), "
+                  "%(bytes)s bytes")
+                % {"files": len(payload["done"]),
+                   "bytes": format(total, ",")})
+        report_failures("upload", payload["failed"])
+        if payload.get("skipped"):
+            # Said on its own and after the failures, because
+            # it is a different fact: these were not tried,
+            # and the instrument is the reason.
+            messagebox.showwarning(
+                _("Upload"),
+                _("The upload stopped after %(failed)d file(s) "
+                  "failed one after another, and %(skipped)d "
+                  "file(s) were not attempted.\n\nThat pattern "
+                  "means the instrument stopped answering "
+                  "rather than that those files are bad. Each "
+                  "attempt deletes before it writes, so going "
+                  "on would have emptied folders it could not "
+                  "refill.\n\nPower cycle the instrument, then "
+                  "try again.")
+                % {"failed": len(payload["failed"]),
+                   "skipped": len(payload["skipped"])})
+        if payload.get("unchanged"):
+            # Files already on the instrument, byte for byte,
+            # were left alone rather than rewritten.
+            say(_("%(done)d uploaded, %(same)d already there "
+                  "and left unchanged")
+                % {"done": len(payload["done"]),
+                   "same": len(payload["unchanged"])})
+        if payload.get("unhealthy"):
+            # Post-flight failure: the files verified, but the
+            # root no longer lists. This is the state that
+            # precedes a lost disk - say so plainly.
+            messagebox.showerror(
+                _("Error"),
+                _("The files were written and verified, but "
+                  "afterwards the instrument's file system no "
+                  "longer lists normally:\n\n%s\n\nThis is the "
+                  "state that precedes a lost disk. Do not write "
+                  "to it again - power cycle the instrument and "
+                  "check its files before doing anything else.")
+                % payload["unhealthy"])
+        navigate(state["cwd"], force=True)
+
+    def pump_format(payload):
+        busy(False)
+        # FORMAT has no query form and raises no event when it
+        # works, so the listing afterwards is the whole
+        # report. Names still there means it did not happen.
+        if payload["left"]:
+            messagebox.showwarning(
+                _("The volume did not format"),
+                _("%(drive)s still holds %(count)d item(s) "
+                  "after the format: %(items)s")
+                % {"drive": payload["drive"],
+                   "count": len(payload["left"]),
+                   "items": name_list(payload["left"])})
+            say(_("%s did not format") % payload["drive"])
+        else:
+            say(_("%s formatted - it is empty")
+                % payload["drive"])
+        # The cache is of a volume that no longer has
+        # anything in it, so it goes rather than being
+        # trusted for the redraw.
+        state["cache"].pop(payload["drive"], None)
+        navigate(payload["drive"], force=True)
+
+    def pump_written(label, payload):
+        busy(False)
+        # Named in words rather than by the worker's own
+        # label for the job, which is not a sentence in any
+        # language and was never going to be translatable.
+        done = {"upload": _("Uploaded"),
+                "delete": _("Deleted"),
+                "mkdir": _("Folder created")}[label]
+        say("%s: %s%s" % (done, payload,
+                          mass_storage_note(payload)))
+        # What was written may not be in the folder on show
+        # - a waveform goes to WAVEFORM on the drive - so
+        # that folder's cached listing goes too, rather
+        # than being kept and shown stale later.
+        wrote = (payload.get("path") or ""
+                 if isinstance(payload, dict) else "")
+        if "/" in wrote:
+            state["cache"].pop(wrote.rsplit("/", 1)[0], None)
+        navigate(state["cwd"], force=True)
+
+    pump_jobs = {
+        "msk_behind": pump_msk_behind,
+        "fw_probe": pump_fw_probe,
+        "fw_catalogue": pump_fw_catalogue,
+        "fw_run": pump_fw_run,
+        "fw_backup": pump_fw_backup,
+        "connect": pump_connect,
+        "scan": pump_scan,
+        "wfm_sources": pump_wfm_sources,
+        "wfm_select": pump_wfm_select,
+        "wfm_delete": pump_wfm_delete,
+        "err_available": pump_err_available,
+        "err_entries": pump_err_entries,
+        "err_clear": pump_err_clear,
+        "scr_options": pump_scr_options,
+        "scr_get": pump_scr_get,
+        "wfm_get": pump_wfm_get,
+        "wfm_send": pump_wfm_send,
+        "wfm_send_many": pump_wfm_send_many,
+        "sys_read": pump_sys_read,
+        "sys_option_read": pump_sys_option_read,
+        "sys_clock_read": pump_sys_clock_read,
+        "sys_send": pump_sys_send,
+        "sys_spc": pump_sys_spc,
+        "sys_diag": pump_sys_diag,
+        "sys_secure": pump_sys_secure,
+        "cal_read": pump_cal_read,
+        "cal_write": pump_cal_write,
+        "bak_survey": pump_bak_survey,
+        "bak_nvram_put": pump_bak_nvram_put,
+        "bak_nvram": pump_bak_nvram,
+        "bak_make": pump_bak_make,
+        "bak_put": pump_bak_put,
+        "sys_factory": pump_sys_factory,
+        "sys_option": pump_sys_option,
+        "msk_live": pump_msk_live,
+        "set_read": pump_set_read,
+        "set_send": pump_set_send,
+        "msk_eye": pump_msk_eye,
+        "msk_count": pump_msk_count,
+        "lim_run": pump_lim_run,
+        "lim_send": pump_lim_send,
+        "lim_clear": pump_lim_clear,
+        "lim_stop": pump_lim_stop,
+        "lim_state": pump_lim_state,
+        "lim_survey": pump_lim_survey,
+        "lim_picture": pump_lim_picture,
+        "msk_send": pump_msk_send,
+        "msk_clear": pump_msk_clear,
+        "msk_read": pump_msk_read,
+        "lim_build": pump_lim_build,
+        "volumes": pump_volumes,
+        "split": pump_split,
+        "progress": pump_progress,
+        "event": pump_event,
+        "download": pump_download,
+        "tree": pump_tree,
+        "downloads": pump_downloads,
+        "deletes": pump_deletes,
+        "survey": pump_survey,
+        "rmdir": pump_rmdir,
+        "copy": pump_copy,
+        "uploads": pump_uploads,
+        "format": pump_format,
+        "upload": lambda p, x="upload": pump_written(x, p),
+        "delete": lambda p, x="delete": pump_written(x, p),
+        "mkdir": lambda p, x="mkdir": pump_written(x, p),
+    }
+
     def pump():
         if state.get("closing"):
             return                     # window gone; nothing to update
@@ -17499,1378 +19004,11 @@ def run_gui():
                 if label not in ("progress", "event"):
                     state["bakstep"] = None
                 if not ok:
-                    # Four jobs run without taking busy - they are asked
-                    # in passing, beside whatever else is on the bus -
-                    # so their failing must not hand back buttons that
-                    # another job still holds.
-                    if label not in UNBUSIED:
-                        busy(False)
-                    if label == "scan":
-                        scanning(False)
-                    if label in ("lim_build", "lim_picture"):
-                        # The flags a Learn or a Load set for the
-                        # picture that follows, or the next unrelated
-                        # Refresh would take the band unasked.
-                        state.pop("llearn", None)
-                        state.pop("lload", None)
-                    raw, payload = payload, localise(payload)
-                    # A failure is the last line of the run it ends,
-                    # and the report is the only place it stays.
-                    if label in BAK_JOBS:
-                        bak_note(_("Failed - %s") % payload)
-                    if label == "connect":
-                        if "Another copy of TDS Toolkit" in (raw or ""):
-                            # The bus is held by another copy of this
-                            # program, not an absent instrument. Say so and
-                            # do not open the picker - there is nothing to
-                            # pick, and scanning the bus is the very thing
-                            # one program at a time exists to prevent.
-                            say(payload)
-                            root.title("TDS Toolkit %s - %s"
-                                       % (__version__, _("not connected")))
-                            continue
-                        # Not an error. The scope being somewhere else, or
-                        # switched off, is the ordinary first experience of
-                        # anyone whose bus is not the author's, and raising
-                        # VISA's own wording at them - "VI_ERROR_RSRC_NFOUND
-                        # (-1073807343): Insufficient location information"
-                        # - explains nothing they can act on. Say plainly
-                        # that nothing answered, then go and look.
-                        say(_("Nothing answered at %s")
-                            % (state["addr"] or DEFAULT_ADDR))
-                        root.title("TDS Toolkit %s - %s"
-                                   % (__version__, _("not connected")))
-                        do_instrument(reason=(
-                            _("Nothing answered at %s.")
-                            % (state["addr"] or DEFAULT_ADDR)),
-                            quiet=True)
-                        continue
-                    say(_("%(job)s failed - %(why)s")
-                        % {"job": label, "why": payload})
-                    if label == "fw_probe":
-                        # The tab has a line for exactly this, and it is
-                        # the line the user was reading when they pressed
-                        # Connect. A modal on top of it says the same
-                        # thing twice and has to be dismissed first.
-                        state["fwmonitor"] = None
-                        lbl_fwstate.config(text=str(payload),
-                                           foreground="#a00")
-                        fw_buttons()
-                        say(_("The bootloader did not answer"))
-                        continue
-                    if label == "lim_picture":
-                        # A reference that holds nothing refuses to be
-                        # read, and that refusal is the answer to the
-                        # question. The list is corrected to say empty
-                        # and the sentence goes on the status line; a
-                        # modal box for the ordinary state of an unused
-                        # reference is a box for nothing.
-                        state["lhas"] = False
-                        lim_refs_note(state["ldest"].get(), 0)
-                        lim_buttons()
-                        say(str(payload))
-                        continue
-                    if label == "scan" and state.get("scan_failed"):
-                        # The picker opens its own scan as it appears. If
-                        # that fails there is already a dialog on screen
-                        # saying so, and stacking a modal error box on top
-                        # of it tells the user the same thing twice.
-                        state.pop("scan_into", None)
-                        state.pop("scan_failed")(str(payload))
-                    else:
-                        messagebox.showerror(_("Error"), str(payload))
+                    pump_failed(label, payload)
                     continue
-                if label == "msk_behind":
-                    busy(False)
-                    # Whichever tab asked for it - see do_msk_behind.
-                    at = state.pop("behindfor", "m")
-                    state.pop(at + "shotimage", None)
-                    # What the instrument counted while the picture was
-                    # being taken, which is the verdict in DPO and the
-                    # better one anywhere. See msk_verdict. A limit test
-                    # has no hit counter, so this is the mask's alone.
-                    if at == "m":
-                        state["mhits"] = payload.get("hits")
-                    if payload.get("shot"):
-                        state[at + "shot"] = payload["shot"]
-                        state[at + "wave"] = None
-                        edit_draw(at)
-                        say((_("The instrument is in DPO - its screen is "
-                               "behind the mask instead of a trace")
-                             if at == "m" else
-                             _("The instrument is in DPO - its screen is "
-                               "behind the envelope instead of a trace"))
-                            + msk_say_hits())
-                    else:
-                        state.pop(at + "shot", None)
-                        state[at + "wave"] = payload.get("wave")
-                        if at == "m":
-                            state["mview"] = msk_view_for(state["mwave"])
-                        edit_draw(at)
-                        held = state.get(at + "wave")
-                        say((((_("%s is behind the mask") if at == "m"
-                               else _("%s is behind the envelope"))
-                              % (held.label or held.source)) if held
-                             else _("Nothing to capture"))
-                            + msk_say_hits())
-                    # Clear screenshot is offered on whether there is
-                    # anything behind the mask, so the capture that puts
-                    # something there has to say the toolbar is stale.
-                    # Without this it stayed greyed with a screenshot on
-                    # the canvas until some unrelated click redrew it.
-                    msk_buttons()
-                    lim_buttons()
-                    continue
-                if label == "fw_probe":
-                    busy(False)
-                    # Never reached on a failure - that is handled above,
-                    # in the tab's own line rather than in a dialog.
-                    state["fwmonitor"] = payload
-                    fw_say_state()
-                    fw_buttons()
-                    say(_("The monitor answered - the flash is %s")
-                        % payload["flash"])
-                    continue
-                if label == "fw_catalogue":
-                    busy(False)
-                    state["fwimages"] = payload["images"]
-                    cbo_fwmodel.config(values=sorted(
-                        {m for im in payload["images"] for m in im.models}))
-                    fw_fill()
-                    say(_("%(count)d firmware images in %(folder)s")
-                        % {"count": len(payload["images"]),
-                           "folder": payload["folder"]})
-                    continue
-                if label == "fw_run":
-                    # The report ends by telling the user to switch off, so
-                    # what Connect measured is about to be stale: Write
-                    # waits for a fresh Connect rather than sizing the next
-                    # backup by a part that may since have been swapped.
-                    state["fwmonitor"] = None
-                    busy(False)
-                    fw_say_state()
-                    fw_report(payload)
-                    continue
-                if label == "fw_backup":
-                    busy(False)
-                    fw_backup_report(payload)
-                    continue
-                if label == "connect":
-                    state["addr"] = payload.get("addr") or state["addr"]
-                    state["idn"] = payload.get("idn") or ""
-                    # If this address is not in the dropdown yet - first
-                    # run, before any scan - put it there so the box is
-                    # never blank while plainly connected to something.
-                    if not any(s["addr"] == state["addr"]
-                               for s in state.get("scopes") or []):
-                        set_instrument_list(
-                            (state.get("scanned") or [])
-                            + [{"addr": state["addr"], "idn": payload["idn"],
-                                "note": "", "scope": True}])
-                    root.title("TDS Toolkit %s - %s%s"
-                               % (__version__, payload["idn"],
-                                  "" if DND else
-                                  "   (drag and drop needs tkinterdnd2)"))
-                    # What this firmware can and cannot do, decided once
-                    # and reflected in the toolbar rather than discovered
-                    # halfway through a transfer.
-                    cannot = []
-                    if not payload.get("can_write", True):
-                        cannot.append(by_name["Upload"])
-                    if not payload.get("reader"):
-                        cannot.append(by_name["Download"])
-                    if payload.get("filesystem") is False:
-                        # No filesystem means no folders to make and
-                        # nothing to delete either, not just no transfers.
-                        cannot += [by_name["New folder"], by_name["Delete"]]
-                        # And it is the marker for the generation that
-                        # has no constant librarian and no service
-                        # password: v2.16e answers neither, so the
-                        # calibration constants and the factory options
-                        # can only time out there. The two are decided
-                        # by the same fact and are greyed together.
-                        cannot += [btn_bakcalget, btn_bakcalput,
-                                   btn_sysopts]
-                    state["cannot"] = cannot
-                    state["reader"] = payload.get("reader")
-                    # Mask testing is Option 2C. Without it the MASK
-                    # subsystem answers and draws nothing, so the Masks
-                    # tab sends a limit template instead.
-                    state["masks"] = bool(payload.get("masks"))
-                    log_context("connect options",
-                                "%s; mask testing %s"
-                                % (payload.get("options") or "?",
-                                   "yes" if state["masks"] else "no"))
-                    # Asked for before anything filesystem-shaped can cut
-                    # this short. An instrument with no filesystem is
-                    # precisely the one where the waveform tab is the only
-                    # thing this program can offer.
-                    w.submit("wfm_sources", lambda k: k.wfm_sources())
-                    # The screen comes from the hardcopy subsystem, which
-                    # every instrument in the range has, so this is asked
-                    # for on the same terms as the waveform sources.
-                    w.submit("scr_options", lambda k: k.scr_options())
-                    # And whether it keeps a service log. Every
-                    # instrument on the bench does, but the earliest
-                    # firmware in the collection has no ERRLOG at all,
-                    # and a Download button that can only apologise is
-                    # worse than one that is plainly greyed.
-                    w.submit("err_available", lambda k: k.err_available())
-                    # And what is in its mask segments. Asked here rather
-                    # than with the volumes, because the mask subsystem
-                    # has nothing to do with the disk: firmware with no
-                    # filesystem at all still has masks, and a scope with
-                    # no disk in the drive still has them too.
-                    msk_scan_scope()
-                    if payload.get("filesystem") is False:
-                        # The earliest firmware has no FILESYSTEM subsystem
-                        # at all. Saying so beats an empty window and a
-                        # string of errors from commands it never had.
-                        busy(False)
-                        # A seam, not dead state: the smoke checks
-                        # read it to know which of the file checks
-                        # this instrument can be held to.
-                        state["no_filesystem"] = True
-                        say(_("This instrument has no filesystem over GPIB"))
-                        # Through `after`, like the Limited instrument
-                        # box below it, and for a reason worth stating.
-                        # A modal box raised from inside the pump runs
-                        # Tk's event loop within itself, and the pump is
-                        # suspended for as long as it is up - so every
-                        # answer the worker sends back queues behind it,
-                        # including the waveform sources, the hardcopy
-                        # formats, the error log question and the mask
-                        # segments asked for a few lines above. On the
-                        # one instrument that raises this box, that is
-                        # every remaining thing the program can do.
-                        root.after(400, lambda: messagebox.showinfo(
-                            _("Nothing to browse"),
-                            _("This instrument's firmware has no "
-                              "filesystem commands at all - no working "
-                              "directory, no directory listing, no free "
-                              "space.\n\nThere is nothing for this "
-                              "program to show. Firmware v5.0e and later "
-                              "added the file transfer commands; the A "
-                              "and B series can browse and download but "
-                              "not upload.")))
-                        continue
-                    if cannot and not state.get("told_about"):
-                        state["told_about"] = True
-                        root.after(400, lambda: messagebox.showinfo(
-                            _("Limited instrument"),
-                            _("This instrument's firmware has no command for "
-                              "transferring file contents over GPIB.\n\n"
-                              "You can browse it, create folders and delete "
-                              "files. Downloading and uploading are greyed "
-                              "out because they cannot work here.")
-                            if len(cannot) > 1 else
-                            _("This instrument's firmware cannot receive "
-                              "files over GPIB.\n\nYou can browse it, "
-                              "download from it, create folders and delete "
-                              "files. Only uploading is unavailable.")))
-                    say(_("Probing volumes ..."))
-                    w.submit("volumes", lambda k: k.volumes())
-                elif label == "scan":
-                    busy(False)
-                    scanning(False)
-                    state.pop("scan_failed", None)
-                    into = state.pop("scan_into", None)
-                    if into:
-                        into(payload)
-                    else:
-                        say(_("Found %d instrument(s)")
-                            % len(payload["found"]))
-                    if payload.get("cancelled"):
-                        say(_("Scan stopped after %(done)d of %(all)d "
-                              "addresses")
-                            % {"done": payload.get("reached", 0),
-                               "all": payload.get("total", 0)})
-                elif label == "wfm_sources":
-                    busy(False)
-                    found = payload["sources"]
-                    state["wsources"] = found
-                    state["wrefs"] = payload.get("refs") or list(tds_wfm.REFS)
-                    if payload.get("all"):
-                        # Held rather than written. The sources are
-                        # re-read after every capture, every send and
-                        # every toggle, and a third of a 5000-line log
-                        # was once this one line repeated with the same
-                        # answer. What matters is which channels were
-                        # up when something went wrong, so the latest
-                        # answer stands and goes out with a fault if
-                        # there is one.
-                        log_context("waveform sources",
-                                    "instrument reports %s; displayed: %s"
-                                    % (", ".join(payload["all"]),
-                                       ", ".join(found) or "none"))
-                    if payload.get("colours"):
-                        state["icolours"] = payload["colours"]
-                    show_sources(payload)
-                    lim_scan()
-                    if found:
-                        say(_("%d waveform source(s) on the instrument")
-                            % len(found))
-                    else:
-                        say(_("Nothing is displayed - double-click a "
-                              "source to turn it on"))
-                elif label == "wfm_select":
-                    busy(False)
-                    do_wfm_sources()
-                elif label == "wfm_delete":
-                    busy(False)
-                    gone = ", ".join(payload["names"])
-                    for one in payload["names"]:
-                        forget_source(one)
-                    say(_("%s has been deleted on the instrument") % gone)
-                    do_wfm_sources()
-                elif label == "err_available":
-                    has_log = bool(payload.get("errlog"))
-                    state["errlog"] = has_log
-                    if not has_log:
-                        # Through state["cannot"], not by disabling the
-                        # buttons here: busy(False) re-enables everything
-                        # in the button set at the end of the next
-                        # operation, and would hand back a Download that
-                        # cannot work.
-                        unavailable(btn_eget, btn_eclr)
-                        show_errors([_("This firmware has no error log.")])
-                elif label == "err_entries":
-                    busy(False)
-                    show_err_result(payload)
-                elif label == "err_clear":
-                    busy(False)
-                    show_errors([_("No errors")], 0)
-                    say(_("The instrument's error log has been cleared"))
-                elif label == "scr_options":
-                    busy(False)
-                    show_scr_options(payload)
-                    names = [f["keyword"]
-                             for f in payload.get("formats") or []]
-                    log_context("screen formats",
-                                "%s; chosen %s; palette %s"
-                                % (", ".join(names) or "none",
-                                   payload.get("best"),
-                                   payload.get("palette")))
-                    if names:
-                        say(_("%d image format(s) available; %s will be used")
-                            % (len(names), payload.get("best")))
-                elif label == "scr_get":
-                    busy(False)
-                    progress_off()
-                    screen = payload["screen"]
-                    # The instrument's own picture is kept as it
-                    # arrived, so switching to Inverted and back does
-                    # not need another capture.
-                    state["sraw"] = screen
-                    state["ssecs"] = payload["secs"]
-                    # What arrived already honours the layout it was
-                    # asked for, so no turning is owed on it.
-                    state["sturned"] = 0
-                    if state.get("sinvert"):
-                        screen = screen.inverted()
-                    show_shot(screen, payload["secs"])
-                    say(_("Screen read in %s: %d x %d in %.1f s")
-                        % (screen.keyword, screen.width, screen.height,
-                           payload["secs"]))
-                elif label == "wfm_get":
-                    busy(False)
-                    waves = payload["waves"]
-                    # Everything captured is kept, whether it is on the
-                    # graticule or not: the capture is the instrument's
-                    # whole state at one moment, and a source turned on
-                    # afterwards should come from that moment too rather
-                    # than send us back to the bus for a different one.
-                    for one in waves:
-                        state.setdefault("fetched", {})[wave_name(one)] = one
-                    # Nothing chosen yet, so show what was captured -
-                    # otherwise a first press of Get waveform reads the
-                    # instrument and appears to do nothing.
-                    if not wfm_picked_all():
-                        state["wticked"] = wfm_order(
-                            [wave_name(x) for x in waves])
-                    wfm_pick(*(state.get("wticked") or ()))
-                    # A capture is presented at the instrument's own
-                    # horizontal scale: the middle of the record at the
-                    # scope's points-a-division, so what the app shows
-                    # first matches what was on the scope's screen rather
-                    # than the whole record squeezed onto ten divisions.
-                    # A record no larger than the screen is shown whole.
-                    if state.get("view") is not None and state.get("wave"):
-                        state["view"].to_scope(state["wave"])
-                        draw_plot()
-                    missed = [s for s, _why in payload["refused"]]
-                    missed += list(state.pop("wskipped", None) or [])
-                    how = payload.get("how") or {}
-                    state["wacq"] = how
-                    if how.get("froze"):
-                        held = _("acquisition held for the capture, then "
-                                 "released")
-                    elif how.get("sequence"):
-                        held = _("left running - it is set to single "
-                                 "sequence and stopping it would re-arm "
-                                 "the trigger")
-                    else:
-                        held = _("the instrument was already stopped")
-                    say(_("Captured %(name)s in %(secs).2f s - %(how)s")
-                        % {"name": ", ".join(wave_name(x) for x in waves),
-                           "secs": payload["secs"], "how": held}
-                        + (_("  -  %s could not be read, being switched "
-                             "off on the instrument") % ", ".join(missed)
-                           if missed else ""))
-                elif label == "wfm_send":
-                    busy(False)
-                    say(_("Sent %d points to %s, read back and verified")
-                        % (payload["points"], payload["dest"]))
-                    do_wfm_sources()
-                elif label == "wfm_send_many":
-                    busy(False)
-                    sent = payload["sent"]
-                    # Put down what landed. A job that failed part way
-                    # raises instead of returning, so nothing is put
-                    # down and pressing Send again sends the lot -
-                    # writing a reference twice costs a second and
-                    # leaves it holding the same samples.
-                    for out in sent:
-                        state.get("staged", {}).pop(out["dest"], None)
-                    say(_("Sent %(count)d waveform(s) to %(where)s, read "
-                          "back and verified")
-                        % {"count": len(sent),
-                           "where": ", ".join(o["dest"] for o in sent)})
-                    do_wfm_sources()
-                elif label == "sys_read":
-                    busy(False)
-                    sys_show(payload)
-                    say(_("Read the instrument's settings"))
-                elif label == "sys_option_read":
-                    busy(False)
-                    # payload is None when a word would not read, and
-                    # the dialog opens anyway with nothing ticked - the
-                    # option words are not the only way to work out
-                    # what an instrument is carrying, and refusing to
-                    # show the dialog would be worse than showing it
-                    # the way it always looked.
-                    say(_("Read the option words") if payload is not None
-                        else _("The option words would not read"))
-                    sys_options_dialog(payload)
-                elif label == "sys_clock_read":
-                    # The two clock fields and nothing else, and nothing
-                    # said on the status line: this runs every time the
-                    # tab is opened, and a message each time would be
-                    # noise about something nobody asked for.
-                    sys_clock_show(payload.get("date"), SYS_DATE, "-")
-                    sys_clock_show(payload.get("time"), SYS_TIME, ":")
-                    if state.get("sysnow"):
-                        state["sysnow"]["date"] = payload.get("date")
-                        state["sysnow"]["time"] = payload.get("time")
-                elif label == "sys_send":
-                    busy(False)
-                    sys_show(payload["now"],
-                             clock=not state.pop("syskeepclock", False))
-                    refused = payload["refused"]
-                    if refused:
-                        # Named, with what the instrument said about
-                        # each. "Some settings were refused" is not
-                        # something anybody can act on.
-                        say(_("%(what)s - %(n)d refused")
-                            % {"what": state.get("syssaid") or _("Sent"),
-                               "n": len(refused)})
-                        messagebox.showwarning(
-                            _("The instrument refused these"),
-                            "\n".join("%s\n    %s" % (line, why)
-                                      for line, why in refused))
-                    else:
-                        say(_("%d setting(s) sent and read back")
-                            % payload["sent"])
-                elif label == "sys_spc":
-                    busy(False)
-                    if payload.get("stillgoing"):
-                        # Not a failure. The instrument is still
-                        # compensating; this program has only stopped
-                        # waiting to hear about it.
-                        say(_("Signal path compensation is still "
-                              "running on the instrument"))
-                        messagebox.showinfo(
-                            _("Still compensating"),
-                            _("The instrument has been compensating for "
-                              "%d minutes and has not finished.\n\nThat "
-                              "is not a failure - it is still working, "
-                              "and it will finish on its own. Wait until "
-                              "the instrument's own screen says it is "
-                              "done before using it, then run the self "
-                              "test on this tab if you want the verdict.")
-                            % int(payload.get("waited", 0) / 60))
-                    else:
-                        say(_("Signal path compensation passed") if
-                            payload["passed"] else
-                            _("Signal path compensation returned %s - "
-                              "anything but 0 is a failure")
-                            % payload["result"])
-                    if not payload["passed"] and not payload.get(
-                            "stillgoing"):
-                        messagebox.showwarning(
-                            _("Compensation did not pass"),
-                            _("*CAL? returned %s. Zero means it passed; "
-                              "anything else means the instrument could "
-                              "not compensate itself, and the self test "
-                              "on this tab will say more about why.")
-                            % payload["result"])
-                elif label == "sys_diag":
-                    busy(False)
-                    sys_diag_show(payload)
-                    if not payload.get("back"):
-                        # It was left alone for two and a half minutes
-                        # and asked slowly after that, so this is no
-                        # longer the ordinary "still booting" case it
-                        # used to be. Two things are worth saying and
-                        # neither can be told apart from the bus.
-                        say(_("The instrument has not answered since the "
-                              "self test started. Look at its screen: a "
-                              "diagnostic log wants CLEAR MENU, and a "
-                              "dark or frozen one wants its power "
-                              "cycling."))
-                        messagebox.showwarning(
-                            _("The instrument has not come back"),
-                            _("The self test warm-boots the instrument. "
-                              "It was left alone for two and a half "
-                              "minutes and has still not answered.\n\n"
-                              "Look at the instrument's own screen. If "
-                              "it is showing a diagnostic log, press "
-                              "CLEAR MENU to let it finish starting up. "
-                              "If it is frozen, switch it off and on."
-                              "\n\nNothing is lost either way. The "
-                              "result and the error log survive, so "
-                              "press Run again once it is back to read "
-                              "them."))
-                    elif payload["passed"]:
-                        say(_("Self test %s: everything passed")
-                            % payload["area"])
-                    elif payload.get("found"):
-                        # Said in words rather than as the flag. With
-                        # VERBOSE off the flag is the three characters
-                        # "FAI", which is not a sentence to put in
-                        # front of somebody.
-                        say(_("Self test %(area)s failed - the error "
-                              "log added %(n)d line(s), shown below")
-                            % {"area": payload["area"],
-                               "n": len(payload["found"])})
-                    else:
-                        say(_("Self test %s failed") % payload["area"])
-                elif label == "sys_secure":
-                    busy(False)
-                    if payload["failed"]:
-                        say(_("Secure erase failed - the instrument could "
-                              "not verify the memory afterwards"))
-                    elif payload["passed"]:
-                        say(_("Secure erase done - every waveform and "
-                              "setup memory is zeroed"))
-                    else:
-                        # Neither event arrived. Said plainly rather
-                        # than assumed either way: this one is not a
-                        # thing to be vague about.
-                        say(_("Secure erase sent, but the instrument "
-                              "raised neither the pass nor the fail "
-                              "event - events were %s")
-                            % (", ".join(payload["events"]) or _("none")))
-                    do_sys_read()
-                elif label == "cal_read":
-                    busy(False)
-                    # Where it goes was settled before the read started,
-                    # so there is nothing to ask here - only to write.
-                    path = keep_file(state.get("calpath"), payload["data"])
-                    if not path:
-                        continue
-                    lines = [_("Saved to %s") % os.path.basename(path)]
-                    # Shown the way the NVRAM's sections are, and named
-                    # for what it is: the calibration block carries one
-                    # check word in word 0, not a word per section.
-                    lines.append(_(
-                        "    Calibration checksum: word 0 holds "
-                        "0x%(want)04X, the 251 words after it add up to "
-                        "0x%(got)04X")
-                        % {"want": payload.get("check", 0),
-                           "got": payload.get("sum", 0)})
-                    if not payload.get("sound", True):
-                        # Word 0 is the sum of the 251 words after it.
-                        # A block that disagrees with its own checksum
-                        # is damaged, and the file just written is a
-                        # copy of the damage - worth knowing before it
-                        # is relied on rather than while restoring it.
-                        lines.append(_(
-                            "The block does not agree with its own "
-                            "checksum, so what has been saved is "
-                            "already damaged. Keep it as evidence, but "
-                            "do not restore it to a working "
-                            "instrument."))
-                    if payload["flat"]:
-                        # Not proof of anything, but the one thing worth
-                        # looking at: the librarian's address is right
-                        # for the families the reference tool names and
-                        # an assumption everywhere else.
-                        lines.append(_(
-                            "Every word read back the same value, which "
-                            "calibration data is not. The address may be "
-                            "wrong for this model."))
-                    bak_note(*lines)
-                    say(_("Calibration constants saved"))
-                elif label == "cal_write":
-                    busy(False)
-                    lines = []
-                    if payload.get("stuck"):
-                        lines.append(_(
-                            "Word %(word)d would not take %(wanted)d - "
-                            "it reads %(got)d. Stopped there.")
-                            % payload["stuck"])
-                    lines.append(_("%(wrote)d of %(words)d word(s) "
-                                   "written and read back.") % payload)
-                    if payload.get("cancelled"):
-                        # Stopped part way, so the block is now
-                        # neither the file nor what was there.
-                        lines.append(_(
-                            "This was stopped part way through. The "
-                            "words already written are the file's; the "
-                            "rest are whatever the instrument held "
-                            "before. Restore it again to finish."))
-                    # Transferred is not stored. The words go into a
-                    # working copy in the instrument's RAM and reading
-                    # them back proves only that they arrived;
-                    # CALIBRATE:STORE? is what commits the copy to the
-                    # acquisition board, and its answer is the only
-                    # thing that says the constants will still be there
-                    # after the next power cycle.
-                    if payload.get("stored") is True:
-                        lines.append(_(
-                            "Stored on the acquisition board. The "
-                            "instrument answered 0, which is what it "
-                            "answers when the constants have been "
-                            "committed."))
-                    elif payload.get("stored") is False:
-                        lines.append(_(
-                            "NOT stored. The words were sent and read "
-                            "back, but the instrument answered %d to "
-                            "the command that commits them, so nothing "
-                            "was kept: at the next power cycle this "
-                            "instrument will hold what it held before. "
-                            "The NVRAM protection switch is what stops "
-                            "the commit - set it to unprotected, with "
-                            "the instrument switched on and without "
-                            "rebooting it, and restore again.")
-                            % payload.get("store_code", 0))
-                    elif "stored" in payload:
-                        lines.append(_(
-                            "Whether they were stored is not known: the "
-                            "command that commits them answered "
-                            "%(said)s. The words were sent and read "
-                            "back. Power the instrument off and on and "
-                            "back the constants up again to see what it "
-                            "kept.") % {"said": payload.get("store_said")
-                                        or _("nothing")})
-                    if "sum" in payload:
-                        lines.append(_(
-                            "    Calibration checksum: word 0 holds "
-                            "0x%(want)04X, the 251 words after it add up to "
-                            "0x%(got)04X")
-                            % {"want": payload["check"],
-                               "got": payload["sum"]})
-                    bak_note(*lines)
-                    say(_("The instrument would not take every "
-                          "calibration word")
-                        if payload.get("stuck") else
-                        _("The calibration restore was stopped part "
-                          "way through")
-                        if payload.get("cancelled") else
-                        _("Calibration constants restored and stored")
-                        if payload.get("stored") is True else
-                        _("The constants were sent but the instrument "
-                          "did not store them")
-                        if payload.get("stored") is False
-                        else _("Calibration constants sent"))
-                elif label == "bak_survey":
-                    busy(False)
-                    bak_show_survey(payload)
-                    say(_("The instrument answered"))
-                elif label == "bak_nvram_put":
-                    busy(False)
-                    bak_note(_("Restored %(size)s of NVRAM from %(file)s")
-                             % {"size": human_bytes(payload["wrote"]),
-                                "file": os.path.basename(payload["path"])},
-                             _("    read back and identical"))
-                    # Said whenever the two differ, because otherwise
-                    # the line above reports 640 kB restored from a
-                    # 1 MB file and reads like a write that stopped
-                    # short. It did not: the rest of the window is the
-                    # same memory answering a second time.
-                    if payload.get("held", 0) > payload.get("distinct", 0):
-                        bak_note(_(
-                            "    the file is %(held)s and this instrument "
-                            "holds %(real)s of distinct memory - the rest "
-                            "of the window is the same memory answering "
-                            "again, and is not written twice")
-                            % {"held": human_bytes(payload["held"]),
-                               "real": human_bytes(payload["distinct"])})
-                    say(_("NVRAM restored"))
-                elif label == "bak_nvram":
-                    busy(False)
-                    for one in payload["backups"]:
-                        bak_note(_("%(what)s: %(size)s to %(file)s")
-                                 % {"what": one["what"],
-                                    "size": human_bytes(one["bytes"]),
-                                    "file": os.path.basename(one["path"])},
-                                 "    " + one["sha"])
-                    for one in payload.get("ticked") or []:
-                        bak_note(_("The clock moved while it was read, in "
-                                   "%d byte(s). That is the instrument "
-                                   "keeping time, not a fault.")
-                                 % one["bytes"])
-                    say(_("NVRAM backed up"))
-                elif label == "bak_make":
-                    busy(False)
-                    bak_note(_("%(files)d file(s), %(size)s")
-                             % {"files": len(payload["manifest"]["files"]),
-                                "size": human_bytes(payload["bytes"])},
-                             "    " + ", ".join(
-                                 "%s (%d)" % (k, n) for k, n
-                                 in sorted(payload["holds"].items())))
-                    for name, why in payload["failed"]:
-                        bak_note(_("%(part)s: %(why)s")
-                                 % {"part": name, "why": why})
-                    say(_("Backed up to %s")
-                        % os.path.basename(payload["path"])
-                        if not payload["failed"]
-                        else _("Backed up, with %d part(s) missing")
-                        % len(payload["failed"]))
-                elif label == "bak_put":
-                    busy(False)
-                    for name, what in payload["done"]:
-                        bak_note(_("%(part)s: %(what)s restored")
-                                 % {"part": name, "what": what})
-                    for name, why in payload["failed"]:
-                        bak_note(_("%(part)s: %(why)s")
-                                 % {"part": name, "why": why})
-                    say(_("Restored to the instrument")
-                        if not payload["failed"]
-                        else _("Restored, with %d part(s) that failed")
-                        % len(payload["failed"]))
-                elif label == "sys_factory":
-                    busy(False)
-                    say(_("The instrument is back on its factory setup"))
-                    do_sys_read()
-                elif label == "sys_option":
-                    busy(False)
-                    say(_("Wrote %(n)d option word(s)%(bad)s - power "
-                          "cycle the instrument to see what took")
-                        % {"n": len(payload["sent"]),
-                           "bad": (_(", %d refused")
-                                   % len(payload["refused"]))
-                           if payload["refused"] else ""})
-                    log_note("system", "option words: sent %s, refused %s"
-                             % (payload["sent"], payload["refused"]))
-                elif label == "msk_live":
-                    msk_show_live(payload["segments"])
-                elif label == "set_read":
-                    busy(False)
-                    msk_setup_edit(payload["fields"])
-                elif label == "set_send":
-                    msk_setup_landed(payload)
-                elif label == "msk_eye":
-                    busy(False)
-                    state.pop("eyeing", None)
-                    where, late = payload["where"], payload.get("delayed")
-                    bits = []
-                    if payload.get("math"):
-                        bits.append("MATH1 = CH1-CH2")   # not words
-                    if late:
-                        # A clock that was asked for and not found is
-                        # said out loud. The delayed sweep is a good
-                        # answer to having no clock and a poor one to
-                        # having a clock nobody could see.
-                        if payload.get("adrift"):
-                            # A clock the data is not locked to is the
-                            # third case, and the one worth naming: it
-                            # was found, it was used, and the eye it
-                            # gave walked across the mask.
-                            bits.append(
-                                _("%(clock)s is not locked to the data, "
-                                  "so it was left alone and the sweep "
-                                  "delayed %(bits)d bit(s) past the "
-                                  "trigger")
-                                % {"clock": payload["adrift"],
-                                   "bits": Worker.DELAY_BITS})
-                        elif payload.get("nameless"):
-                            # They said which input the clock was on and
-                            # there was no clock at the bit rate on it.
-                            # Named, because "no clock found" reads as
-                            # this program's failure when it is a probe
-                            # on the wrong channel.
-                            bits.append(
-                                _("nothing at the bit rate on %(clock)s, "
-                                  "so the data was triggered on and the "
-                                  "sweep delayed %(bits)d bit(s) past it")
-                                % {"clock": payload["nameless"],
-                                   "bits": Worker.DELAY_BITS})
-                        else:
-                            bits.append(
-                                _("no clock found, so delayed %(bits)d "
-                                  "bit(s) past the trigger")
-                                if payload.get("wanted") else
-                                _("triggered on the data, delayed "
-                                  "%(bits)d bit(s) past it"))
-                            bits[-1] = bits[-1] % {"bits": Worker.DELAY_BITS}
-                        bits.append(_("eye centred") if late["centred"]
-                                    else _("not centred - no crossings "
-                                           "to measure"))
-                    else:
-                        bits.append(_("triggered on %(clock)s")
-                                    % {"clock": payload["clock"]})
-                        bits.append((_("bit centred at %(where).1f%%")
-                                     % {"where": where})
-                                    if where is not None else
-                                    _("not centred - no crossings to "
-                                      "measure"))
-                    bits.append(_("DPO") if payload["display"] == "INSTAVU"
-                                else _("persistence, no DPO with math")
-                                if payload.get("math") else
-                                _("persistence, no DPO fitted"))
-                    if payload["counting"]:
-                        bits.append(_("counting hits"))
-                    elif payload.get("math"):
-                        bits.append(_("judged here, not by the "
-                                      "instrument's counter"))
-                    say(_("Set up for an eye: %(what)s")
-                        % {"what": ", ".join(bits)})
-                    # And the same thing held in English and in full. A
-                    # bench report of "it does not work" is unanswerable
-                    # without knowing which of the three routes was
-                    # taken and what the instrument was asked for. The
-                    # status line says it and the next press replaces
-                    # it; this keeps the last one for a fault to carry.
-                    log_context("mask eye", "on %s: %s"
-                                % (payload.get("source") or "?",
-                                   ", ".join("%s=%s" % (k, payload[k])
-                                             for k in sorted(payload))))
-                    # A sweep that cannot hold an eye is worth saying
-                    # out loud rather than leaving somebody to read a
-                    # verdict off it: at 1 us/div a USB full speed mask
-                    # counted 116,921,796 hits over 345,839
-                    # acquisitions, all of them meaningless.
-                    held = payload.get("bits")
-                    if held is not None and not 0.4 <= held <= 6.0:
-                        messagebox.showwarning(
-                            _("The sweep is wrong for this mask"),
-                            _("The graticule is holding %(bits).3g bit(s), "
-                              "and an eye needs about one. Send the setup "
-                              "beside this mask - it names the timebase "
-                              "the shapes were drawn against - and start "
-                              "the measurement again.")
-                            % {"bits": held})
-                elif label == "msk_count":
-                    busy(False)
-                    state.pop("mhits", None)
-                    draw_mask()
-                    say(_("Counting hits from now, in %(display)s")
-                        % {"display": _("DPO")
-                           if payload["display"] == "INSTAVU"
-                           else _("persistence, no DPO fitted")}
-                        if payload["counting"] else
-                        _("This instrument has no mask counter to start"))
-                    log_context("mask count", "no eye: %s" % (payload,))
-                elif label == "lim_run":
-                    busy(False)
-                    if not payload["on"]:
-                        messagebox.showerror(
-                            _("Error"),
-                            "%s\n\n%s"
-                            % (_("The instrument would not start the "
-                                 "limit test."),
-                               "\n".join(payload["why"])
-                               or _("It reported nothing about why.")))
-                        say(_("The limit test did not start"))
-                        lim_buttons()
-                        continue
-                    state["lrun"] = {"running": True,
-                                     "dest": payload["dest"],
-                                     "source": payload["source"]}
-                    lim_buttons()
-                    draw_limits()
-                    say(_("Testing %(source)s against %(dest)s - the "
-                          "instrument stops if the signal leaves it")
-                        % {"source": payload["source"],
-                           "dest": payload["dest"]})
-                    lim_watch()
-                elif label == "lim_send":
-                    busy(False)
-                    # Whether the read-back matched or not, the
-                    # instrument has been sent an envelope and there is
-                    # something in the destination to test against.
-                    state["lhas"] = True
-                    lim_buttons()
-                    # And read it back once more, so the list says how
-                    # many columns it now holds rather than what it held
-                    # before. The drawing is on the canvas already, so
-                    # this read cannot overwrite it - see the lim_picture
-                    # branch.
-                    root.after(50, lim_look)
-                    if payload.get("verified"):
-                        say(_("%(dest)s now holds the envelope drawn "
-                              "here, read back and verified")
-                            % {"dest": payload["dest"]})
-                    else:
-                        # Not called a failure: reading an
-                        # envelope back off an instrument is the
-                        # part of this route measured least, so
-                        # the numbers are shown and the user is
-                        # asked to look. See TdsWfm.verify_envelope.
-                        say(_("Sent to %(dest)s, but reading it back "
-                              "gave something else - sent %(sent)s, "
-                              "read %(got)s. Check the instrument's "
-                              "screen.")
-                            % {"dest": payload["dest"],
-                               "sent": ", ".join(str(v) for v
-                                                 in payload.get("sent")
-                                                 or []),
-                               "got": ", ".join(str(v) for v
-                                                in payload.get("got")
-                                                or []) or _("nothing")})
-                    draw_limits()
-                elif label == "lim_clear":
-                    busy(False)
-                    gone = ", ".join(payload["names"])
-                    # The template that was on screen came from that
-                    # reference, so it is put down too - leaving it drawn
-                    # would show a band the instrument no longer has.
-                    for one in payload["names"]:
-                        forget_source(one)
-                    state["lband"] = []
-                    state["lwave"] = None
-                    # Known empty, not merely unread: this is the one
-                    # moment the program is certain there is nothing in
-                    # the destination to test against.
-                    state["lhas"] = False
-                    for one in payload["names"]:
-                        lim_refs_note(one, 0)
-                    lim_buttons()
-                    draw_limits()
-                    say(_("%s has been cleared on the instrument") % gone)
-                elif label == "lim_stop":
-                    busy(False)
-                    state.pop("lrun", None)
-                    lim_buttons()
-                    draw_limits()
-                    say(_("The limit test is switched off"))
-                elif label == "lim_state":
-                    held = state.get("lrun")
-                    if held and payload["running"] is not None:
-                        was, held["running"] = held["running"], \
-                            payload["running"]
-                        if was and not payload["running"]:
-                            # It stopped, and nothing here stopped it.
-                            lim_verdict()
-                            say(_("FAIL - the instrument stopped, so "
-                                  "%(source)s left the template")
-                                % {"source": held["source"]})
-                elif label == "lim_survey":
-                    busy(False)
-                    # Merged, not replaced: this usually answers about
-                    # one reference, and what is already known about
-                    # the other three is still true.
-                    known = {one["name"]: one
-                             for one in (state.get("lrefs") or [])}
-                    known.update({one["name"]: one
-                                  for one in payload["refs"]})
-                    state["lrefs"] = [known[n] for n in tds_wfm.REFS
-                                      if n in known]
-                    lim_refs_show(state["lrefs"])
-                    # What the survey says about the selected reference
-                    # is the same knowledge lim_look would have gone and
-                    # fetched. Taking it here saves reading it twice.
-                    here = state["ldest"].get()
-                    for one in payload["refs"]:
-                        if one["name"] == here:
-                            state["lhas"] = bool(one["columns"])
-                    lim_buttons()
-                    held = [one["name"] for one in payload["refs"]
-                            if one["columns"]]
-                    if len(payload["refs"]) == 1:
-                        # One reference, read because it was
-                        # double-clicked. Empty is an answer, and it
-                        # belongs on the status line rather than in a
-                        # box somebody has to dismiss.
-                        one = payload["refs"][0]
-                        say((_("%(ref)s holds a template of %(n)d "
-                               "column(s)")
-                             % {"ref": one["name"], "n": one["columns"]})
-                            if one["columns"]
-                            else _("%s is empty") % one["name"])
-                    else:
-                        say((_("%s holds a template") % ", ".join(held))
-                            if held
-                            else _("No reference holds a limit template"))
-                    # Draw the one that is selected, now it is known to
-                    # be worth drawing.
-                    if state.get("lhas"):
-                        lim_look()
-                elif label == "lim_picture":
-                    busy(False)
-                    state["lband"] = payload["band"]
-                    # An envelope is two values a column, so anything
-                    # shorter than a pair is not one. Read from the
-                    # instrument, so this is knowledge either way.
-                    state["lhas"] = len(payload["band"] or []) >= 2
-                    lim_refs_note(payload["dest"],
-                                  len(payload["band"] or []))
-                    if payload["wave"] is not None:
-                        state["lwave"] = payload["wave"]
-                        state["lwavefrom"] = "instrument"
-                    # Before anything is thinned from it: how far the
-                    # slider can usefully go is this band's business.
-                    lim_range()
-                    # Only what Learn read goes onto the canvas.
-                    # Refresh reads the same two things and must
-                    # leave the drawing alone, or an adjustment
-                    # would be lost every time the trace was
-                    # looked at again.
-                    loading = state.pop("lload", None)
-                    if state.pop("llearn", None) and payload["band"]:
-                        lim_take_band()
-                    elif payload["band"] and lim_may_draw(loading):
-                        # A template already on the instrument, put on
-                        # the canvas so it can be seen and adjusted
-                        # rather than made again. Whose idea the read
-                        # was decides whether it may replace a drawing;
-                        # see lim_may_draw.
-                        lim_take_band()
-                    lim_buttons()
-                    draw_limits()
-                    if payload["band"]:
-                        say(_("%(dest)s holds a template %(columns)d "
-                              "column(s) wide")
-                            % {"dest": payload["dest"],
-                               "columns": len(payload["band"])})
-                    else:
-                        say(_("%s holds no limit template to draw")
-                            % payload["dest"])
-                elif label == "msk_send":
-                    busy(False)
-                    want, got = payload["wanted"], payload["got"]
-                    wrong = [n for n in sorted(want)
-                             if got.get(n, 0) != want[n]]
-                    if not got:
-                        say(_("Sent, but this instrument reports no mask "
-                              "subsystem to read back"))
-                    elif wrong:
-                        # Not a silent success: the instrument kept
-                        # something other than what was sent.
-                        say(_("Sent, but segment(s) %(which)s came back "
-                              "holding %(got)s point(s) rather than "
-                              "%(want)s")
-                            % {"which": ", ".join(str(n) for n in wrong),
-                               "got": ", ".join(str(got.get(n, 0))
-                                                for n in wrong),
-                               "want": ", ".join(str(want[n])
-                                                 for n in wrong)})
-                    else:
-                        say(_("The instrument is showing the mask - "
-                              "%d segment(s), read back and verified")
-                            % len([n for n in want if want[n]]))
-                    msk_scan_scope()
-                elif label == "msk_clear":
-                    busy(False)
-                    state.pop("msent", None)
-                    msk_show_live(payload["segments"])
-                    left = sum(payload["segments"] or [])
-                    say(_("The instrument's mask segments are empty")
-                        if not left else
-                        _("Emptied, but %d point(s) are still there")
-                        % left)
-                elif label == "msk_read":
-                    busy(False)
-                    msk_took_live(payload["replies"])
-                elif label == "lim_build":
-                    busy(False)
-                    if not payload["made"]:
-                        # The instrument's own refusal, word for word.
-                        messagebox.showerror(
-                            _("Error"),
-                            "%s\n\n%s"
-                            % (_("The instrument did not write a "
-                                 "template."),
-                               "\n".join(payload["why"])
-                               or _("It reported nothing about why.")))
-                        say(_("No template was written"))
-                        continue
-                    say(_("%(dest)s now holds a template made from "
-                          "%(source)s, allowing %(up)g division(s) up "
-                          "and down and %(across)g across")
-                        % {"dest": payload["dest"],
-                           "source": payload["source"],
-                           "up": payload["vertical"],
-                           "across": payload["horizontal"]})
-                    do_lim_refresh()
-                elif label == "volumes":
-                    vols = payload["volumes"]
-                    if not vols:
-                        # Nothing to browse: no hard disk fitted and no
-                        # floppy in the drive. Saying so beats pretending
-                        # hd0: exists and failing to list it.
-                        busy(False)
-                        say(_("No drives found on this instrument"))
-                        messagebox.showinfo(
-                            _("No drives found on this instrument"),
-                            _("This instrument reports no usable drive.\n\n"
-                              "A TDS with no hard disk option has only its "
-                              "floppy drive, so put a disk in and press "
-                              "Refresh."))
-                        continue
-                    for v in vols:
-                        if not tree.exists(v):
-                            tree.insert("", "end", iid=v, text=" " + v,
-                                        image=icon_for("drive", True))
-                            tree.insert(v, "end", iid=v + "/~", text="")
-                    # Always open at the root of the hard disk. The
-                    # instrument's own current directory is wherever the
-                    # last program to talk to it happened to leave it -
-                    # which may be three levels inside an application
-                    # folder, or fd0: with no floppy in the drive. Neither
-                    # is where a file manager should start.
-                    start = "hd0:" if "hd0:" in vols else vols[0]
-                    say(_("Volumes: %s") % ", ".join(vols))
-                    # The connect-then-probe sequence has finished, so the
-                    # busy state it was holding has to be released BEFORE
-                    # navigating. navigate() declines to do anything while
-                    # busy, so leaving this set left the volumes listed but
-                    # the panes empty and every button disabled - which
-                    # looks exactly like a failure to connect.
-                    busy(False)
-                    navigate(start)
-                    # Now that the volumes are known, the Masks tab can
-                    # say where its library lives on this instrument. The
-                    # segments were already asked about at connect.
-                elif label == "split":
-                    show(payload)
-                elif label == "progress":
-                    say(payload["text"])
-                    progress(payload["frac"])
-                    # Every step of a backup or a restore is written to
-                    # the report as well, so the tab keeps an account of
-                    # what happened rather than only of what is
-                    # happening - the status line is gone the moment the
-                    # next line replaces it.
-                    #
-                    # The step, though, not every count inside it. The
-                    # readers format their running totals as
-                    # "<step> - <n of m>", so the part before the dash
-                    # is the step: one line per step rather than one per
-                    # chunk, which on a megabyte would be a thousand.
-                    if payload.get("job") in BAK_JOBS:
-                        step = payload["text"].split(" - ")[0]
-                        if step != state.get("bakstep"):
-                            state["bakstep"] = step
-                            bak_note("    " + step)
-                elif label == "event":
-                    # An event this program did not ask for. Always in the
-                    # log and always in the status bar; the dialog only the
-                    # first time a given code appears, so a repeating fault
-                    # informs rather than buries.
-                    say(_("Instrument reported: %s") % payload["detail"])
-                    fresh = [c for c in payload["codes"]
-                             if c not in state["seen_events"]]
-                    state["seen_events"].update(payload["codes"])
-                    if fresh:
-                        # Shown from its own turn of the event loop, not
-                        # from in here. The job that raised it is usually
-                        # still running, and a box opened inside the pump
-                        # held up its progress, its result and the busy
-                        # release until somebody found the box and closed
-                        # it - which is how a long listing stalled the
-                        # screenshot run.
-                        root.after(0, lambda said=_(
-                            "While doing '%s' the instrument reported:\n\n%s"
-                            "\n\nThis was not expected. It has been written "
-                            "to:\n%s\n\nIf anything looks wrong on the "
-                            "instrument, stop and say so before deleting "
-                            "anything else.")
-                            % (payload["where"], payload["detail"], LOGFILE):
-                            messagebox.showwarning(
-                                _("The instrument reported something"),
-                                said))
-                elif label == "download":
-                    busy(False)
-                    set_size(os.path.basename(payload["path"]),
-                             len(payload["data"]))
-                    where = keep_file(state["saveas"], payload["data"])
-                    if where:
-                        say(_("Saved %(bytes)s bytes to %(where)s")
-                            % {"bytes": format(len(payload["data"]), ","),
-                               "where": where})
-                elif label == "tree":
-                    busy(False)
-                    total = sum(n for _, n in payload["done"])
-                    say(_("Saved %(files)d file(s) in %(folders)d "
-                          "folder(s), %(bytes)s bytes, to %(where)s")
-                        % {"files": len(payload["done"]),
-                           "folders": payload["folders"],
-                           "bytes": format(total, ","),
-                           "where": payload["dir"]})
-                    report_failures("download", payload["failed"])
-                elif label == "downloads":
-                    busy(False)
-                    for dest, n in payload["done"]:
-                        set_size(os.path.basename(dest), n)
-                    total = sum(n for _, n in payload["done"])
-                    say(_("Saved %(files)d files (%(bytes)s bytes) to "
-                          "%(where)s")
-                        % {"files": len(payload["done"]),
-                           "bytes": format(total, ","),
-                           "where": payload["dir"]})
-                    report_failures("download", payload["failed"])
-                elif label == "deletes":
-                    busy(False)
-                    say(_("Deleted %d files") % len(payload["done"]))
-                    report_failures("delete", payload["failed"])
-                    if payload.get("skipped"):
-                        messagebox.showwarning(
-                            _("Delete"),
-                            _("The delete stopped after %(failed)d file(s) "
-                              "failed one after another, and %(skipped)d "
-                              "file(s) were not attempted.\n\nThat pattern "
-                              "means the instrument stopped answering "
-                              "rather than that those files are bad.\n\n"
-                              "Power cycle the instrument, then try again.")
-                            % {"failed": len(payload["failed"]),
-                               "skipped": len(payload["skipped"])})
-                    report_losses(payload)
-                    navigate(state["cwd"], force=True)
-                elif label == "survey":
-                    confirm_rmdir(payload["path"], payload["names"])
-                elif label == "rmdir":
-                    busy(False)
-                    gone = payload["path"]
-                    if tree.exists(gone):
-                        tree.delete(gone)
-                    state["cache"].pop(gone, None)
-                    say(_("Removed %s") % gone + mass_storage_note(payload))
-                    report_losses(payload)
-                    navigate(parent_of(gone) or state["cwd"], force=True)
-                elif label == "copy":
-                    busy(False)
-                    dest = payload["dest"]
-                    say(_("Copied to %s") % dest.rsplit("/", 1)[-1])
-                    state["cache"].pop(state["cwd"], None)
-                    navigate(state["cwd"], force=True)
-                elif label == "uploads":
-                    busy(False)
-                    if payload.get("blocked"):
-                        # Nothing was written - the pre-flight health check
-                        # refused. Safe to retry once the instrument is well;
-                        # no override needed.
-                        messagebox.showwarning(
-                            _("Upload"),
-                            _("Nothing was written. The instrument's file "
-                              "system was checked first and did not answer "
-                              "normally:\n\n%s\n\nThis is usually a wedged "
-                              "file system. Power cycle the instrument, "
-                              "confirm it lists its files, then try again.")
-                            % payload["blocked"])
-                        navigate(state["cwd"], force=True)
-                        continue
-                    for dest, n in payload["done"]:
-                        # Only rows in the folder on screen. A dropped
-                        # folder writes into subfolders as well, and
-                        # their leaf names would otherwise be matched
-                        # against whatever happens to share a name here.
-                        if dest.rsplit("/", 1)[0] == state["cwd"]:
-                            set_size(dest.rsplit("/", 1)[-1], n)
-                    total = sum(n for _, n in payload["done"])
-                    if payload.get("folders"):
-                        say(_("Uploaded and verified %(files)d file(s) in "
-                              "%(folders)d folder(s), %(bytes)s bytes")
-                            % {"files": len(payload["done"]),
-                               "folders": payload["folders"],
-                               "bytes": format(total, ",")})
-                    else:
-                        say(_("Uploaded and verified %(files)d file(s), "
-                              "%(bytes)s bytes")
-                            % {"files": len(payload["done"]),
-                               "bytes": format(total, ",")})
-                    report_failures("upload", payload["failed"])
-                    if payload.get("skipped"):
-                        # Said on its own and after the failures, because
-                        # it is a different fact: these were not tried,
-                        # and the instrument is the reason.
-                        messagebox.showwarning(
-                            _("Upload"),
-                            _("The upload stopped after %(failed)d file(s) "
-                              "failed one after another, and %(skipped)d "
-                              "file(s) were not attempted.\n\nThat pattern "
-                              "means the instrument stopped answering "
-                              "rather than that those files are bad. Each "
-                              "attempt deletes before it writes, so going "
-                              "on would have emptied folders it could not "
-                              "refill.\n\nPower cycle the instrument, then "
-                              "try again.")
-                            % {"failed": len(payload["failed"]),
-                               "skipped": len(payload["skipped"])})
-                    if payload.get("unchanged"):
-                        # Files already on the instrument, byte for byte,
-                        # were left alone rather than rewritten.
-                        say(_("%(done)d uploaded, %(same)d already there "
-                              "and left unchanged")
-                            % {"done": len(payload["done"]),
-                               "same": len(payload["unchanged"])})
-                    if payload.get("unhealthy"):
-                        # Post-flight failure: the files verified, but the
-                        # root no longer lists. This is the state that
-                        # precedes a lost disk - say so plainly.
-                        messagebox.showerror(
-                            _("Error"),
-                            _("The files were written and verified, but "
-                              "afterwards the instrument's file system no "
-                              "longer lists normally:\n\n%s\n\nThis is the "
-                              "state that precedes a lost disk. Do not write "
-                              "to it again - power cycle the instrument and "
-                              "check its files before doing anything else.")
-                            % payload["unhealthy"])
-                    navigate(state["cwd"], force=True)
-                elif label == "format":
-                    busy(False)
-                    # FORMAT has no query form and raises no event when it
-                    # works, so the listing afterwards is the whole
-                    # report. Names still there means it did not happen.
-                    if payload["left"]:
-                        messagebox.showwarning(
-                            _("The volume did not format"),
-                            _("%(drive)s still holds %(count)d item(s) "
-                              "after the format: %(items)s")
-                            % {"drive": payload["drive"],
-                               "count": len(payload["left"]),
-                               "items": name_list(payload["left"])})
-                        say(_("%s did not format") % payload["drive"])
-                    else:
-                        say(_("%s formatted - it is empty")
-                            % payload["drive"])
-                    # The cache is of a volume that no longer has
-                    # anything in it, so it goes rather than being
-                    # trusted for the redraw.
-                    state["cache"].pop(payload["drive"], None)
-                    navigate(payload["drive"], force=True)
-                elif label in ("upload", "delete", "mkdir"):
-                    busy(False)
-                    # Named in words rather than by the worker's own
-                    # label for the job, which is not a sentence in any
-                    # language and was never going to be translatable.
-                    done = {"upload": _("Uploaded"),
-                            "delete": _("Deleted"),
-                            "mkdir": _("Folder created")}[label]
-                    say("%s: %s%s" % (done, payload,
-                                      mass_storage_note(payload)))
-                    # What was written may not be in the folder on show
-                    # - a waveform goes to WAVEFORM on the drive - so
-                    # that folder's cached listing goes too, rather
-                    # than being kept and shown stale later.
-                    wrote = (payload.get("path") or ""
-                             if isinstance(payload, dict) else "")
-                    if "/" in wrote:
-                        state["cache"].pop(wrote.rsplit("/", 1)[0], None)
-                    navigate(state["cwd"], force=True)
+                handle = pump_jobs.get(label)
+                if handle:
+                    handle(payload)
         except queue.Empty:
             pass
         except Exception:
