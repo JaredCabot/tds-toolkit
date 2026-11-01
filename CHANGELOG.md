@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Internal: the window code is split by tab.** Each tab is now built by
+  its own module - `ui_wfm.py`, `ui_msk.py`, `ui_lim.py`, `ui_scr.py`,
+  `ui_err.py`, `ui_sys.py`, `ui_bak.py`, `ui_fw.py` and `ui_set.py` - and
+  what happens when a job finishes is a table of small handlers rather
+  than one long chain of tests. The Files tab and the shared parts stay
+  in `tdstoolkit.py`. Nothing a user sees should change.
+
 ## [1.3.0] - 2026-11-01
 
 ### Fixed
