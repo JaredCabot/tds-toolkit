@@ -1129,7 +1129,7 @@
   "Writing the backup file": "polmeH ghItlh ghItlhlu'taH",
   "no reference holds a waveform": "'ul mIllogh ngaSbogh qawmeH Daq tu'lu'be'",
   "%s did not list (%s)": "tetlh nobbe' %s (%s)",
-  "%s listed nothing - on this instrument an empty root is the wedged-filesystem signature, not an empty disk": "pagh tetlh %s - janvamDaq chIm wa'DIch ngaSwI' 'e' 'agh ngaQpu'bogh ghItlh pat; chIm nav 'agh'be'",
+  "%s listed nothing. On this instrument an empty root is the wedged-filesystem signature, not an empty disk. If it really is blank, format it from the Files tab first: a disk this program has just formatted is trusted to be empty.": "pagh tetlh %s. janvamDaq chIm wa'DIch ngaSwI' 'e' 'agh ngaQpu'bogh ghItlh pat; chIm nav 'agh'be'. nav chIm DIch, wa'DIch ghItlhmey 'ay'Daq yISegh: nav Seghlu'pu'bogh ghun'e' vam chIm 'e' Harlu'.",
   "Making folder %d of %d": "ngaSwI' chenmoHlu'taH - %d, naQ %d",
   "%d file(s) would not write": "%d ghItlhmey ghItlhlaHbe'lu'",
   "%d of %d command(s) refused: %s": "%d ra'meH mu'mey lajQo'lu'pu' (naQ %d): %s",

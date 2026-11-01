@@ -165,6 +165,15 @@ def clear_transfer_block(addr):
         save_transfers(state)
 
 
+#: Volumes this program formatted and then saw list empty, as (addr,
+#: VOLUME). An empty root otherwise reads as wedged (see health_check),
+#: which refused a restore onto a freshly formatted disk. Dropped as soon
+#: as anything is written there, so a write that still leaves the root
+#: empty reads as wedged again. Kept for this run only: a power cycle in
+#: between proves nothing either way, so formatting again is the answer.
+_formatted = set()
+
+
 #: One program on the bus at a time. A second program sending to the
 #: instrument during a transfer lands its command inside the file being
 #: written (FILE-TRANSFER-HARDENING.md section 1), so only one copy may
@@ -1621,6 +1630,8 @@ class Worker(object):
         self.fs.set_cwd(drive)
         left = real_names(self.fs.dir())
         self.fs.errors()
+        if not left:
+            _formatted.add((getattr(self, "addr", None), drive.upper()))
         return {"drive": drive, "left": left, "events": events}
 
     def survey(self, path):
@@ -3696,11 +3707,17 @@ class Worker(object):
         return report
 
     def _bak_refs(self, names, keep):
-        """The stored references, each as the .wfm this program writes."""
+        """The stored references, each as the .wfm this program writes.
+
+        Read 16 bits wide. A reference saved from an averaged channel
+        holds a real low byte: measured on a 784D, REF4 saved from CH2 at
+        64 averages had 2,497 of 2,500 low bytes non-zero, all 256 values
+        in use. Read 8 bits wide, a restore put back only the top half.
+        """
         if not names:
             raise IOError(_("no reference holds a waveform"))
         waves, refused, _how = self.wfm.capture(
-            [], list(names),
+            [], list(names), width=2,
             note=lambda name, done: self._progress(_("Reading %s") % name, done))
         for wave in waves:
             keep("%s/%s.wfm" % (tds_bak.REFS, wave.source), wave.to_wfm())
@@ -3725,15 +3742,22 @@ class Worker(object):
         empty disk (see FILE-TRANSFER-HARDENING.md sections 3 and 8). Either
         way the caller must not write. `dir()` already verifies the cwd took
         and raises if the volume will not answer.
+
+        The one empty root believed is a volume this program has just
+        formatted and seen empty, with nothing written since.
         """
         try:
             listed = self.fs.dir(volume)
         except Exception as exc:
             return _("%s did not list (%s)") % (volume, exc)
         if not listed:
-            return (_("%s listed nothing - on this instrument an empty root is "
-                    "the wedged-filesystem signature, not an empty disk")
-                    % volume)
+            if (getattr(self, "addr", None), volume.upper()) in _formatted:
+                return None
+            return (_("%s listed nothing. On this instrument an empty root "
+                      "is the wedged-filesystem signature, not an empty "
+                      "disk. If it really is blank, format it from the Files "
+                      "tab first: a disk this program has just formatted is "
+                      "trusted to be empty.") % volume)
         return None
 
     def _clear_lockout_if_healthy(self, cwd):
@@ -3816,6 +3840,9 @@ class Worker(object):
         out = (self.upload_many(items) if items
                else {"done": [], "failed": [], "skipped": []})
         out["folders"] = len(made)
+        if volume:
+            # Written to now, so an empty root is no longer to be believed.
+            _formatted.discard((getattr(self, "addr", None), volume.upper()))
         # Post-flight: a run that verified its own files but left the root
         # unreadable is the state that preceded the loss of a card. The root
         # must still list, or the whole run is a failure however well the

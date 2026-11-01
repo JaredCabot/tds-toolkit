@@ -1129,7 +1129,7 @@
   "Writing the backup file": "Writing the backup file",
   "no reference holds a waveform": "no reference holds a waveform",
   "%s did not list (%s)": "%s did not list (%s)",
-  "%s listed nothing - on this instrument an empty root is the wedged-filesystem signature, not an empty disk": "%s listed nothing - on this instrument an empty root is the wedged-filesystem signature, not an empty disk",
+  "%s listed nothing. On this instrument an empty root is the wedged-filesystem signature, not an empty disk. If it really is blank, format it from the Files tab first: a disk this program has just formatted is trusted to be empty.": "%s listed nothing. On this instrument an empty root is the wedged-filesystem signature, not an empty disk. If it really is blank, format it from the Files tab first: a disk this program has just formatted is trusted to be empty.",
   "Making folder %d of %d": "Making folder %d of %d",
   "%d file(s) would not write": "%d file(s) would not write",
   "%d of %d command(s) refused: %s": "%d of %d command(s) refused: %s",

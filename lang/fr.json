@@ -1129,7 +1129,7 @@
   "Writing the backup file": "Écriture du fichier de sauvegarde",
   "no reference holds a waveform": "aucune référence ne contient de forme d'onde",
   "%s did not list (%s)": "%s n'a pas pu être listé (%s)",
-  "%s listed nothing - on this instrument an empty root is the wedged-filesystem signature, not an empty disk": "%s n'a rien listé - sur cet instrument, une racine vide est la signature d'un système de fichiers bloqué, pas d'un disque vide",
+  "%s listed nothing. On this instrument an empty root is the wedged-filesystem signature, not an empty disk. If it really is blank, format it from the Files tab first: a disk this program has just formatted is trusted to be empty.": "%s n'a rien listé. Sur cet instrument, une racine vide est la signature d'un système de fichiers bloqué, pas d'un disque vide. Si le disque est vraiment vierge, formatez-le d'abord depuis l'onglet Fichiers : un disque que ce programme vient de formater est considéré comme vide.",
   "Making folder %d of %d": "Création du dossier %d sur %d",
   "%d file(s) would not write": "%d fichier(s) n'ont pas pu être écrits",
   "%d of %d command(s) refused: %s": "%d commande(s) sur %d refusée(s) : %s",

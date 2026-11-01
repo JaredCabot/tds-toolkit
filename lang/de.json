@@ -1129,7 +1129,7 @@
   "Writing the backup file": "Sicherungsdatei wird geschrieben",
   "no reference holds a waveform": "keine Referenz enthält einen Signalverlauf",
   "%s did not list (%s)": "%s ließ sich nicht auflisten (%s)",
-  "%s listed nothing - on this instrument an empty root is the wedged-filesystem signature, not an empty disk": "%s hat nichts aufgelistet - bei diesem Gerät ist ein leeres Stammverzeichnis das Kennzeichen eines hängengebliebenen Dateisystems, kein leerer Datenträger",
+  "%s listed nothing. On this instrument an empty root is the wedged-filesystem signature, not an empty disk. If it really is blank, format it from the Files tab first: a disk this program has just formatted is trusted to be empty.": "%s hat nichts aufgelistet. Bei diesem Gerät ist ein leeres Stammverzeichnis das Kennzeichen eines hängengebliebenen Dateisystems, kein leerer Datenträger. Ist der Datenträger wirklich leer, formatieren Sie ihn zuerst auf der Registerkarte Dateien: Ein Datenträger, den dieses Programm gerade formatiert hat, gilt als leer.",
   "Making folder %d of %d": "Ordner %d von %d wird angelegt",
   "%d file(s) would not write": "%d Datei(en) ließen sich nicht schreiben",
   "%d of %d command(s) refused: %s": "%d von %d Befehl(en) abgelehnt: %s",

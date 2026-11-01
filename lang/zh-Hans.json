@@ -1129,7 +1129,7 @@
   "Writing the backup file": "正在写入备份文件",
   "no reference holds a waveform": "没有参考存储器存有波形",
   "%s did not list (%s)": "%s 无法列出 (%s)",
-  "%s listed nothing - on this instrument an empty root is the wedged-filesystem signature, not an empty disk": "%s 什么也没有列出 - 在此仪器上，根目录为空是文件系统卡死的特征，而不是磁盘为空",
+  "%s listed nothing. On this instrument an empty root is the wedged-filesystem signature, not an empty disk. If it really is blank, format it from the Files tab first: a disk this program has just formatted is trusted to be empty.": "%s 什么也没有列出。在此仪器上，根目录为空是文件系统卡死的特征，而不是磁盘为空。如果磁盘确实是空白的，请先在“文件”选项卡中将其格式化：本程序刚格式化过的磁盘会被视为空盘。",
   "Making folder %d of %d": "正在创建文件夹（第 %d 个，共 %d 个）",
   "%d file(s) would not write": "%d 个文件无法写入",
   "%d of %d command(s) refused: %s": "%d 条命令被拒绝（共 %d 条）：%s",

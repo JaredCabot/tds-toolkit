@@ -1129,7 +1129,7 @@
   "Writing the backup file": "バックアップファイルを書き込んでいます",
   "no reference holds a waveform": "波形のあるリファレンスがありません",
   "%s did not list (%s)": "%s を一覧表示できませんでした (%s)",
-  "%s listed nothing - on this instrument an empty root is the wedged-filesystem signature, not an empty disk": "%s の一覧が空でした - この測定器では、ルートが空なのはディスクが空だからではなく、ファイルシステムがハングしている兆候です",
+  "%s listed nothing. On this instrument an empty root is the wedged-filesystem signature, not an empty disk. If it really is blank, format it from the Files tab first: a disk this program has just formatted is trusted to be empty.": "%s の一覧が空でした。この測定器では、ルートが空なのはディスクが空だからではなく、ファイルシステムがハングしている兆候です。本当に空のディスクなら、先に「ファイル」タブからフォーマットしてください。このプログラムがフォーマットした直後のディスクは空であるとみなされます。",
   "Making folder %d of %d": "フォルダーを作成しています %d / %d",
   "%d file(s) would not write": "%d 個のファイルを書き込めませんでした",
   "%d of %d command(s) refused: %s": "%d / %d 個のコマンドが拒否されました: %s",

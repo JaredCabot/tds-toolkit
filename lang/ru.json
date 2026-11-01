@@ -1129,7 +1129,7 @@
   "Writing the backup file": "Запись файла резервной копии",
   "no reference holds a waveform": "ни одна опорная память не содержит осциллограммы",
   "%s did not list (%s)": "не удалось получить список %s (%s)",
-  "%s listed nothing - on this instrument an empty root is the wedged-filesystem signature, not an empty disk": "список %s пуст - на этом приборе пустой корень означает зависшую файловую систему, а не пустой диск",
+  "%s listed nothing. On this instrument an empty root is the wedged-filesystem signature, not an empty disk. If it really is blank, format it from the Files tab first: a disk this program has just formatted is trusted to be empty.": "Список %s пуст. На этом приборе пустой корень означает зависшую файловую систему, а не пустой диск. Если диск действительно чистый, сначала отформатируйте его на вкладке «Файлы»: диск, только что отформатированный этой программой, считается пустым.",
   "Making folder %d of %d": "Создание папки %d из %d",
   "%d file(s) would not write": "Не удалось записать файлов: %d",
   "%d of %d command(s) refused: %s": "Отклонено команд: %d из %d: %s",

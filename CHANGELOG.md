@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A restore onto a freshly formatted disk was refused.** An empty root is
+  how a wedged file system shows itself on these instruments, so the
+  check before writing refused every empty volume, including one just
+  formatted. A volume this program has formatted and then seen empty is
+  now believed, until something is written to it. A disk blanked
+  elsewhere is still refused, and the message now says to format it from
+  the Files tab first.
+- **A backup kept only the top 8 bits of each reference.** References were
+  read one byte per point, but one saved from an averaged channel holds a
+  real low byte: on a 784D, 2,497 of 2,500 points had one. References are
+  now read 16 bits wide, and a restore puts back exactly what was saved.
 - **Starting a mask measurement on a level mask reported a bug in the
   program.** The handler for the count's result carried a stray copy of the
   limit-template handler, which asked the result for fields it never has.
