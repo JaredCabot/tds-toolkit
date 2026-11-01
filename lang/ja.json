@@ -1198,5 +1198,6 @@
   "Nothing was saved": "何も保存されませんでした",
   "These options were read from %s, and a different instrument is connected now. Nothing has been written. Open Options... again to read this one.": "これらのオプションは %s から読み取ったもので、現在は別の測定器が接続されています。何も書き込まれていません。この測定器を読み取るには「オプション...」を開き直してください。",
   "The delete stopped after %(failed)d file(s) failed one after another, and %(skipped)d file(s) were not attempted.\n\nThat pattern means the instrument stopped answering rather than that those files are bad.\n\nPower cycle the instrument, then try again.": "%(failed)d 個のファイルが続けて失敗したため削除を中止し、%(skipped)d 個のファイルは試行していません。\n\nこのパターンは、ファイルの不良ではなく測定器が応答しなくなったことを意味します。\n\n測定器の電源を入れ直してから、もう一度お試しください。",
-  "the on-instrument helper refused page %d of %d, and %s has no page buffer to write it from here. The flash is erased or part written and has to be programmed again": "測定器内の補助ルーチンが %d / %d ページ目を拒否しました。%s にはここから書き込むためのページバッファがありません。フラッシュは消去済みか一部だけ書き込まれた状態で、もう一度書き込む必要があります"
+  "the on-instrument helper refused page %d of %d, and %s has no page buffer to write it from here. The flash is erased or part written and has to be programmed again": "測定器内の補助ルーチンが %d / %d ページ目を拒否しました。%s にはここから書き込むためのページバッファがありません。フラッシュは消去済みか一部だけ書き込まれた状態で、もう一度書き込む必要があります",
+  "The shape changed, so its coordinates box was closed": "図形が変更されたため、座標ボックスを閉じました"
 }

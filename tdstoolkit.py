@@ -1875,9 +1875,13 @@ class Worker(object):
         read with it: three good traces and one that would not come are
         worth having.
         """
+        # 16 bits wide, like the backup: averaging and hi-res put a real
+        # low byte in every sample, and a file saved from an 8-bit read
+        # had thrown it away. Twice the bytes, about 0.3 s more on a
+        # 50,000-point record.
         t = time.time()
         waves, refused, how = self.wfm.capture(
-            list(live), list(refs),
+            list(live), list(refs), width=2,
             note=lambda name, done: self._progress(_("Reading %s") % name,
                                                    done))
         if not waves:
@@ -5825,6 +5829,13 @@ def run_gui():
         """`working` is None for no bar, 'wait' for marquee, 'steps' for one
         that fills. Anything that clears busy also clears the bar, so it
         cannot be left spinning after the work has stopped."""
+        # The jobs a connect queues behind itself hold the window between
+        # them. wfm_sources and scr_options each release busy when they
+        # are run on their own, and run as part of a connect that handed
+        # the buttons back while the volumes and the listing were still
+        # queued - see pump(), which lets go once the last of them is in.
+        if not on and state.get("connecting"):
+            return
         state["busy"] = on
         unavailable = state.get("cannot") or ()
         for b in buttons:
@@ -6591,6 +6602,7 @@ def run_gui():
 
     def reconnect(addr):
         """Point everything at a different instrument and start again."""
+        state.pop("connecting", None)
         state["addr"] = addr
         state["cwd"] = None
         state["cache"].clear()
@@ -8029,6 +8041,11 @@ def run_gui():
         # filesystem at all still has masks, and a scope with
         # no disk in the drive still has them too.
         msk_scan_scope()
+        # What this connect still has queued, so busy is held until the
+        # last of it is in. See busy() and pump().
+        state["connecting"] = {"wfm_sources", "scr_options", "err_available"}
+        if state.get("cannot") is not None:
+            state["connecting"].add("msk_live")
         if payload.get("filesystem") is False:
             # The earliest firmware has no FILESYSTEM subsystem
             # at all. Saying so beats an empty window and a
@@ -8077,6 +8094,7 @@ def run_gui():
                   "files. Only uploading is unavailable.")))
         say(_("Probing volumes ..."))
         w.submit("volumes", lambda k: k.volumes())
+        state["connecting"].add("volumes")
 
     def pump_scan(payload):
         busy(False)
@@ -8462,12 +8480,26 @@ def run_gui():
                 # closes the one the report was following.
                 if label not in ("progress", "event"):
                     state["bakstep"] = None
+                # One of the jobs a connect queued behind itself. Taken off
+                # the list before its handler runs, so the last of them is
+                # the one whose busy(False) gets through. The volumes hand
+                # on to the first listing, which releases busy itself; any
+                # other last job, or a failure, releases it here.
+                pending = state.get("connecting")
+                last = False
+                if pending is not None and label in pending:
+                    pending.discard(label)
+                    last = not pending
+                    if last:
+                        state.pop("connecting", None)
                 if not ok:
                     pump_failed(label, payload)
-                    continue
-                handle = pump_jobs.get(label)
-                if handle:
-                    handle(payload)
+                else:
+                    handle = pump_jobs.get(label)
+                    if handle:
+                        handle(payload)
+                if last and (not ok or label != "volumes"):
+                    busy(False)
         except queue.Empty:
             pass
         except Exception:

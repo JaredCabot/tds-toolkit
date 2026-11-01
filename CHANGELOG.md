@@ -7,8 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A selection or a half-drawn shape carried across from Masks to Limits.**
+  The two editors share their tools, and what was in hand on one drawing
+  pointed at the other's shapes when the tab changed: Delete took out
+  points nobody had chosen there. Changing tab now puts down whatever is in
+  hand and tidies the drawing it came from.
+- **The Coordinates box could type into the wrong shape.** It stays open
+  beside the drawing, and an undo, a point added on the canvas or another
+  mask opened changed what its shape number meant. It now closes, and says
+  so, when its shape changes under it, and when the other tab comes up.
+- **The buttons came back part way through connecting.** Two of the jobs a
+  connect queues released the window when they finished, while the volume
+  probe and the first listing were still waiting. The window is now held
+  until the last of them is in.
+- **Dragging or wheel-zooming a long record lagged behind the pointer.**
+  Every pointer event redrew the whole plot. A burst of events now costs one
+  redraw, as it already did in the mask editor; letting go draws at once.
+
 ### Changed
 
+- **The Waveforms tab reads 16 bits per point.** It read one byte per
+  point, which drops the low byte that averaging and hi-res acquisition
+  produce, so a saved .wfm or CSV held only the top half of what the
+  instrument had. Reads now carry the full 16 bits, as backups already
+  do; a 50,000-point record takes about 0.3 s longer.
 - **Internal: the window code is split by tab.** Each tab is now built by
   its own module - `ui_wfm.py`, `ui_msk.py`, `ui_lim.py`, `ui_scr.py`,
   `ui_err.py`, `ui_sys.py`, `ui_bak.py`, `ui_fw.py` and `ui_set.py` - and

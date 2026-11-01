@@ -400,7 +400,8 @@ def build(ui):
     # The tools, the selection and the half-drawn shape are shared on
     # purpose - only one of the two tabs can be in front, so there is
     # only ever one of each in play. History and the unsaved mark are
-    # not shared: those belong to the drawing.
+    # not shared: those belong to the drawing. What is in hand is put
+    # down when the other tab comes to the front - see edit_switched.
     def edit_here():
         """Which drawing the tools are acting on: 'lim' or 'msk'."""
         try:
@@ -410,6 +411,45 @@ def build(ui):
 
     def edit_canvas():
         return ui.lplot if edit_here() == "lim" else mplot
+
+    def edit_switched(_evt=None):
+        """Put down whatever is in hand when the other drawing comes up.
+
+        The selection, a shape half drawn, a split begun and a run of
+        nudges are kept once for both drawings, and they are indexes
+        into whichever one they were made on. Carried across to the
+        other tab they pointed at its shapes instead: Delete took out
+        points nobody had chosen there, and the next pen click went on
+        drawing a shape that belonged to the mask. So they go, the
+        drawing they came from is tidied as it would have been had the
+        shape been finished there, and a Coordinates box open on it
+        closes.
+        """
+        now = edit_here()
+        was = state.get("medit_on", now)
+        state["medit_on"] = now
+        if now == was:
+            return
+        for key in ("mdrawing", "mcutfrom", "mhover", "mband", "mdrag",
+                    "mcrossat", "mnarrow"):
+            state.pop(key, None)
+        state["mpicks"] = []
+        state["morder"] = []
+        state["mrun"] = None
+        box = state.pop("mcoords", None)
+        if box is not None:
+            try:
+                box.destroy()
+            except Exception:
+                pass
+        left = state.get("lmask" if was == "lim" else "mask")
+        if left is not None:
+            for seg in left.segments:
+                if 0 < len(seg) < tds_msk.MIN_POINTS:
+                    del seg[:]
+        edit_draw("l" if was == "lim" else "m")
+
+    tabs.bind("<<NotebookTabChanged>>", edit_switched, add="+")
 
     def edit_mask():
         """The drawing being edited: a mask, or the limits tab's band."""
@@ -1850,6 +1890,30 @@ def build(ui):
         rows.pack(fill="both", expand=True)
         cell = {}
         move = {}
+        size = [len(mask.segments[seg])]
+
+        def gone():
+            """True, and the box closed, if its shape changed under it.
+
+            The box is not modal, and it holds the drawing and the
+            shape number it was opened on. Undo, the eraser, a point
+            added on the canvas, another mask opened or the other tab
+            brought up all change what that number means, and a typed
+            coordinate then went into the wrong shape or the wrong
+            drawing - or raised IndexError past the end of it.
+            """
+            if (edit_mask() is mask and seg < len(mask.segments)
+                    and len(mask.segments[seg]) == size[0]):
+                return False
+            try:
+                alive = dlg.winfo_exists()
+            except Exception:
+                alive = False
+            if alive:
+                ui.say(_("The shape changed, so its coordinates box was "
+                         "closed"))
+                dlg.destroy()
+            return True
 
         def show_row(i):
             x, y = mask.segments[seg][i]
@@ -1857,6 +1921,7 @@ def build(ui):
             rows.set(str(i), "y", "%.2f" % y)
 
         def refill(keep=None):
+            size[0] = len(mask.segments[seg])
             origin.set("%.2f, %.2f" % msk_bounds(mask.segments[seg]))
             rows.delete(*rows.get_children())
             for i, (x, y) in enumerate(mask.segments[seg]):
@@ -1875,7 +1940,7 @@ def build(ui):
         def cell_type(_evt=None):
             """Live: a number that parses moves the point as it is typed."""
             box = cell.get("box")
-            if box is None:
+            if box is None or gone():
                 return
             try:
                 said = round(typed(box.get()), 2)
@@ -1898,6 +1963,8 @@ def build(ui):
             """Escape: the point goes back to where the edit found it."""
             if cell.get("box") is None:
                 return None
+            if gone():
+                return "break"
             if cell["kept"]:
                 i = cell["at"][0]
                 mask.segments[seg][i] = cell["was"]
@@ -1910,6 +1977,8 @@ def build(ui):
         def cell_start(item, which):
             """An entry laid over the cell: edit the number in place."""
             cell_shut()
+            if gone():
+                return
             over = rows.bbox(item, "#2" if which == "x" else "#3")
             if not over:
                 return
@@ -1942,12 +2011,14 @@ def build(ui):
 
         def mid_hold(_evt=None):
             """Where the shape was, so that a move never compounds."""
+            if gone():
+                return
             move.update(was=list(mask.segments[seg]),
                         at=msk_bounds(mask.segments[seg]), kept=False)
 
         def mid_type(_evt=None):
             """Live: a pair that parses slides the whole shape."""
-            if "was" not in move:
+            if "was" not in move or gone():
                 return
             try:
                 bits = [float(b) for b
@@ -1972,6 +2043,8 @@ def build(ui):
 
         def mid_done(_evt=None):
             move.pop("was", None)
+            if gone():
+                return
             origin.set("%.2f, %.2f" % msk_bounds(mask.segments[seg]))
 
         mid.bind("<FocusIn>", mid_hold)
@@ -1991,9 +2064,12 @@ def build(ui):
         def shut(evt):
             if evt.widget is dlg:
                 state.pop("mnumbers", None)
+                if state.get("mcoords") is dlg:
+                    state.pop("mcoords", None)
                 edit_redraw()
 
         dlg.bind("<Destroy>", shut)
+        state["mcoords"] = dlg
         dlg.bind("<Escape>", lambda e: dlg.destroy())
         dlg.update_idletasks()
         dlg.geometry("+%d+%d" % (root.winfo_rootx() + 120,

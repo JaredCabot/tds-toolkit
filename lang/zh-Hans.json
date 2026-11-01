@@ -1198,5 +1198,6 @@
   "Nothing was saved": "未保存任何内容",
   "These options were read from %s, and a different instrument is connected now. Nothing has been written. Open Options... again to read this one.": "这些选项是从 %s 读取的，而现在连接的是另一台仪器。未写入任何内容。请重新打开“选件...”以读取这台仪器。",
   "The delete stopped after %(failed)d file(s) failed one after another, and %(skipped)d file(s) were not attempted.\n\nThat pattern means the instrument stopped answering rather than that those files are bad.\n\nPower cycle the instrument, then try again.": "删除已停止：%(failed)d 个文件接连失败，%(skipped)d 个文件未尝试。\n\n这种情况说明仪器已停止响应，而不是这些文件有问题。\n\n请将仪器断电重启，然后重试。",
-  "the on-instrument helper refused page %d of %d, and %s has no page buffer to write it from here. The flash is erased or part written and has to be programmed again": "仪器内的辅助程序拒绝了第 %d 页（共 %d 页），而 %s 没有页缓冲区，无法从这里写入。闪存已被擦除或只写入了一部分，必须重新编程"
+  "the on-instrument helper refused page %d of %d, and %s has no page buffer to write it from here. The flash is erased or part written and has to be programmed again": "仪器内的辅助程序拒绝了第 %d 页（共 %d 页），而 %s 没有页缓冲区，无法从这里写入。闪存已被擦除或只写入了一部分，必须重新编程",
+  "The shape changed, so its coordinates box was closed": "形状已更改，因此其坐标框已关闭"
 }

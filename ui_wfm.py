@@ -921,6 +921,25 @@ def build(ui):
         its own to work out."""
         return dict((w.source, trace_colour(w)) for w in shown_waves())
 
+    def plot_soon():
+        """Redraw once the pointer stops arriving, not once per event.
+
+        A drag across the plot or the strip, and a spin of the wheel,
+        deliver events faster than a long record can be drawn: each draw
+        walks every whole record more than once. Drawn one for one, the
+        queue grew and the trace trailed the pointer. Collapsed onto one
+        idle callback, a burst costs one draw - the mask editor's
+        edit_soon does the same. Letting go draws at once, so a drag
+        always ends on an exact picture.
+        """
+        if state.get("predraw"):
+            return
+        state["predraw"] = plot.after_idle(plot_now)
+
+    def plot_now():
+        state.pop("predraw", None)
+        draw_plot()
+
     def draw_plot(_evt=None):
         """Redraw the held trace to fit the canvas.
 
@@ -928,6 +947,9 @@ def build(ui):
         resized - but the geometry comes from the same function the PNG
         export uses, so what is saved is what was on screen.
         """
+        pending = state.pop("predraw", None)
+        if pending:
+            plot.after_cancel(pending)
         plot.delete("all")
         wave = state.get("wave")
         pick = plot_colours(wave)
@@ -1136,7 +1158,9 @@ def build(ui):
         _across, down = at_fractions(0, y)
         return (0.5 - down) * tds_wfm.DIVS_Y
 
-    def do_zoom(what, direction, across=0.5, down=0.5):
+    def do_zoom(what, direction, across=0.5, down=0.5, soon=False):
+        """Zoom the view. `soon` for the wheel, which arrives in bursts;
+        a button press redraws at once."""
         view = state.get("view")
         if view is None:
             return
@@ -1146,7 +1170,10 @@ def build(ui):
             view.zoom_time(direction, across)
         else:
             view.zoom_volts(direction, down)
-        draw_plot()
+        if soon:
+            plot_soon()
+        else:
+            draw_plot()
 
     def on_plot_press(evt):
         """Start a drag: the decode band's marker moves the band, a pan
@@ -1188,7 +1215,7 @@ def build(ui):
         if drag.get("decode"):
             # Up is positive: dragging the marker up raises the band.
             state["decoffset"] = drag["start"] + (drag["y"] - evt.y)
-            draw_plot()
+            plot_soon()
             return
         if drag["box"]:
             plot.delete("band")
@@ -1230,7 +1257,7 @@ def build(ui):
         else:
             view.pan(divisions=division_at(evt.y) - drag["from_div"])
             drag["from_div"] = division_at(evt.y)
-        draw_plot()
+        plot_soon()
 
     def on_plot_release(evt):
         drag = state.pop("drag", None)
@@ -1257,7 +1284,7 @@ def build(ui):
             direction = 1 if evt.delta > 0 else -1
         across, down = at_fractions(evt.x, evt.y)
         do_zoom("volts" if (evt.state & 0x0001) else "time",
-                direction, across, down)
+                direction, across, down, soon=True)
 
     # How near an edge of the marked window counts as taking hold of it.
     OVER_GRAB = 5
@@ -1303,7 +1330,7 @@ def build(ui):
             other = view.first + view.span if edge == "first" else view.first
             view.stretch_to(over_time(evt.x), other,
                             "last" if edge == "first" else "first")
-        draw_plot()
+        plot_soon()
 
     def on_over_hover(evt):
         """A resize pointer over an edge, so it can be found at all."""
@@ -1318,7 +1345,7 @@ def build(ui):
             direction = 1 if evt.delta > 0 else -1
         at = ((over_time(evt.x) - view.first) / view.span
               if view.span else 0.5)
-        do_zoom("time", direction, at)
+        do_zoom("time", direction, at, soon=True)
 
     plot.bind("<ButtonPress-1>", on_plot_press)
     plot.bind("<B1-Motion>", on_plot_move)

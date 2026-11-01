@@ -1198,5 +1198,6 @@
   "Nothing was saved": "pagh pollu'",
   "These options were read from %s, and a different instrument is connected now. Nothing has been written. Open Options... again to read this one.": "%s janvo' DuHmeyvam laDlu'pu', 'ach DaH latlh jan rarlu'. pagh ghItlhlu'. janvam DalaDmeH wIvmey ... yIpoSmoHqa'.",
   "The delete stopped after %(failed)d file(s) failed one after another, and %(skipped)d file(s) were not attempted.\n\nThat pattern means the instrument stopped answering rather than that those files are bad.\n\nPower cycle the instrument, then try again.": "teqlu'taHvIS %(failed)d ghItlh tlhoS Qaghpu', vaj mevlu'; %(skipped)d ghItlh nIDlu'be'.\n\njan jangbe'chu'mo' Qagh, ghItlhmey QIHlu'pu'mo' Qaghbe'.\n\njan yIchu'Ha' 'ej yIchu'qa', ghIq nID qa'.",
-  "the on-instrument helper refused page %d of %d, and %s has no page buffer to write it from here. The flash is erased or part written and has to be programmed again": "%d 'ay' (naQ %d) lajQo' jan boQwI'; %s Daq 'ay' ngaSwI' tu'lu'be', vaj naDev ghItlhlaHbe'lu'. flash teqlu'pu' pagh bID ghItlhlu'pu'; ghItlhqa'nIS"
+  "the on-instrument helper refused page %d of %d, and %s has no page buffer to write it from here. The flash is erased or part written and has to be programmed again": "%d 'ay' (naQ %d) lajQo' jan boQwI'; %s Daq 'ay' ngaSwI' tu'lu'be', vaj naDev ghItlhlaHbe'lu'. flash teqlu'pu' pagh bID ghItlhlu'pu'; ghItlhqa'nIS",
+  "The shape changed, so its coordinates box was closed": "choH Hap, vaj Daq mI'mey ghItlh SoQmoHlu'"
 }
