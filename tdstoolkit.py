@@ -66,7 +66,7 @@ import winicons
 import i18n
 from i18n import gettext as _
 
-__version__ = "1.2.3"
+__version__ = "1.3.0"
 __author__ = "Jared Cabot"
 __email__ = "jetstreamtechnology@protonmail.com"
 __licence__ = "MIT"

@@ -600,9 +600,10 @@ class Flash(object):
         writes every page of a block on top of the block's first page.
         Measured on a TDS784C: a page asked for at 0x013FF000 arrived at
         0x013E0000 and the call reported success.
+
+        Never reached on a part with no page buffer: program() refuses
+        that before anything is sent, or as soon as the helper refuses.
         """
-        if not self.paged:
-            self._refuse()
         base = addr
         self.mon.poke(base, _both(0x7171))          # read extended status
         self._wait(_gsr(addr), 0x0004, 0x0004, "extended status")
