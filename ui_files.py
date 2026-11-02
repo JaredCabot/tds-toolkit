@@ -1,8 +1,8 @@
 """The Files tab: the instrument's file system, browsed like Explorer.
 
-FilesTab is the tab; build(ui) makes it and hands its names back to
-the window, which still reaches the tabs through `ui` (state, the
-worker, busy, say and the rest) while they are moved onto classes.
+FilesTab is the tab. build(ui) makes it with the window (App in
+tdstoolkit.py, which the tab calls `ui`), and the window keeps it by
+name.
 """
 import os
 import tkinter as tk
@@ -14,7 +14,7 @@ from tkinter import ttk
 import winicons
 from i18n import gettext as _
 from tdstoolkit import (MASS_STORAGE, N_, check_83, localise,
-                        suggest_copy_name, tab_names, to_83, type_of)
+                        suggest_copy_name, to_83, type_of)
 from worker import Worker
 
 
@@ -36,17 +36,17 @@ class FilesTab(object):
         self.tabs.add(self.filetab, text=_("Files"))
         self.named(self.filetab, "Files")
 
-        self.nav = ttk.Frame(self.filetab)
-        self.nav.pack(fill="x", padx=2, pady=(6, 2))
-        self.btn_back = ttk.Button(self.nav, text="←", width=3,
+        nav = ttk.Frame(self.filetab)
+        nav.pack(fill="x", padx=2, pady=(6, 2))
+        self.btn_back = ttk.Button(nav, text="←", width=3,
                                    command=lambda: self.do_back())
-        self.btn_fwd = ttk.Button(self.nav, text="→", width=3,
+        self.btn_fwd = ttk.Button(nav, text="→", width=3,
                                   command=lambda: self.do_forward())
-        self.btn_up = ttk.Button(self.nav, text="↑", width=3,
+        self.btn_up = ttk.Button(nav, text="↑", width=3,
                                  command=lambda: self.do_up())
-        for self.b in (self.btn_back, self.btn_fwd, self.btn_up):
-            self.b.pack(side="left", padx=(0, 2))
-        self.ent_path = ttk.Entry(self.nav)
+        for b in (self.btn_back, self.btn_fwd, self.btn_up):
+            b.pack(side="left", padx=(0, 2))
+        self.ent_path = ttk.Entry(nav)
         self.ent_path.pack(side="left", fill="x", expand=True, padx=(6, 0))
 
         # --------------------------------------------------------- command row
@@ -77,10 +77,10 @@ class FilesTab(object):
         self.panes.add(leftf, weight=1)
 
         listf = ttk.Frame(self.panes)
-        self.cols = ("size", "type")
+        cols = ("size", "type")
         # "extended" is the Explorer convention: click, ctrl-click to add,
         # shift-click for a run, ctrl-A for all.
-        self.lst = ttk.Treeview(listf, columns=self.cols, show="tree headings",
+        self.lst = ttk.Treeview(listf, columns=cols, show="tree headings",
                                 selectmode="extended")
         self.lst.heading("#0", text=_("Name"))
         self.lst.heading("size", text=_("Size"))
@@ -88,11 +88,11 @@ class FilesTab(object):
         self.lst.column("#0", width=240)
         self.lst.column("size", width=90, anchor="e")
         self.lst.column("type", width=170)
-        self.lsb = ttk.Scrollbar(listf, orient="vertical",
+        lsb = ttk.Scrollbar(listf, orient="vertical",
                                  command=self.lst.yview)
-        self.lst.configure(yscrollcommand=self.lsb.set)
+        self.lst.configure(yscrollcommand=lsb.set)
         self.lst.pack(side="left", fill="both", expand=True)
-        self.lsb.pack(side="right", fill="y")
+        lsb.pack(side="right", fill="y")
         self.panes.add(listf, weight=3)
 
         # English here and translated as drawn, so the headings follow a
@@ -137,11 +137,11 @@ class FilesTab(object):
             # other way for Japanese, whose glyphs are twice as wide as the
             # average. Letting Tk measure the actual string is the only thing
             # that is right in every language.
-            self.b = ttk.Button(tb, text=_(text), padding=(10, 2), command=fn)
-            self.b.pack(side="left", padx=(0, 4))
-            ui.buttons.append(self.b)
-            ui.labelled.append((self.b, text))
-            self.by_name[text] = self.b
+            b = ttk.Button(tb, text=_(text), padding=(10, 2), command=fn)
+            b.pack(side="left", padx=(0, 4))
+            ui.buttons.append(b)
+            ui.labelled.append((b, text))
+            self.by_name[text] = b
 
         # And Format at the right-hand end of the buttons themselves, as far
         # from Delete as the row allows. It is the one thing here that takes
@@ -1594,7 +1594,5 @@ class FilesTab(object):
 
 
 def build(ui):
-    """Make the tab, and hand its names to the window as before."""
-    tab = FilesTab(ui)
-    vars(ui).update(tab_names(tab))
-    return tab
+    """Make the tab; the window keeps what this returns."""
+    return FilesTab(ui)

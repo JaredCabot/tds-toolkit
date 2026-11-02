@@ -1,8 +1,8 @@
 """The Masks tab, and the polygon editor it shares with the Limits tab.
 
-MasksTab is the tab; build(ui) makes it and hands its names back to
-the window, which still reaches the tabs through `ui` (state, the
-worker, busy, say and the rest) while they are moved onto classes.
+MasksTab is the tab. build(ui) makes it with the window (App in
+tdstoolkit.py, which the tab calls `ui`), and the window keeps it by
+name.
 """
 import base64
 import os
@@ -21,7 +21,7 @@ import tds_set
 import tds_wfm
 from i18n import gettext as _
 from tdstoolkit import (APPDIR, LEFT_PANE, Worker, localise, log_context,
-                        log_note, resource, stamped, tab_names, typed)
+                        log_note, resource, stamped, typed)
 
 
 class MasksTab(object):
@@ -30,21 +30,21 @@ class MasksTab(object):
     def __init__(self, ui):
         self.ui = ui
         self.EDGE = ui.EDGE
-        self.flow_buttons = ui.flow_buttons
-        self.flowing = ui.flowing
+        self.flow_buttons = ui.waves.flow_buttons
+        self.flowing = ui.waves.flowing
         self.hints = ui.hints
         self.named = ui.named
-        self.plot_colours = ui.plot_colours
+        self.plot_colours = ui.waves.plot_colours
         self.popup = ui.popup
         self.root = ui.root
         self.says = ui.says
-        self.shown_waves = ui.shown_waves
+        self.shown_waves = ui.waves.shown_waves
         self.state = ui.state
         self.tabs = ui.tabs
-        self.trace_colour = ui.trace_colour
+        self.trace_colour = ui.waves.trace_colour
         self.w = ui.w
-        self.wave_name = ui.wave_name
-        self.wave_scales = ui.wave_scales
+        self.wave_name = ui.waves.wave_name
+        self.wave_scales = ui.waves.wave_scales
 
         # ------------------------------------------------------------ masks
         # A mask on these instruments is eight closed polygons in percent of
@@ -163,8 +163,8 @@ class MasksTab(object):
         # The arrows on the middle of the line between the two lists, since
         # that is the line they move a mask across. The other two are not
         # directions, so they sit under them rather than beside them.
-        self.mcentre = ttk.Frame(marrows)
-        self.mcentre.pack(side="top")
+        mcentre = ttk.Frame(marrows)
+        mcentre.pack(side="top")
         # The glyphs are drawn larger and darker than the label font would
         # give them, because these two are the tab's main verbs and at the
         # default weight they read as decoration.
@@ -185,10 +185,10 @@ class MasksTab(object):
         # bottom. Measured: the styled button asks for 37 by 31 and was
         # being given 28 by 25, so six pixels of the arrow's descent went
         # over the edge and the glyph sat high in the button.
-        self.btn_msend = ttk.Button(self.mcentre, text="↓", width=3,
+        self.btn_msend = ttk.Button(mcentre, text="↓", width=3,
                                     style="Arrow.TButton",
                                     command=lambda: self.do_msk_send())
-        self.btn_mload = ttk.Button(self.mcentre, text="↑", width=3,
+        self.btn_mload = ttk.Button(mcentre, text="↑", width=3,
                                     style="Arrow.TButton",
                                     command=lambda: self.do_msk_load())
         # Sending is the eight segments and nothing else. This is the rest
@@ -404,11 +404,11 @@ class MasksTab(object):
             self.state.pop(key, None)
         self.flow_buttons()
         self.mask_flow()
-        self.ui.lim_flow()
+        self.ui.limits.lim_flow()
         # The option bars too, under keys of their own (B10): sharing the
         # toolbars' keys, each compared its split with the other bar's.
         self.mbar_flow()
-        self.ui.lbar_flow()
+        self.ui.limits.lbar_flow()
         self.root.update_idletasks()
 
     def edit_tools(self, parent, prefix):
@@ -477,13 +477,14 @@ class MasksTab(object):
     def edit_here(self):
         """Which drawing the tools are acting on: 'lim' or 'msk'."""
         try:
-            return ("lim" if self.tabs.select() == str(self.ui.limtab)
+            return ("lim" if self.tabs.select() == str(self.ui.limits.limtab)
                     else "msk")
         except Exception:               # before the notebook exists
             return "msk"
 
     def edit_canvas(self):
-        return self.ui.lplot if self.edit_here() == "lim" else self.mplot
+        return (self.ui.limits.lplot if self.edit_here() == "lim"
+                else self.mplot)
 
     def edit_switched(self, _evt=None):
         """Put down whatever is in hand when the other drawing comes up.
@@ -580,8 +581,8 @@ class MasksTab(object):
         # here. The button refreshers only set widget states - neither
         # redraws - so this does not loop.
         if self.edit_here() == "lim":
-            self.ui.draw_limits()
-            self.ui.lim_buttons()
+            self.ui.limits.draw_limits()
+            self.ui.limits.lim_buttons()
         else:
             self.draw_mask()
             self.msk_buttons()
@@ -594,7 +595,7 @@ class MasksTab(object):
         a screen behind a drawing can finish while the other tab is
         being looked at.
         """
-        (self.ui.draw_limits if which == "l" else self.draw_mask)()
+        (self.ui.limits.draw_limits if which == "l" else self.draw_mask)()
 
     def edit_soon(self):
         """Redraw once the pointer stops arriving, not once per event.
@@ -1722,7 +1723,7 @@ class MasksTab(object):
                 menu.grab_release()
             return
         if (self.state.get("mdrawing") is None
-                and self.state.get("mcutfrom") is None):
+            and self.state.get("mcutfrom") is None):
             if self.msk_picked() or self.state.get("morder"):
                 self.state["mpicks"] = []
                 self.state["morder"] = []
@@ -2309,7 +2310,7 @@ class MasksTab(object):
         if answer is None:
             return False
         if answer:
-            (self.ui.do_lim_file_save if self.edit_here() == "lim"
+            (self.ui.limits.do_lim_file_save if self.edit_here() == "lim"
              else self.do_msk_save)()
             # a cancelled save cancels
             return not self.state.get(self.edit_key("dirty"))
@@ -2990,7 +2991,7 @@ class MasksTab(object):
             if which == "m":
                 self.state["mview"] = tds_wfm.PlotView([held[0]])
             self.edit_draw(which)
-            self.ui.lim_buttons()
+            self.ui.limits.lim_buttons()
             return
         path = filedialog.askopenfilename(
             parent=self.root, title=_("Load trace"),
@@ -3012,7 +3013,7 @@ class MasksTab(object):
             self.state["mview"] = tds_wfm.PlotView([wave])
         self.edit_draw(which)
         self.msk_buttons()
-        self.ui.lim_buttons()
+        self.ui.limits.lim_buttons()
         self.ui.say(_("Loaded %s behind the mask") % os.path.basename(path))
 
     def msk_setup_path(self, mask=None):
@@ -3103,7 +3104,7 @@ class MasksTab(object):
         """
         mask = self.state.get("mask")
         if (self.state["busy"] or mask is None
-                or self.state.get("cannot") is None):
+            or self.state.get("cannot") is None):
             return
         # Mask testing is Option 2C; without it there is nothing to
         # count with (C5).
@@ -3112,8 +3113,8 @@ class MasksTab(object):
         # Both routes write LIMIT:STATE OFF, so a limit test running on
         # the Limits tab is over from here (C5).
         if self.state.pop("lrun", None) is not None:
-            self.ui.lim_verdict()
-            self.ui.lim_buttons()
+            self.ui.limits.lim_verdict()
+            self.ui.limits.lim_buttons()
         source = mask.source or (self.state.get("wsources") or ["CH1"])[0]
         bit = self.msk_unit_interval()
         if bit is None:
@@ -3394,8 +3395,8 @@ class MasksTab(object):
         # own canvas. A setup beside a template is listed by the limits
         # library, not by the masks one.
         if self.state.get("setupfor") == "lmask":
-            self.ui.do_lim_scan()
-            self.ui.say_limits()
+            self.ui.limits.do_lim_scan()
+            self.ui.limits.say_limits()
         else:
             self.do_msk_scan()
             self.say_mask()
@@ -3658,7 +3659,7 @@ class MasksTab(object):
         # Without this it stayed greyed with a screenshot on
         # the canvas until some unrelated click redrew it.
         self.msk_buttons()
-        self.ui.lim_buttons()
+        self.ui.limits.lim_buttons()
 
     def pump_msk_live(self, payload):
         self.msk_show_live(payload["segments"])
@@ -3815,7 +3816,5 @@ class MasksTab(object):
 
 
 def build(ui):
-    """Make the tab, and hand its names to the window as before."""
-    tab = MasksTab(ui)
-    vars(ui).update(tab_names(tab))
-    return tab
+    """Make the tab; the window keeps what this returns."""
+    return MasksTab(ui)

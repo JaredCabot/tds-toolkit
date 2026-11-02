@@ -1,8 +1,8 @@
 """The Firmware tab.
 
-FirmwareTab is the tab; build(ui) makes it and hands its names back to
-the window, which still reaches the tabs through `ui` (state, the
-worker, busy, say and the rest) while they are moved onto classes.
+FirmwareTab is the tab. build(ui) makes it with the window (App in
+tdstoolkit.py, which the tab calls `ui`), and the window keeps it by
+name.
 """
 import os
 import re
@@ -16,7 +16,7 @@ import tds_fw
 from i18n import gettext as _
 from tds_fs import DEFAULT_ADDR
 from tdstoolkit import (APPDIR, load_settings, log_note, model_of, resource,
-                        save_settings, tab_names)
+                        save_settings)
 
 
 class FirmwareTab(object):
@@ -696,7 +696,5 @@ class FirmwareTab(object):
 
 
 def build(ui):
-    """Make the tab, and hand its names to the window as before."""
-    tab = FirmwareTab(ui)
-    vars(ui).update(tab_names(tab))
-    return tab
+    """Make the tab; the window keeps what this returns."""
+    return FirmwareTab(ui)

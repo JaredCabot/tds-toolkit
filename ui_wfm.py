@@ -1,8 +1,8 @@
 """The Waveforms tab: reading, drawing, decoding and sending waveforms.
 
-WaveformsTab is the tab; build(ui) makes it and hands its names back to
-the window, which still reaches the tabs through `ui` (state, the
-worker, busy, say and the rest) while they are moved onto classes.
+WaveformsTab is the tab. build(ui) makes it with the window (App in
+tdstoolkit.py, which the tab calls `ui`), and the window keeps it by
+name.
 """
 import copy
 import os
@@ -16,7 +16,7 @@ import tds_decode
 import tds_wfm
 from i18n import gettext as _
 from tdstoolkit import (APPDIR, LEFT_PANE, Worker, localise, log_context,
-                        log_note, resource, stamped, tab_names)
+                        log_note, resource, stamped)
 
 
 class WaveformsTab(object):
@@ -231,15 +231,15 @@ class WaveformsTab(object):
         # waveform window itself - the cursor changes over the sash strip
         # there, so the whole edge drags. A raised knob was tried and looked
         # like a stray mark rather than part of the design.
-        self._panebg = ttk.Style().lookup("TFrame", "background") or "#f0f0f0"
+        _panebg = ttk.Style().lookup("TFrame", "background") or "#f0f0f0"
         # Shared look for the two decode-area splitters: a thin sash, no
         # relief, and no handle knob - painted the panel background (below) so
         # the sash is invisible and is dragged by the edge alone.
-        self._SASH = dict(sashwidth=7, sashrelief="flat", showhandle=False,
+        _SASH = dict(sashwidth=7, sashrelief="flat", showhandle=False,
                           borderwidth=0)
         self.wrightsplit = tk.PanedWindow(wrightf, orient="vertical",
-                                          background=self._panebg,
-                                          **self._SASH)
+                                          background=_panebg,
+                                          **_SASH)
         self.wrightsplit.pack(fill="both", expand=True)
         wplotarea = ttk.Frame(self.wrightsplit)
         # The zoom tools in a column down the left, spanning the full height -
@@ -272,18 +272,18 @@ class WaveformsTab(object):
         self._zoombtn("whole", lambda: self.do_zoom("reset", 0),
                       "Whole record")
 
-        self.wplotcol = ttk.Frame(wplotarea)
-        self.wplotcol.pack(side="left", fill="both", expand=True)
+        wplotcol = ttk.Frame(wplotarea)
+        wplotcol.pack(side="left", fill="both", expand=True)
         # A strip above the plot showing the whole record with the part on the
         # graticule marked out, which is what the instrument's own record view
         # does. Without it, a zoomed-in trace gives no clue where in the
         # capture it came from. In the plot's own column, so it is the plot's
         # width.
-        self.over = tk.Canvas(self.wplotcol, height=44, highlightthickness=1,
+        self.over = tk.Canvas(wplotcol, height=44, highlightthickness=1,
                               background=tds_wfm.DEFAULT_COLOURS["background"],
                               highlightbackground=self.EDGE)
         self.over.pack(fill="x")
-        self.plot = tk.Canvas(self.wplotcol,
+        self.plot = tk.Canvas(wplotcol,
                               background=tds_wfm.DEFAULT_COLOURS["background"],
                               highlightthickness=1,
                               highlightbackground=self.EDGE)
@@ -315,7 +315,7 @@ class WaveformsTab(object):
         # take the other half, wide enough to hold the source dropdowns on one
         # line.
         self.wdecsplit = tk.PanedWindow(self.wdecpanel, orient="horizontal",
-                                        background=self._panebg, **self._SASH)
+                                        background=_panebg, **_SASH)
         self.wdecsplit.pack(fill="both", expand=True)
         # The left pane: the controls fill it. No fixed column any more - the
         # pane is half the section, wide enough for a four-wire bus on one
@@ -1290,20 +1290,20 @@ class WaveformsTab(object):
         self.state["drag"] = {"x": evt.x, "y": evt.y,
                               "from_time": self.time_at(evt.x),
                               "from_div": self.division_at(evt.y),
-                         # Taking hold of a trace's marker moves that
-                         # trace and nothing else, the way the position
-                         # knob on the instrument moves the selected
-                         # channel. Anywhere else moves the view. The
-                         # marker is what is grabbed because it is a
-                         # fixed target with the name on it; the trace
-                         # itself is a line one pixel wide that moves
-                         # whenever the view does.
+                              # Taking hold of a trace's marker moves that
+                              # trace and nothing else, the way the position
+                              # knob on the instrument moves the selected
+                              # channel. Anywhere else moves the view. The
+                              # marker is what is grabbed because it is a
+                              # fixed target with the name on it; the trace
+                              # itself is a line one pixel wide that moves
+                              # whenever the view does.
                               "only": self.marker_under(evt.x, evt.y),
-                         # Where every trace stood when the drag began,
-                         # so the vertical move can be worked out from
-                         # the start rather than from the last event -
-                         # which is what makes the snap onto the centre
-                         # line escapable. See PlotView.snap_middle.
+                              # Where every trace stood when the drag began,
+                              # so the vertical move can be worked out from
+                              # the start rather than from the last event -
+                              # which is what makes the snap onto the centre
+                              # line escapable. See PlotView.snap_middle.
                               "held": dict(self.state["view"].shifts),
                               "box": bool(evt.state & 0x0001)}   # Shift
 
@@ -2397,7 +2397,7 @@ class WaveformsTab(object):
         if payload.get("colours"):
             self.state["icolours"] = payload["colours"]
         self.show_sources(payload)
-        self.ui.lim_scan()
+        self.ui.limits.lim_scan()
         if found:
             self.ui.say(_("%d waveform source(s) on the instrument")
                         % len(found))
@@ -2487,7 +2487,5 @@ class WaveformsTab(object):
 
 
 def build(ui):
-    """Make the tab, and hand its names to the window as before."""
-    tab = WaveformsTab(ui)
-    vars(ui).update(tab_names(tab))
-    return tab
+    """Make the tab; the window keeps what this returns."""
+    return WaveformsTab(ui)

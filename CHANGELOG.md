@@ -144,12 +144,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `i18n.say()`,** which keeps the template and its values, and the
   window translates from those. It used to match each finished English
   sentence back to its template from a list kept in `tdstoolkit.py`.
-- **Internal: the window code is split by tab.** Each tab is now built by
-  its own module - `ui_wfm.py`, `ui_msk.py`, `ui_lim.py`, `ui_scr.py`,
-  `ui_err.py`, `ui_sys.py`, `ui_bak.py`, `ui_fw.py` and `ui_set.py` - and
-  what happens when a job finishes is a table of small handlers rather
-  than one long chain of tests. The Files tab and the shared parts stay
-  in `tdstoolkit.py`. Nothing a user sees should change.
+- **Internal: the program is split into modules and classes.** Nothing a
+  user sees should change.
+  - Each tab is a class in its own module - `ui_files.py`, `ui_wfm.py`,
+    `ui_msk.py` (with the shape editor Limits shares), `ui_lim.py`,
+    `ui_scr.py`, `ui_err.py`, `ui_sys.py`, `ui_bak.py`, `ui_fw.py` and
+    `ui_set.py`.
+  - The window is an `App` class in `tdstoolkit.py` that holds the shared
+    parts and keeps each tab by name; a tab reaches another through it.
+  - The worker thread is `worker.py`, with each tab's instrument jobs in
+    `worker_*.py`.
+  - What happens when a job finishes is a table of small handlers rather
+    than one long chain of tests.
+  - `tdstoolkit.py` keeps startup, the settings, log and lock helpers,
+    the file-format helpers and the window.
 
 ## [1.3.0] - 2026-11-01
 

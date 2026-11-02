@@ -1,8 +1,8 @@
 """The Backup tab.
 
-BackupTab is the tab; build(ui) makes it and hands its names back to
-the window, which still reaches the tabs through `ui` (state, the
-worker, busy, say and the rest) while they are moved onto classes.
+BackupTab is the tab. build(ui) makes it with the window (App in
+tdstoolkit.py, which the tab calls `ui`), and the window keeps it by
+name.
 """
 import os
 import time
@@ -17,7 +17,7 @@ import tds_fw
 from i18n import gettext as _
 from tds_fs import DEFAULT_ADDR
 from tdstoolkit import (APPDIR, BAK_PANE, human_bytes, load_settings, model_of,
-                        save_settings, stamped, tab_names)
+                        save_settings, stamped)
 
 
 class BackupTab(object):
@@ -26,7 +26,7 @@ class BackupTab(object):
     def __init__(self, ui):
         self.ui = ui
         self.EDGE = ui.EDGE
-        self.fw_model = ui.fw_model
+        self.fw_model = ui.firmware.fw_model
         self.hints = ui.hints
         self.named = ui.named
         self.relabel = ui.relabel
@@ -339,9 +339,10 @@ class BackupTab(object):
                 self.state["bak" + key].set(False)
         self.lbl_bakfound.config(text=_(
             "%(volumes)s. %(refs)d reference(s) hold a waveform.")
-            % {"volumes": ", ".join(got.get("volumes") or [])
-               or _("no volumes"),
-               "refs": len(self.state["bakreflist"])})
+                                 % {"volumes": ", ".join(got.get("volumes")
+                                                         or [])
+                                    or _("no volumes"),
+                                    "refs": len(self.state["bakreflist"])})
         # The same sentence into the report, with what answered it. The
         # report is the record of the session, and what the instrument
         # was when it was asked is the first line of it.
@@ -916,7 +917,5 @@ class BackupTab(object):
 
 
 def build(ui):
-    """Make the tab, and hand its names to the window as before."""
-    tab = BackupTab(ui)
-    vars(ui).update(tab_names(tab))
-    return tab
+    """Make the tab; the window keeps what this returns."""
+    return BackupTab(ui)

@@ -1,8 +1,8 @@
 """The Settings tab.
 
-SettingsTab is the tab; build(ui) makes it and hands its names back to
-the window, which still reaches the tabs through `ui` (state, the
-worker, busy, say and the rest) while they are moved onto classes.
+SettingsTab is the tab. build(ui) makes it with the window (App in
+tdstoolkit.py, which the tab calls `ui`), and the window keeps it by
+name.
 """
 import tkinter as tk
 from tkinter import messagebox
@@ -15,7 +15,7 @@ from i18n import gettext as _
 from tdstoolkit import (APPDIR, NUDGE_GRID, NUDGE_STEPS, PNG_DEFAULT_SIZE,
                         PNG_SIZES, __author__, __email__, __licence__,
                         __version__, load_settings, nudge_named, nudge_value,
-                        png_named, png_size, save_settings, tab_names)
+                        png_named, png_size, save_settings)
 
 
 class SettingsTab(object):
@@ -23,16 +23,16 @@ class SettingsTab(object):
 
     def __init__(self, ui):
         self.ui = ui
-        self.draw_limits = ui.draw_limits
-        self.draw_mask = ui.draw_mask
-        self.draw_plot = ui.draw_plot
+        self.draw_limits = ui.limits.draw_limits
+        self.draw_mask = ui.masks.draw_mask
+        self.draw_plot = ui.waves.draw_plot
         self.hints = ui.hints
         self.named = ui.named
         self.relabel = ui.relabel
         self.root = ui.root
         self.says = ui.says
         self.state = ui.state
-        self.sys_rule = ui.sys_rule
+        self.sys_rule = ui.system.sys_rule
         self.tabs = ui.tabs
 
         # ------------------------------------------------- the settings tab
@@ -82,12 +82,12 @@ class SettingsTab(object):
             # A plain tk button, not ttk: a themed button will not take a
             # background colour on Windows, which is the one thing this
             # button exists to show.
-            self.swatch = tk.Button(setgrid, width=6, relief="ridge")
-            self.swatch.grid(row=row % set_half,
+            swatch = tk.Button(setgrid, width=6, relief="ridge")
+            swatch.grid(row=row % set_half,
                              column=1 if row < set_half else 3,
                              sticky="w", pady=2, padx=(0, 16))
-            self.set_swatches[key] = self.swatch
-            self.hints(self.swatch, "Click to choose this colour")
+            self.set_swatches[key] = swatch
+            self.hints(swatch, "Click to choose this colour")
 
             def choose(k=key, name=label):
                 working = self.set_working()
@@ -98,7 +98,7 @@ class SettingsTab(object):
                     self.set_preset.set("")
                     self.set_apply(working)
 
-            self.swatch.config(command=choose)
+            swatch.config(command=choose)
 
         setrow1 = ttk.Frame(setbox1)
         setrow1.pack(fill="x", pady=(10, 0))
@@ -375,7 +375,5 @@ class SettingsTab(object):
 
 
 def build(ui):
-    """Make the tab, and hand its names to the window as before."""
-    tab = SettingsTab(ui)
-    vars(ui).update(tab_names(tab))
-    return tab
+    """Make the tab; the window keeps what this returns."""
+    return SettingsTab(ui)

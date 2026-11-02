@@ -1,8 +1,8 @@
 """The Limits tab: envelope templates drawn round a reference and tested live.
 
-LimitsTab is the tab; build(ui) makes it and hands its names back to
-the window, which still reaches the tabs through `ui` (state, the
-worker, busy, say and the rest) while they are moved onto classes.
+LimitsTab is the tab. build(ui) makes it with the window (App in
+tdstoolkit.py, which the tab calls `ui`), and the window keeps it by
+name.
 """
 import os
 import tkinter as tk
@@ -15,7 +15,7 @@ import tds_msk
 import tds_wfm
 from i18n import gettext as _
 from tdstoolkit import (APPDIR, LEARN_HANDLES, LEARN_LEAST, LEARN_MOST,
-                        LEFT_PANE, log_note, stamped, tab_names, typed)
+                        LEFT_PANE, log_note, stamped, typed)
 
 
 class LimitsTab(object):
@@ -24,36 +24,36 @@ class LimitsTab(object):
     def __init__(self, ui):
         self.ui = ui
         self.EDGE = ui.EDGE
-        self.do_msk_behind = ui.do_msk_behind
-        self.do_msk_redo = ui.do_msk_redo
-        self.do_msk_setup = ui.do_msk_setup
-        self.do_msk_trace = ui.do_msk_trace
-        self.do_msk_undo = ui.do_msk_undo
-        self.edit_bindings = ui.edit_bindings
-        self.edit_grid = ui.edit_grid
-        self.edit_redraw = ui.edit_redraw
-        self.edit_shapes = ui.edit_shapes
-        self.edit_tools = ui.edit_tools
-        self.flowing = ui.flowing
-        self.forget_source = ui.forget_source
+        self.do_msk_behind = ui.masks.do_msk_behind
+        self.do_msk_redo = ui.masks.do_msk_redo
+        self.do_msk_setup = ui.masks.do_msk_setup
+        self.do_msk_trace = ui.masks.do_msk_trace
+        self.do_msk_undo = ui.masks.do_msk_undo
+        self.edit_bindings = ui.masks.edit_bindings
+        self.edit_grid = ui.masks.edit_grid
+        self.edit_redraw = ui.masks.edit_redraw
+        self.edit_shapes = ui.masks.edit_shapes
+        self.edit_tools = ui.masks.edit_tools
+        self.flowing = ui.waves.flowing
+        self.forget_source = ui.waves.forget_source
         self.hints = ui.hints
-        self.msk_describe = ui.msk_describe
-        self.msk_forget = ui.msk_forget
-        self.msk_may_discard = ui.msk_may_discard
-        self.msk_remember = ui.msk_remember
-        self.msk_shot_behind = ui.msk_shot_behind
-        self.msk_shot_image = ui.msk_shot_image
+        self.msk_describe = ui.masks.msk_describe
+        self.msk_forget = ui.masks.msk_forget
+        self.msk_may_discard = ui.masks.msk_may_discard
+        self.msk_remember = ui.masks.msk_remember
+        self.msk_shot_behind = ui.masks.msk_shot_behind
+        self.msk_shot_image = ui.masks.msk_shot_image
         self.named = ui.named
-        self.plot_colours = ui.plot_colours
+        self.plot_colours = ui.waves.plot_colours
         self.relabel = ui.relabel
         self.root = ui.root
         self.says = ui.says
         self.state = ui.state
         self.tabs = ui.tabs
-        self.trace_colour = ui.trace_colour
-        self.verdict_stamp = ui.verdict_stamp
+        self.trace_colour = ui.waves.trace_colour
+        self.verdict_stamp = ui.masks.verdict_stamp
         self.w = ui.w
-        self.wave_scales = ui.wave_scales
+        self.wave_scales = ui.waves.wave_scales
 
         # ----------------------------------------------------------- limits
         # The other way to judge a signal, and the one every instrument in
@@ -124,8 +124,8 @@ class LimitsTab(object):
                                      LIM_RIGHT, "lflow")
         ltop.bind("<Configure>", self.lim_flow)
 
-        self.lbody = ttk.Frame(self.limtab)
-        self.lbody.pack(fill="both", expand=True, padx=2, pady=4)
+        lbody = ttk.Frame(self.limtab)
+        lbody.pack(fill="both", expand=True, padx=2, pady=4)
 
         # One column down the left, the way the Masks tab has one: the
         # library at the top, what the instrument is holding at the bottom,
@@ -138,7 +138,7 @@ class LimitsTab(object):
         # scrollbar is for. Packed the other way round, a short window
         # would take its bite out of the references instead - and those are
         # the rows this tab is steered by.
-        self.llistf = ttk.Frame(self.lbody, width=LEFT_PANE)
+        self.llistf = ttk.Frame(lbody, width=LEFT_PANE)
         # the one width - see LEFT_PANE
         self.llistf.pack_propagate(False)
         self.llistf.pack(side="left", fill="y", padx=(0, 8))
@@ -229,14 +229,14 @@ class LimitsTab(object):
         # The slider keeps the full width of the column: it is dragged, and
         # a hundred pixels of travel for four hundred and eighty handles is
         # not something anybody can place.
-        self.ldetail = ttk.Frame(self.lopts)
-        self.ldetail.grid(row=5, column=0, columnspan=2, sticky="we",
+        ldetail = ttk.Frame(self.lopts)
+        ldetail.grid(row=5, column=0, columnspan=2, sticky="we",
                           pady=(2, 0))
         self.state["ldetail"] = tk.IntVar(value=LEARN_HANDLES)
-        self.lbl_ldnum = ttk.Label(self.ldetail, width=4, anchor="e",
+        self.lbl_ldnum = ttk.Label(ldetail, width=4, anchor="e",
                                    foreground="#555")
         self.lbl_ldnum.pack(side="right")
-        self.scl_ldetail = ttk.Scale(self.ldetail, from_=LEARN_LEAST,
+        self.scl_ldetail = ttk.Scale(ldetail, from_=LEARN_LEAST,
                                      to=LEARN_MOST,
                                      orient="horizontal")
         self.scl_ldetail.pack(side="left", fill="x", expand=True)
@@ -332,7 +332,7 @@ class LimitsTab(object):
         # one of the two tabs can be in front and two sets of them would be
         # two things to keep in step; the history and the unsaved mark are
         # not, because those belong to the drawing.
-        lrightf = ttk.Frame(self.lbody)
+        lrightf = ttk.Frame(lbody)
         lrightf.pack(side="left", fill="both", expand=True)
 
         self.ltoolbar = ttk.Frame(lrightf)
@@ -352,12 +352,12 @@ class LimitsTab(object):
         # stamp are read as one thing rather than two that have to be
         # reconciled. A limit test reports a failure by stopping the
         # instrument, so this word is the whole of the result.
-        self.limface = tkfont.nametofont("TkDefaultFont").copy()
-        self.limface.configure(size=max(11,
-                                        abs(self.limface.cget("size")) + 3),
+        limface = tkfont.nametofont("TkDefaultFont").copy()
+        limface.configure(size=max(11,
+                                        abs(limface.cget("size")) + 3),
                                weight="bold")
-        self.state.setdefault("fontcopies", []).append(self.limface)
-        self.lbl_lverdict = ttk.Label(self.ltoolbar, font=self.limface)
+        self.state.setdefault("fontcopies", []).append(limface)
+        self.lbl_lverdict = ttk.Label(self.ltoolbar, font=limface)
         self.lbl_lverdict.pack(side="right")
         # No wraplength: this is a row now, not a column, and a sentence
         # given a wrap width in a row that has the height of one line is a
@@ -1066,7 +1066,7 @@ class LimitsTab(object):
         """Write what is drawn into the reference, as a limit template."""
         mask = self.state.get("lmask")
         if (self.state["busy"] or self.state.get("cannot") is None
-                or mask is None):
+            or mask is None):
             return
         dest, source = self.state["ldest"].get(), self.state["lsource"].get()
         lines = self.lim_lines(mask, dest, source)
@@ -1606,7 +1606,5 @@ class LimitsTab(object):
 
 
 def build(ui):
-    """Make the tab, and hand its names to the window as before."""
-    tab = LimitsTab(ui)
-    vars(ui).update(tab_names(tab))
-    return tab
+    """Make the tab; the window keeps what this returns."""
+    return LimitsTab(ui)

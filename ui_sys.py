@@ -1,8 +1,8 @@
 """The System tab.
 
-SystemTab is the tab; build(ui) makes it and hands its names back to
-the window, which still reaches the tabs through `ui` (state, the
-worker, busy, say and the rest) while they are moved onto classes.
+SystemTab is the tab. build(ui) makes it with the window (App in
+tdstoolkit.py, which the tab calls `ui`), and the window keeps it by
+name.
 """
 import time
 import tkinter as tk
@@ -12,7 +12,7 @@ from tkinter import ttk
 import tds_wfm
 from i18n import gettext as _
 from tdstoolkit import (DIAG_AREAS, SYS_CHOICES, Worker, firmware_options,
-                        log_note, model_of, resource, tab_names)
+                        log_note, model_of, resource)
 
 
 class SystemTab(object):
@@ -21,7 +21,7 @@ class SystemTab(object):
     def __init__(self, ui):
         self.ui = ui
         self.EDGE = ui.EDGE
-        self.copyable = ui.copyable
+        self.copyable = ui.errors.copyable
         self.dialog_open = ui.dialog_open
         self.hints = ui.hints
         self.named = ui.named
@@ -155,16 +155,16 @@ class SystemTab(object):
         for label, key in (("Port", "sysport"), ("Format", "sysformat"),
                            ("Layout", "syslayout")):
             self.values = SYS_CHOICES[key]
-            self.line = ttk.Frame(sysbox3)
-            self.line.pack(fill="x", pady=1)
-            self.one = ttk.Label(self.line, text=_(label), width=12)
+            line = ttk.Frame(sysbox3)
+            line.pack(fill="x", pady=1)
+            self.one = ttk.Label(line, text=_(label), width=12)
             self.one.pack(side="left")
             self.says(self.one, label)
-            self._cb = ttk.Combobox(self.line, textvariable=self.state[key],
-                                    values=self.values,
-                                    width=14, state="readonly")
-            self._cb.pack(side="left")
-            self.hints(self._cb, _systips[key])
+            _cb = ttk.Combobox(line, textvariable=self.state[key],
+                               values=self.values,
+                               width=14, state="readonly")
+            _cb.pack(side="left")
+            self.hints(_cb, _systips[key])
         lbl_sysrs = ttk.Label(sysbox3, foreground="#555",
                               wraplength=SYS_WRAP,
                               justify="left")
@@ -179,16 +179,16 @@ class SystemTab(object):
         for label, key in (("Baud", "sysbaud"), ("Parity", "sysparity"),
                            ("Stop bits", "sysstop")):
             self.values = SYS_CHOICES[key]
-            self.line = ttk.Frame(sysbox3)
-            self.line.pack(fill="x", pady=1)
-            self.one = ttk.Label(self.line, text=_(label), width=12)
+            line = ttk.Frame(sysbox3)
+            line.pack(fill="x", pady=1)
+            self.one = ttk.Label(line, text=_(label), width=12)
             self.one.pack(side="left")
             self.says(self.one, label)
-            self._cb = ttk.Combobox(self.line, textvariable=self.state[key],
-                                    values=self.values,
-                                    width=14, state="readonly")
-            self._cb.pack(side="left")
-            self.hints(self._cb, _systips[key])
+            _cb = ttk.Combobox(line, textvariable=self.state[key],
+                               values=self.values,
+                               width=14, state="readonly")
+            _cb.pack(side="left")
+            self.hints(_cb, _systips[key])
         self.btn_sysports = ttk.Button(sysbox3, text=_("Apply"),
                                        padding=(10, 2),
                                        command=lambda: self.do_sys_ports())
@@ -1015,7 +1015,5 @@ class SystemTab(object):
 
 
 def build(ui):
-    """Make the tab, and hand its names to the window as before."""
-    tab = SystemTab(ui)
-    vars(ui).update(tab_names(tab))
-    return tab
+    """Make the tab; the window keeps what this returns."""
+    return SystemTab(ui)
