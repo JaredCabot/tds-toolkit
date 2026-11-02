@@ -30,6 +30,23 @@ from worker_sys import SystemJobs
 from worker_wfm import WaveformJobs
 
 
+def worth_a_traceback(exc):
+    """Should a failed job's traceback go in the log, or only its line?
+
+    Not for the instrument's own refusals, which say what happened in
+    words. Not for a bus timeout either: its traceback is the same twenty
+    lines of pyvisa every time, and asking an instrument that is sitting
+    in its ROM monitor - or switched off - for *IDN? is a timeout. Every
+    other exception is a fault in this program, and where it came from
+    is the one thing a log sent in afterwards can tell.
+    """
+    if (isinstance(exc, pyvisa.errors.VisaIOError)
+            and exc.error_code == pyvisa.constants.VI_ERROR_TMO):
+        return False
+    return not isinstance(exc, (tds_wfm.NotReadable, RuntimeError, IOError,
+                                ValueError))
+
+
 class Worker(FileJobs, WaveformJobs, MaskJobs, SystemJobs, BackupJobs,
              FirmwareJobs):
     """Serialises every instrument operation onto one thread.
@@ -111,8 +128,7 @@ class Worker(FileJobs, WaveformJobs, MaskJobs, SystemJobs, BackupJobs,
                 # says a job failed; it does not say which call failed,
                 # and a fault nobody can reproduce is only diagnosable
                 # from the log somebody sends afterwards.
-                if not isinstance(exc, (tds_wfm.NotReadable, RuntimeError,
-                                        IOError, ValueError)):
+                if worth_a_traceback(exc):
                     log_note(label, "  " + traceback.format_exc()
                              .strip().replace("\n", "\n  "))
                 self.out.put((label, False,

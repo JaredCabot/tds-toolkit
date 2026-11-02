@@ -8,11 +8,34 @@ on the worker's thread, never on Tk's.
 """
 import hashlib
 import os
+import re
 
 import pyvisa
 import tds_fw
 from i18n import gettext as _
 from tdstoolkit import describe_visa_error, human_bytes, localise
+
+
+def catalogue_version(data, known):
+    """The version of the catalogued image `data` begins with, or "".
+
+    A backup of the flash is the image it runs followed by erased space,
+    so an image of `size` bytes is the first `size` bytes of it. `known`
+    is [(size, sha256, version)] from the catalogue on the Firmware tab.
+    The longest match wins, in case one image were ever the start of
+    another. Firmware the catalogue does not have - or no catalogue at
+    all - gives "", and the backup is simply named without a version.
+    """
+    seen = {}
+    for size, sha, version in sorted(known or (), key=lambda k: -k[0]):
+        if not version or not 0 < size <= len(data):
+            continue
+        if size not in seen:
+            seen[size] = hashlib.sha256(data[:size]).hexdigest()
+        if seen[size] == sha:
+            # Kept to what a file name can always hold.
+            return re.sub(r"[^0-9A-Za-z.]", "", version)
+    return ""
 
 
 class FirmwareJobs(object):
@@ -195,10 +218,17 @@ class FirmwareJobs(object):
         # NVRAM backup is asked for through a save dialog, and handing
         # back a file under a different name than the one just typed is
         # a small betrayal. Anything not named keeps the derived name.
+        # A firmware backup says which version it holds when the
+        # catalogue knows the bytes: "TDS784D_Firmware_v7.4e_<stamp>".
+        # Going straight to the monitor gives no *IDN? to read it from,
+        # and the bytes are the better witness anyway.
+        version = (catalogue_version(got, plan.get("known"))
+                   if what == "Firmware" else "")
         path = os.path.join(
             plan["backup_dir"],
             (plan.get("names") or {}).get(what) or "%s_%s_%s.bin" % (
-                plan.get("model") or "TDS", what, plan["stamp"]))
+                plan.get("model") or "TDS",
+                what + ("_v" + version if version else ""), plan["stamp"]))
         with open(path, "wb") as fh:
             fh.write(got)
         report.setdefault("backups", []).append(

@@ -259,6 +259,14 @@ class FirmwareTab(object):
                 self.state["fwmodel"].set(model)
             self.state["fwtold"] = model
 
+    def fw_known(self):
+        """[(size, sha256, version)] for every image the tab knows of, so
+        a firmware backup can be named for the version it holds."""
+        images = list(self.state.get("fwimages") or [])
+        if self.state.get("fwchosen") is not None:
+            images.append(self.state["fwchosen"])
+        return [(im.size, im.sha, im.version) for im in images]
+
     def fw_model(self):
         """The model this is all aimed at - told, or chosen by hand."""
         return (self.state["fwmodel"].get() or "").upper().replace(" ", "")
@@ -560,7 +568,7 @@ class FirmwareTab(object):
                 "slow": bool(self.state["fwslow"].get()),
                 "backup_dir": where, "backup_len": self.fw_backup_len(),
                 "check_backup": bool(self.state["fwcheck"].get()),
-                "model": model,
+                "model": model, "known": self.fw_known(),
                 "stamp": time.strftime("%Y%m%d-%H%M%S")}
         self.ui.busy(True, "steps")
         self.ui.say(_("Backing up before anything is written ..."))
@@ -588,7 +596,7 @@ class FirmwareTab(object):
                 "normal": self.state.get("addr") or DEFAULT_ADDR,
                 "backup_dir": where, "backup_len": self.fw_backup_len(),
                 "check_backup": bool(self.state["fwcheck"].get()),
-                "model": self.fw_model() or "TDS",
+                "model": self.fw_model() or "TDS", "known": self.fw_known(),
                 "stamp": time.strftime("%Y%m%d-%H%M%S")}
         self.ui.busy(True, "steps")
         self.ui.say(_("Backing up the firmware and NVRAM ..."))

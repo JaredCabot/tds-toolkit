@@ -130,6 +130,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A restore could put files on the instrument that no checksum
   covered.** Files in a backup zip that its list of contents does not
   name are now left out of a restore, and the backup report lists them.
+- **A firmware backup taken straight from the monitor did not say which
+  version it held.** It is now named for the version when the bytes
+  match an image in the firmware catalogue, as
+  `TDS784D_Firmware_v7.4e_<date>.bin`. Firmware the catalogue does not
+  have is named without a version, as before.
+- **Connecting to a scope in its monitor filled the log with
+  tracebacks.** A bus timeout is now logged on one line.
 
 ### Changed
 
