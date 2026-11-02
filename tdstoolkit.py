@@ -60,7 +60,7 @@ from i18n import gettext as _
 # __main__, and without this their import would load a second copy.
 sys.modules.setdefault("tdstoolkit", sys.modules[__name__])
 
-__version__ = "1.3.0"
+__version__ = "1.4.0"
 __author__ = "Jared Cabot"
 __email__ = "jetstreamtechnology@protonmail.com"
 __licence__ = "MIT"
