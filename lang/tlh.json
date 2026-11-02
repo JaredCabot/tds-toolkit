@@ -1192,5 +1192,12 @@
   "Are you sure you want to permanently delete these %d files?\n\n%s\n\nThere is no Recycle Bin on the instrument.": "ghItlhmey %d bIteqqu'qang'a'?\n\n%s\n\nnIHmey ngaSwI' Hutlh jan.",
   "Busy - drop the files again when this job has finished": "Qu' ta'lI' - Qu'vam rInDI' ghItlhmey yIlarghqa'",
   "Checking the calibration constants - word %d of %d": "juvwI' mI'mey nuDlu'taH - mu' %d, naQ %d",
-  "The flash matches the image, but above it, at 0x%06X, it is not erased: part of the array did not take the erase.": "mIllogh rur flash, 'ach 0x%06X-Daq Dung teqlu'be'. teqlu'meH lajQo' 'ay'."
+  "The flash matches the image, but above it, at 0x%06X, it is not erased: part of the array did not take the erase.": "mIllogh rur flash, 'ach 0x%06X-Daq Dung teqlu'be'. teqlu'meH lajQo' 'ay'.",
+  "%d file(s) in the zip are not in its list of contents and are left out of a restore:": "zip ghItlh tetlhDaq tu'lu'be'bogh %d ghItlh; chemqa'lu'DI' lunIDbe'lu':",
+  "Instrument: %(model)s at %(addr)s": "jan: %(addr)s Daq %(model)s",
+  "Nothing was deleted. The instrument's file system was checked first and did not answer normally:\n\n%s": "pagh teqlu'pu'. wa'DIch jan ghItlh pat nuDlu'pu', 'ej motlh jangbe'pu':\n\n%s",
+  "Power cycle the instrument, confirm it lists its files, then try again.": "jan yIchu'Ha' 'ej yIchu'qa', ghItlhmeyDaj tetlh 'e' yItob, ghIq yInIDqa'.",
+  "The delete stopped after %(done)d file(s), because the instrument's file system stopped answering normally:\n\n%(why)s\n\n%(skipped)d file(s) were not attempted.": "%(done)d ghItlh teqlu'DI' mevlu'pu', jan ghItlh pat motlh jangbe'choHmo':\n\n%(why)s\n\n%(skipped)d ghItlh nIDlu'be'.",
+  "The model box says %(model)s, but the instrument identified itself as a %(told)s.\n\nThe image is checked against the model box, and the backups are named after it.\n\nWrite anyway?": "%(model)s jatlh Segh, 'ach %(told)s 'oH jan 'e' ja'pu' jan'e'.\n\nSegh lunuD mIllogh, 'ej pongvetlh lo' qorDu'.\n\nqaStaHvIS vaj Daqonqang'a'?",
+  "unidentified": "Sovbe'lu'"
 }

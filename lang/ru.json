@@ -1192,5 +1192,12 @@
   "Are you sure you want to permanently delete these %d files?\n\n%s\n\nThere is no Recycle Bin on the instrument.": "Удалить эти файлы (%d) безвозвратно?\n\n%s\n\nВ приборе нет корзины.",
   "Busy - drop the files again when this job has finished": "Занято - перетащите файлы снова, когда эта операция завершится",
   "Checking the calibration constants - word %d of %d": "Проверка калибровочных констант - слово %d из %d",
-  "The flash matches the image, but above it, at 0x%06X, it is not erased: part of the array did not take the erase.": "Содержимое флеш-памяти совпадает с образом, но выше него, по адресу 0x%06X, не стёрто: часть памяти не приняла стирание."
+  "The flash matches the image, but above it, at 0x%06X, it is not erased: part of the array did not take the erase.": "Содержимое флеш-памяти совпадает с образом, но выше него, по адресу 0x%06X, не стёрто: часть памяти не приняла стирание.",
+  "%d file(s) in the zip are not in its list of contents and are left out of a restore:": "Файлов в zip, которых нет в его списке содержимого и которые не будут восстановлены: %d",
+  "Instrument: %(model)s at %(addr)s": "Прибор: %(model)s по адресу %(addr)s",
+  "Nothing was deleted. The instrument's file system was checked first and did not answer normally:\n\n%s": "Ничего не было удалено. Сначала была проверена файловая система прибора, и она ответила некорректно:\n\n%s",
+  "Power cycle the instrument, confirm it lists its files, then try again.": "Выключите и снова включите прибор, убедитесь, что он отображает свои файлы, затем повторите попытку.",
+  "The delete stopped after %(done)d file(s), because the instrument's file system stopped answering normally:\n\n%(why)s\n\n%(skipped)d file(s) were not attempted.": "Удаление остановлено после файлов: %(done)d, потому что файловая система прибора перестала нормально отвечать:\n\n%(why)s\n\nНе предпринималось файлов: %(skipped)d.",
+  "The model box says %(model)s, but the instrument identified itself as a %(told)s.\n\nThe image is checked against the model box, and the backups are named after it.\n\nWrite anyway?": "В поле «Модель» указано %(model)s, но прибор определился как %(told)s.\n\nОбраз проверяется по полю «Модель», и резервные копии называются по нему.\n\nВсё равно записать?",
+  "unidentified": "не определён"
 }

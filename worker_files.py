@@ -12,7 +12,7 @@ import time
 import tds_bak
 from i18n import gettext as _
 from tdstoolkit import (
-    ATTEMPTS, GIVE_UP_AFTER, NO_MEDIA, READ_RATE, STAGE_NAME,
+    ATTEMPTS, DELETE_CHECK_EVERY, GIVE_UP_AFTER, NO_MEDIA, READ_RATE, STAGE_NAME,
     TRANSFER_TIMEOUT, _formatted, clear_transfer_block, is_phantom,
     load_uploads, log_note, real_names, save_uploads, set_transfer_block,
     transfer_blocked
@@ -484,9 +484,26 @@ class FileJobs(object):
         # enough, and a mixed list simply checks the wrong folder rather
         # than breaking.
         folder = paths[0].rsplit("/", 1)[0] if paths else None
+        volume = folder.split("/")[0] if folder else None
+        # Asked first, as an upload is: a file system that has already
+        # stopped answering is not given more DELETEs to choke on.
+        wrong = self.health_check(volume) if volume else None
+        if wrong:
+            return {"done": [], "failed": [], "lost": [], "folder": folder,
+                    "skipped": list(paths), "unwell": wrong, "blocked": True}
         before = self._folder_names(folder) if folder else []
-        skipped, running = [], 0
+        skipped, running, unwell = [], 0, None
         for i, p in enumerate(paths, 1):
+            if i > 1 and (i - 1) % DELETE_CHECK_EVERY == 0:
+                # Between groups, the same question again. Stopping here
+                # leaves files undeleted, which is a nuisance; carrying on
+                # into a file system that has stopped is what costs a card.
+                unwell = self.health_check(volume)
+                if unwell:
+                    skipped = paths[i - 1:]
+                    log_note("delete_many", "stopped after %d file(s): %s"
+                             % (i - 1, unwell))
+                    break
             self._progress(_("Deleting %d of %d: %s")
                            % (i, len(paths), p.rsplit("/", 1)[-1]),
                            (i - 1.0) / len(paths))
@@ -512,7 +529,7 @@ class FileJobs(object):
                           [p.rsplit("/", 1)[-1] for p in paths
                            if p not in skipped])
         return {"done": done, "failed": failed, "lost": lost,
-                "folder": folder, "skipped": skipped}
+                "folder": folder, "skipped": skipped, "unwell": unwell}
 
     def upload_many(self, items):
         """`items` is [(path on the PC, destination path on the instrument)].

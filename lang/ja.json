@@ -1192,5 +1192,12 @@
   "Are you sure you want to permanently delete these %d files?\n\n%s\n\nThere is no Recycle Bin on the instrument.": "これらの %d 個のファイルを完全に削除しますか？\n\n%s\n\n測定器にごみ箱はありません。",
   "Busy - drop the files again when this job has finished": "処理中です。この処理が終わってから、もう一度ファイルをドロップしてください",
   "Checking the calibration constants - word %d of %d": "校正定数を照合しています - ワード %d / %d",
-  "The flash matches the image, but above it, at 0x%06X, it is not erased: part of the array did not take the erase.": "フラッシュはイメージと一致していますが、その上の 0x%06X は消去されていません。メモリの一部が消去を受け付けませんでした。"
+  "The flash matches the image, but above it, at 0x%06X, it is not erased: part of the array did not take the erase.": "フラッシュはイメージと一致していますが、その上の 0x%06X は消去されていません。メモリの一部が消去を受け付けませんでした。",
+  "%d file(s) in the zip are not in its list of contents and are left out of a restore:": "zip 内の %d 個のファイルは内容一覧に載っていないため、復元から除外されます:",
+  "Instrument: %(model)s at %(addr)s": "測定器: %(addr)s の %(model)s",
+  "Nothing was deleted. The instrument's file system was checked first and did not answer normally:\n\n%s": "何も削除されませんでした。先に測定器のファイルシステムを確認しましたが、正常に応答しませんでした:\n\n%s",
+  "Power cycle the instrument, confirm it lists its files, then try again.": "測定器の電源を入れ直し、ファイルが一覧表示されることを確認してから、もう一度お試しください。",
+  "The delete stopped after %(done)d file(s), because the instrument's file system stopped answering normally:\n\n%(why)s\n\n%(skipped)d file(s) were not attempted.": "測定器のファイルシステムが正常に応答しなくなったため、%(done)d 個のファイルの後で削除を中止しました:\n\n%(why)s\n\n%(skipped)d 個のファイルは試行していません。",
+  "The model box says %(model)s, but the instrument identified itself as a %(told)s.\n\nThe image is checked against the model box, and the backups are named after it.\n\nWrite anyway?": "型名欄は %(model)s ですが、測定器は %(told)s として応答しました。\n\nイメージは型名欄に対して確認され、バックアップもその名前で保存されます。\n\nそれでも書き込みますか？",
+  "unidentified": "不明"
 }

@@ -405,6 +405,16 @@ class BackupTab(object):
                                       "gone": len(checked["missing"])})
         for arc in (checked["bad"] + checked["missing"])[:20]:
             self.bak_note("    " + arc)
+        # Files in the zip that the manifest does not list. Nothing
+        # vouches for them, so a restore leaves them out - but they were
+        # put there by something, and that is worth a line (F7).
+        extra = checked.get("extra") or []
+        if extra:
+            self.bak_note(_("%d file(s) in the zip are not in its list of "
+                            "contents and are left out of a restore:")
+                          % len(extra))
+            for arc in extra[:20]:
+                self.bak_note("    " + arc)
         holds = tds_bak.holds(manifest)
         self.bak_note("    " + ", ".join("%s (%d)" % (k, n)
                                          for k, n in sorted(holds.items())))

@@ -1192,5 +1192,12 @@
   "Are you sure you want to permanently delete these %d files?\n\n%s\n\nThere is no Recycle Bin on the instrument.": "确定要永久删除这 %d 个文件吗？\n\n%s\n\n仪器上没有回收站。",
   "Busy - drop the files again when this job has finished": "正忙 - 请在此任务完成后再次拖放这些文件",
   "Checking the calibration constants - word %d of %d": "正在核对校准常数 - 第 %d 个字，共 %d 个",
-  "The flash matches the image, but above it, at 0x%06X, it is not erased: part of the array did not take the erase.": "闪存与映像一致，但其上方 0x%06X 处未被擦除：存储器的一部分没有接受擦除。"
+  "The flash matches the image, but above it, at 0x%06X, it is not erased: part of the array did not take the erase.": "闪存与映像一致，但其上方 0x%06X 处未被擦除：存储器的一部分没有接受擦除。",
+  "%d file(s) in the zip are not in its list of contents and are left out of a restore:": "zip 中有 %d 个文件不在其内容清单中，恢复时将跳过它们：",
+  "Instrument: %(model)s at %(addr)s": "仪器：%(addr)s 上的 %(model)s",
+  "Nothing was deleted. The instrument's file system was checked first and did not answer normally:\n\n%s": "未删除任何内容。已先检查仪器的文件系统，它没有正常响应：\n\n%s",
+  "Power cycle the instrument, confirm it lists its files, then try again.": "请重新启动仪器电源，确认它能列出文件后再重试。",
+  "The delete stopped after %(done)d file(s), because the instrument's file system stopped answering normally:\n\n%(why)s\n\n%(skipped)d file(s) were not attempted.": "删除了 %(done)d 个文件后已停止，因为仪器的文件系统不再正常响应：\n\n%(why)s\n\n%(skipped)d 个文件未尝试。",
+  "The model box says %(model)s, but the instrument identified itself as a %(told)s.\n\nThe image is checked against the model box, and the backups are named after it.\n\nWrite anyway?": "型号框显示 %(model)s，但仪器报告自己是 %(told)s。\n\n映像按型号框进行检查，备份也以它命名。\n\n仍要写入吗？",
+  "unidentified": "未识别"
 }

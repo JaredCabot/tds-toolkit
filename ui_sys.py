@@ -577,10 +577,22 @@ class SystemTab(object):
         self.ui.say(_("Running the %s self test ...") % area)
         self.w.submit("sys_diag", lambda k, a=area: k.sys_diag(a))
 
+    def sys_target(self):
+        """Which instrument a write is about to go to, as a sentence.
+
+        Put in front of every confirmation that changes an instrument for
+        good. With two scopes on the bus, the question used to be "this
+        instrument" and nothing said which (C4).
+        """
+        return _("Instrument: %(model)s at %(addr)s") % {
+            "model": model_of(self.state.get("idn")) or _("unidentified"),
+            "addr": self.state.get("addr") or "-"}
+
     def do_sys_secure(self):
         if not messagebox.askyesno(
                 _("Secure erase"),
-                _(self.ERASE_SAYS) + "\n\n" + _("Proceed?"),
+                self.sys_target() + "\n\n" + _(self.ERASE_SAYS) + "\n\n"
+                + _("Proceed?"),
                 icon="warning", default="no"):
             return
         self.ui.busy(True, "wait")
@@ -591,7 +603,8 @@ class SystemTab(object):
     def do_sys_factory(self):
         if not messagebox.askyesno(
                 _("Recall the factory setup?"),
-                _(self.FACTORY_SAYS) + "\n\n" + _("Proceed?")):
+                self.sys_target() + "\n\n" + _(self.FACTORY_SAYS) + "\n\n"
+                + _("Proceed?")):
             return
         self.ui.busy(True, "wait")
         self.ui.say(_("Recalling the factory setup ..."))
@@ -800,7 +813,7 @@ class SystemTab(object):
                      for word, (var, on) in boxes.items()]
             if not messagebox.askyesno(
                     _("Write the option words?"),
-                    _("This writes %d word(s) to the instrument's "
+                    self.sys_target() + "\n\n" + _("This writes %d word(s) to the instrument's "
                       "non-volatile memory. Nothing happens at all "
                       "unless the protection switch is unprotected, and "
                       "nothing can be read back to confirm it - the "

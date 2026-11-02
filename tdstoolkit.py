@@ -778,6 +778,14 @@ READ_RATE = 10000.0
 # refill.
 GIVE_UP_AFTER = 2
 
+# A delete of many files stops to ask the file system whether it is still
+# answering after this many. DELETE is what wears this firmware's mass
+# storage out - about two dozen in a row took it down on a TDS 784D, and so
+# did 21 delete-then-write cycles - so a selection of forty is checked four
+# times rather than trusted to the end. Eight is a third of the measured
+# limit, and one listing every eight deletes costs well under a second.
+DELETE_CHECK_EVERY = 8
+
 # Event 250 "Mass storage error - osError" during a recursive delete is the
 # instrument's own doing, not ours. Measured on a freshly imaged card: with
 # the bus left completely silent for five seconds after RMDIR - no *OPC?,
@@ -2717,6 +2725,8 @@ class App(object):
     def pump_connect(self, payload):
         self.state["addr"] = payload.get("addr") or self.state["addr"]
         self.state["idn"] = payload.get("idn") or ""
+        # The Firmware tab's model box follows the instrument (C10).
+        self.firmware.fw_follow()
         # If this address is not in the dropdown yet - first
         # run, before any scan - put it there so the box is
         # never blank while plainly connected to something.

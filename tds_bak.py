@@ -127,12 +127,16 @@ def verify(path):
 def unpack(path, folder, under=""):
     """Write a bundle's files out. `under` takes one part only.
 
-    Returns [(entry name, path written)].
+    Returns [(entry name, path written)]. Only entries the manifest lists
+    are written: one it does not list has no checksum, so verify() cannot
+    have vouched for it, and a backup reported as "every file matches"
+    must not put anything else onto the instrument (F7).
     """
     out = []
+    listed = manifest_of(path).get("files") or {}
     with zipfile.ZipFile(path) as z:
         for arc in sorted(z.namelist()):
-            if arc == MANIFEST or arc.endswith("/"):
+            if arc == MANIFEST or arc.endswith("/") or arc not in listed:
                 continue
             if under and not (arc == under or arc.startswith(under)):
                 continue

@@ -1192,5 +1192,12 @@
   "Are you sure you want to permanently delete these %d files?\n\n%s\n\nThere is no Recycle Bin on the instrument.": "Möchten Sie diese %d Dateien wirklich endgültig löschen?\n\n%s\n\nDas Gerät hat keinen Papierkorb.",
   "Busy - drop the files again when this job has finished": "Beschäftigt - legen Sie die Dateien erneut ab, wenn dieser Auftrag fertig ist",
   "Checking the calibration constants - word %d of %d": "Kalibrierkonstanten werden geprüft - Wort %d von %d",
-  "The flash matches the image, but above it, at 0x%06X, it is not erased: part of the array did not take the erase.": "Der Flash stimmt mit dem Abbild überein, ist darüber, bei 0x%06X, aber nicht gelöscht: ein Teil des Speichers hat das Löschen nicht angenommen."
+  "The flash matches the image, but above it, at 0x%06X, it is not erased: part of the array did not take the erase.": "Der Flash stimmt mit dem Abbild überein, ist darüber, bei 0x%06X, aber nicht gelöscht: ein Teil des Speichers hat das Löschen nicht angenommen.",
+  "%d file(s) in the zip are not in its list of contents and are left out of a restore:": "%d Datei(en) in der ZIP-Datei stehen nicht in ihrem Inhaltsverzeichnis und werden beim Wiederherstellen ausgelassen:",
+  "Instrument: %(model)s at %(addr)s": "Gerät: %(model)s an %(addr)s",
+  "Nothing was deleted. The instrument's file system was checked first and did not answer normally:\n\n%s": "Es wurde nichts gelöscht. Das Dateisystem des Geräts wurde zuerst geprüft und antwortete nicht normal:\n\n%s",
+  "Power cycle the instrument, confirm it lists its files, then try again.": "Schalten Sie das Gerät aus und wieder ein, prüfen Sie, dass es seine Dateien auflistet, und versuchen Sie es dann erneut.",
+  "The delete stopped after %(done)d file(s), because the instrument's file system stopped answering normally:\n\n%(why)s\n\n%(skipped)d file(s) were not attempted.": "Das Löschen wurde nach %(done)d Datei(en) abgebrochen, weil das Dateisystem des Geräts nicht mehr normal antwortete:\n\n%(why)s\n\n%(skipped)d Datei(en) wurden nicht versucht.",
+  "The model box says %(model)s, but the instrument identified itself as a %(told)s.\n\nThe image is checked against the model box, and the backups are named after it.\n\nWrite anyway?": "Im Feld Modell steht %(model)s, aber das Gerät hat sich als %(told)s gemeldet.\n\nDas Image wird gegen das Feld Modell geprüft, und die Sicherungen werden danach benannt.\n\nTrotzdem schreiben?",
+  "unidentified": "nicht identifiziert"
 }

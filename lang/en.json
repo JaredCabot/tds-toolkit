@@ -1192,5 +1192,12 @@
   "Are you sure you want to permanently delete these %d files?\n\n%s\n\nThere is no Recycle Bin on the instrument.": "Are you sure you want to permanently delete these %d files?\n\n%s\n\nThere is no Recycle Bin on the instrument.",
   "Busy - drop the files again when this job has finished": "Busy - drop the files again when this job has finished",
   "Checking the calibration constants - word %d of %d": "Checking the calibration constants - word %d of %d",
-  "The flash matches the image, but above it, at 0x%06X, it is not erased: part of the array did not take the erase.": "The flash matches the image, but above it, at 0x%06X, it is not erased: part of the array did not take the erase."
+  "The flash matches the image, but above it, at 0x%06X, it is not erased: part of the array did not take the erase.": "The flash matches the image, but above it, at 0x%06X, it is not erased: part of the array did not take the erase.",
+  "%d file(s) in the zip are not in its list of contents and are left out of a restore:": "%d file(s) in the zip are not in its list of contents and are left out of a restore:",
+  "Instrument: %(model)s at %(addr)s": "Instrument: %(model)s at %(addr)s",
+  "Nothing was deleted. The instrument's file system was checked first and did not answer normally:\n\n%s": "Nothing was deleted. The instrument's file system was checked first and did not answer normally:\n\n%s",
+  "Power cycle the instrument, confirm it lists its files, then try again.": "Power cycle the instrument, confirm it lists its files, then try again.",
+  "The delete stopped after %(done)d file(s), because the instrument's file system stopped answering normally:\n\n%(why)s\n\n%(skipped)d file(s) were not attempted.": "The delete stopped after %(done)d file(s), because the instrument's file system stopped answering normally:\n\n%(why)s\n\n%(skipped)d file(s) were not attempted.",
+  "The model box says %(model)s, but the instrument identified itself as a %(told)s.\n\nThe image is checked against the model box, and the backups are named after it.\n\nWrite anyway?": "The model box says %(model)s, but the instrument identified itself as a %(told)s.\n\nThe image is checked against the model box, and the backups are named after it.\n\nWrite anyway?",
+  "unidentified": "unidentified"
 }

@@ -1192,5 +1192,12 @@
   "Are you sure you want to permanently delete these %d files?\n\n%s\n\nThere is no Recycle Bin on the instrument.": "Voulez-vous vraiment supprimer définitivement ces %d fichiers ?\n\n%s\n\nL'instrument n'a pas de corbeille.",
   "Busy - drop the files again when this job has finished": "Occupé - déposez à nouveau les fichiers quand cette tâche sera terminée",
   "Checking the calibration constants - word %d of %d": "Vérification des constantes d'étalonnage - mot %d sur %d",
-  "The flash matches the image, but above it, at 0x%06X, it is not erased: part of the array did not take the erase.": "La mémoire flash correspond à l'image, mais au-dessus, à 0x%06X, elle n'est pas effacée : une partie de la mémoire n'a pas accepté l'effacement."
+  "The flash matches the image, but above it, at 0x%06X, it is not erased: part of the array did not take the erase.": "La mémoire flash correspond à l'image, mais au-dessus, à 0x%06X, elle n'est pas effacée : une partie de la mémoire n'a pas accepté l'effacement.",
+  "%d file(s) in the zip are not in its list of contents and are left out of a restore:": "%d fichier(s) du zip ne figurent pas dans sa liste de contenu et sont exclus de la restauration :",
+  "Instrument: %(model)s at %(addr)s": "Instrument : %(model)s à %(addr)s",
+  "Nothing was deleted. The instrument's file system was checked first and did not answer normally:\n\n%s": "Rien n'a été supprimé. Le système de fichiers de l'instrument a d'abord été vérifié et n'a pas répondu normalement :\n\n%s",
+  "Power cycle the instrument, confirm it lists its files, then try again.": "Éteignez puis rallumez l'instrument, vérifiez qu'il liste ses fichiers, puis réessayez.",
+  "The delete stopped after %(done)d file(s), because the instrument's file system stopped answering normally:\n\n%(why)s\n\n%(skipped)d file(s) were not attempted.": "La suppression s'est arrêtée après %(done)d fichier(s), car le système de fichiers de l'instrument a cessé de répondre normalement :\n\n%(why)s\n\n%(skipped)d fichier(s) n'ont pas été tentés.",
+  "The model box says %(model)s, but the instrument identified itself as a %(told)s.\n\nThe image is checked against the model box, and the backups are named after it.\n\nWrite anyway?": "Le champ Modèle indique %(model)s, mais l'instrument s'est identifié comme un %(told)s.\n\nL'image est vérifiée par rapport au champ Modèle, et les sauvegardes portent son nom.\n\nÉcrire quand même ?",
+  "unidentified": "non identifié"
 }

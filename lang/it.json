@@ -1192,5 +1192,12 @@
   "Are you sure you want to permanently delete these %d files?\n\n%s\n\nThere is no Recycle Bin on the instrument.": "Eliminare definitivamente questi %d file?\n\n%s\n\nLo strumento non ha un cestino.",
   "Busy - drop the files again when this job has finished": "Occupato - rilasciare di nuovo i file al termine di questa operazione",
   "Checking the calibration constants - word %d of %d": "Verifica delle costanti di taratura - parola %d di %d",
-  "The flash matches the image, but above it, at 0x%06X, it is not erased: part of the array did not take the erase.": "La flash corrisponde all'immagine, ma sopra di essa, a 0x%06X, non è cancellata: una parte della memoria non ha accettato la cancellazione."
+  "The flash matches the image, but above it, at 0x%06X, it is not erased: part of the array did not take the erase.": "La flash corrisponde all'immagine, ma sopra di essa, a 0x%06X, non è cancellata: una parte della memoria non ha accettato la cancellazione.",
+  "%d file(s) in the zip are not in its list of contents and are left out of a restore:": "%d file nello zip non sono nel suo elenco del contenuto e vengono esclusi dal ripristino:",
+  "Instrument: %(model)s at %(addr)s": "Strumento: %(model)s su %(addr)s",
+  "Nothing was deleted. The instrument's file system was checked first and did not answer normally:\n\n%s": "Non è stato eliminato nulla. Il file system dello strumento è stato controllato prima e non ha risposto normalmente:\n\n%s",
+  "Power cycle the instrument, confirm it lists its files, then try again.": "Spegnere e riaccendere lo strumento, verificare che elenchi i suoi file, poi riprovare.",
+  "The delete stopped after %(done)d file(s), because the instrument's file system stopped answering normally:\n\n%(why)s\n\n%(skipped)d file(s) were not attempted.": "L'eliminazione si è fermata dopo %(done)d file, perché il file system dello strumento ha smesso di rispondere normalmente:\n\n%(why)s\n\n%(skipped)d file non sono stati tentati.",
+  "The model box says %(model)s, but the instrument identified itself as a %(told)s.\n\nThe image is checked against the model box, and the backups are named after it.\n\nWrite anyway?": "Il campo Modello indica %(model)s, ma lo strumento si è identificato come %(told)s.\n\nL'immagine viene controllata rispetto al campo Modello, e i backup prendono il suo nome.\n\nScrivere lo stesso?",
+  "unidentified": "non identificato"
 }

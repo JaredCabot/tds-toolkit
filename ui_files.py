@@ -1437,7 +1437,25 @@ class FilesTab(object):
         self.ui.busy(False)
         self.ui.say(_("Deleted %d files") % len(payload["done"]))
         self.report_failures("delete", payload["failed"])
-        if payload.get("skipped"):
+        if payload.get("unwell"):
+            # Asked between groups of deletes (or before the first) and
+            # the file system did not answer normally. Nothing after that
+            # point was sent, so what is left can be deleted again once
+            # the instrument is well.
+            messagebox.showwarning(
+                _("Delete"),
+                (_("Nothing was deleted. The instrument's file system was "
+                   "checked first and did not answer normally:\n\n%s")
+                 % payload["unwell"] if payload.get("blocked") else
+                 _("The delete stopped after %(done)d file(s), because the "
+                   "instrument's file system stopped answering normally:"
+                   "\n\n%(why)s\n\n%(skipped)d file(s) were not "
+                   "attempted.")
+                 % {"done": len(payload["done"]), "why": payload["unwell"],
+                    "skipped": len(payload["skipped"])})
+                + "\n\n" + _("Power cycle the instrument, confirm it "
+                               "lists its files, then try again."))
+        elif payload.get("skipped"):
             messagebox.showwarning(
                 _("Delete"),
                 _("The delete stopped after %(failed)d file(s) "

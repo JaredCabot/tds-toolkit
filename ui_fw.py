@@ -242,6 +242,23 @@ class FirmwareTab(object):
                         self.state.get("idn") or "")
         return model_of(self.state.get("idn")), (got.group(1) if got else "")
 
+    def fw_follow(self):
+        """Put the connected instrument's model in the box, unless it was
+        chosen by hand.
+
+        The box used to be filled once a session, and only while empty,
+        so connecting to a second scope left the first one's model there -
+        and that model is what a write is checked against and what names
+        the backup files. A model typed or picked by hand is kept; one
+        this put there follows the instrument.
+        """
+        model, _version = self.fw_told()
+        put = self.state.get("fwtold") or ""
+        if model and model != put:
+            if self.fw_model() in ("", put.upper().replace(" ", "")):
+                self.state["fwmodel"].set(model)
+            self.state["fwtold"] = model
+
     def fw_model(self):
         """The model this is all aimed at - told, or chosen by hand."""
         return (self.state["fwmodel"].get() or "").upper().replace(" ", "")
@@ -499,6 +516,20 @@ class FirmwareTab(object):
                 "Choose a folder for the backups first."))
             return
         model = self.fw_model() or "TDS"
+        told, _version = self.fw_told()
+        told = (told or "").upper().replace(" ", "")
+        if told and model != told:
+            # The box is what the image is checked against and what names
+            # the backups, so a box that disagrees with the instrument
+            # that identified itself is said before anything is touched.
+            if not messagebox.askyesno(_("Write firmware?"), _(
+                    "The model box says %(model)s, but the instrument "
+                    "identified itself as a %(told)s.\n\nThe image is "
+                    "checked against the model box, and the backups are "
+                    "named after it.\n\nWrite anyway?")
+                    % {"model": model, "told": told},
+                    icon="warning", default="no"):
+                return
         if not one.suits(model):
             # Nothing stops it - a family image is often right for a model
             # its filename does not carry - but it is not passed over.
@@ -574,13 +605,11 @@ class FirmwareTab(object):
         # connected since the last look, and this line is where the
         # answer to that shows.
         self.fw_say_told()
+        self.fw_follow()
         if self.state.get("fwlooked"):
             return
         self.state["fwlooked"] = True
         settings = load_settings()
-        model, _version = self.fw_told()
-        if model and not self.state["fwmodel"].get():
-            self.state["fwmodel"].set(model)
         self.state["fwbackups"] = settings.get("firmware_backups") or ""
         self.lbl_fwback.config(text=self.state["fwbackups"] or _("not chosen"))
         self.fw_say_state()

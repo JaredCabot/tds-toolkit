@@ -116,6 +116,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in its name was not 8.3.** It now keeps to ASCII letters and digits.
 - **A language file whose name was not text** broke the language list;
   it now costs only that language.
+- **Deleting many files at once could wear the instrument's file system
+  out.** A delete now checks the file system is still answering before
+  it starts and after every eight files, and stops where it is not,
+  saying how many were deleted and how many were not tried.
+- **The Firmware tab's model could belong to the scope connected
+  before.** The model box now follows the connected instrument unless a
+  model was chosen by hand, and Write firmware asks first when the box
+  and the instrument disagree.
+- **Secure erase, Recall factory setup and writing the option words from
+  Options... did not say which instrument they were about to change.** Each confirmation now
+  names the model and address.
+- **A restore could put files on the instrument that no checksum
+  covered.** Files in a backup zip that its list of contents does not
+  name are now left out of a restore, and the backup report lists them.
 
 ### Changed
 
